@@ -4063,8 +4063,19 @@ bool free_pages_prepare(struct page *page,
     trace_mm_page_free(page, order);
     kmsan_free_page(page, order);
 
-    if (memcg_kmem_online() && PageMemcgKmem(page))
-        __memcg_kmem_uncharge_page(page, order);
+    if (memcg_kmem_online() && PageMemcgKmem(page)) {
+        __memcg_kmem_uncharge_page(page, order) {
+            struct obj_cgroup *objcg = page_objcg(page);
+            unsigned int nr_pages = 1 << order;
+
+            if (!objcg)
+                return;
+
+            obj_cgroup_uncharge_pages(objcg, nr_pages);
+            page->memcg_data = 0;
+            obj_cgroup_put(objcg);
+        }
+    }
 
     /* In rare cases, when truncation or holepunching raced with
      * munlock after VM_LOCKED was cleared, Mlocked may still be
@@ -6152,8 +6163,50 @@ void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
 
     local_unlock(&obj_stock.lock);
 out:
-    if (nr_pages)
-        obj_cgroup_uncharge_pages(objcg, nr_pages);
+    if (nr_pages) {
+        obj_cgroup_uncharge_pages(objcg, nr_pages) {
+            struct mem_cgroup *memcg;
+
+            memcg = get_mem_cgroup_from_objcg(objcg);
+
+            account_kmem_nmi_safe(memcg, -nr_pages) {
+                if (likely(!in_nmi())) {
+                    mod_memcg_state(memcg, MEMCG_KMEM, val) {
+                        int i = memcg_stats_index(idx);
+                        int cpu;
+
+                        if (mem_cgroup_disabled())
+                            return;
+
+                        if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
+                            return;
+
+                        while (memcg_is_dying(memcg))
+                            memcg = parent_mem_cgroup(memcg);
+
+                        cpu = get_cpu();
+
+                        this_cpu_add(memcg->vmstats_percpu->state[i], val);
+                        val = memcg_state_val_in_pages(idx, val);
+                        memcg_rstat_updated(memcg, val, cpu);
+                        trace_mod_memcg_state(memcg, idx, val);
+
+                        put_cpu();
+                    }
+                } else {
+                    /* preemption is disabled in_nmi(). */
+                    css_rstat_updated(&memcg->css, smp_processor_id());
+                    atomic_add(val, &memcg->kmem_stat);
+                }
+            }
+            memcg1_account_kmem(memcg, -nr_pages);
+            if (!mem_cgroup_is_root(memcg)) {
+                refill_stock(memcg, nr_pages);
+            }
+
+            css_put(&memcg->css);
+        }
+    }
 }
 ```
 
@@ -7767,7 +7820,86 @@ void workingset_refault(struct folio *folio, void *shadow)
                 0
             );
         }
-        mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file, nr);
+        mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file, nr) {
+            /* Update node */
+            mod_node_page_state(lruvec_pgdat(lruvec), idx, val) {
+                unsigned long flags;
+
+                local_irq_save(flags);
+                __mod_node_page_state(pgdat, item, delta) {
+                    struct per_cpu_nodestat __percpu *pcp = pgdat->per_cpu_nodestats;
+                    s8 __percpu *p = pcp->vm_node_stat_diff + item;
+                    long x;
+                    long t;
+
+                    if (vmstat_item_in_bytes(item)) {
+                        /*
+                        * Only cgroups use subpage accounting right now; at
+                        * the global level, these items still change in
+                        * multiples of whole pages. Store them as pages
+                        * internally to keep the per-cpu counters compact.
+                        */
+                        VM_WARN_ON_ONCE(delta & (PAGE_SIZE - 1));
+                        delta >>= PAGE_SHIFT;
+                    }
+
+                    /* See __mod_zone_page_state() */
+                    preempt_disable_nested();
+
+                    x = delta + __this_cpu_read(*p);
+
+                    t = __this_cpu_read(pcp->stat_threshold);
+
+                    if (unlikely(abs(x) > t)) {
+                        node_page_state_add(x, pgdat, item) {
+                            atomic_long_add(x, &pgdat->vm_stat[item]);
+	                        atomic_long_add(x, &vm_node_stat[item]);
+                        }
+                        x = 0;
+                    }
+                    __this_cpu_write(*p, x);
+
+                    preempt_enable_nested();
+                }
+                local_irq_restore(flags);
+            }
+
+            /* Update memcg and lruvec */
+            if (!mem_cgroup_disabled()) {
+                mod_memcg_lruvec_state(lruvec, idx, val) {
+                    struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+                    struct mem_cgroup_per_node *pn;
+                    struct mem_cgroup *memcg;
+                    int i = memcg_stats_index(idx);
+                    int cpu;
+
+                    if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
+                        return;
+
+                    pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+                    memcg = pn->memcg;
+
+                    while (memcg_is_dying(memcg))
+                        memcg = parent_mem_cgroup(memcg);
+
+                    pn = memcg->nodeinfo[pgdat->node_id];
+
+                    cpu = get_cpu();
+
+                    /* Update memcg */
+                    this_cpu_add(memcg->vmstats_percpu->state[i], val);
+
+                    /* Update lruvec */
+                    this_cpu_add(pn->lruvec_stats_percpu->state[i], val);
+
+                    val = memcg_state_val_in_pages(idx, val);
+                    memcg_rstat_updated(memcg, val, cpu);
+                    trace_mod_memcg_lruvec_state(memcg, idx, val);
+
+                    put_cpu();
+                }
+            }
+        }
     }
 }
 

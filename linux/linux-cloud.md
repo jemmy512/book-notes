@@ -61,6 +61,12 @@
 * [Coolshell - DOCKER基础技术：LINUX CGROUP](https://coolshell.cn/articles/17049.html)
 * [Docker底层原理：Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
 * [k8s 基于 cgroup 的资源限额（capacity enforcement）：模型设计与代码实现（2023）](https://arthurchiao.art/blog/k8s-cgroup-zh/)
+* [[PATCH v7 00/19] The new cgroup slab memory controller](https://lore.kernel.org/all/20200623015846.1141975-1-guro@fb.com/)
+    * [[PATCH v7 06/19] mm: memcg/slab: obj_cgroup API](https://lore.kernel.org/all/20200623015846.1141975-7-guro@fb.com/)
+
+    > Object cgroup is basically a pointer to a memory cgroup with a per-cpu reference counter.  It substitutes a memory cgroup in places where it's necessary to charge a custom amount of bytes instead of pages.
+
+    > It prevents long-living objects from pinning the original memory cgroup in the memory.
 
 ![](../images/kernel/cgroup-arch.svg)
 
@@ -2372,18 +2378,53 @@ static struct cftype zswap_files[] = {
 ### mem_cgroup_css_online
 
 ```c
-int mem_cgroup_css_online(struct cgroup_subsys_state *css)
+void mem_cgroup_css_online(struct cgroup_subsys_state *css)
 {
     struct mem_cgroup *memcg = mem_cgroup_from_css(css);
 
-    if (memcg_online_kmem(memcg))
-        goto remove_id;
+    memcg_online_kmem(memcg) {
+        struct obj_cgroup *objcg;
+
+        if (mem_cgroup_kmem_disabled())
+            return;
+
+        if (unlikely(mem_cgroup_is_root(memcg)))
+            return;
+
+        static_branch_enable(&memcg_kmem_online_key);
+
+        memcg->kmemcg_id = memcg->id.id;
+    }
 
     /* A memcg must be visible for expand_shrinker_info()
      * by the time the maps are allocated. So, we allocate maps
      * here, when for_each_mem_cgroup() can't skip it. */
     if (alloc_shrinker_info(memcg))
         goto offline_kmem;
+
+    objcg = obj_cgroup_alloc() {
+        struct obj_cgroup *objcg;
+        int ret;
+
+        objcg = kzalloc(sizeof(struct obj_cgroup), GFP_KERNEL);
+        if (!objcg)
+            return NULL;
+
+        ret = percpu_ref_init(&objcg->refcnt, obj_cgroup_release, 0, GFP_KERNEL);
+        if (ret) {
+            kfree(objcg);
+            return NULL;
+        }
+        INIT_LIST_HEAD(&objcg->list);
+        return objcg;
+    }
+    if (!objcg)
+        goto free_shrinker;
+
+    objcg->memcg = memcg;
+    rcu_assign_pointer(memcg->objcg, objcg);
+    obj_cgroup_get(objcg);
+    memcg->orig_objcg = objcg;
 
     if (unlikely(mem_cgroup_is_root(memcg)) && !mem_cgroup_disabled())
         queue_delayed_work(system_unbound_wq, &stats_flush_dwork, FLUSH_TIME);
@@ -2404,58 +2445,23 @@ int mem_cgroup_css_online(struct cgroup_subsys_state *css)
     xa_store(&mem_cgroup_ids, memcg->id.id, memcg, GFP_KERNEL);
 
     return 0;
+
+free_shrinker:
+	free_shrinker_info(memcg);
 offline_kmem:
     memcg_offline_kmem(memcg);
 remove_id:
     mem_cgroup_id_remove(memcg);
     return -ENOMEM;
 }
-
-int memcg_online_kmem(struct mem_cgroup *memcg)
-{
-    struct obj_cgroup *objcg;
-
-    if (mem_cgroup_kmem_disabled())
-        return 0;
-
-    if (unlikely(mem_cgroup_is_root(memcg)))
-        return 0;
-
-    objcg = obj_cgroup_alloc() {
-        struct obj_cgroup *objcg;
-        int ret;
-
-        objcg = kzalloc(sizeof(struct obj_cgroup), GFP_KERNEL);
-        if (!objcg)
-            return NULL;
-
-        ret = percpu_ref_init(&objcg->refcnt, obj_cgroup_release, 0, GFP_KERNEL);
-        if (ret) {
-            kfree(objcg);
-            return NULL;
-        }
-        INIT_LIST_HEAD(&objcg->list);
-        return objcg;
-    }
-    if (!objcg)
-        return -ENOMEM;
-
-    objcg->memcg = memcg;
-    rcu_assign_pointer(memcg->objcg, objcg);
-    obj_cgroup_get(objcg);
-    memcg->orig_objcg = objcg;
-
-    static_branch_enable(&memcg_kmem_online_key);
-
-    memcg->kmemcg_id = memcg->id.id;
-
-    return 0;
-}
 ```
 
 ### mem_cgroup_css_offline
 
 ```c
+struct mem_cgroup *root_mem_cgroup __read_mostly;
+EXPORT_SYMBOL(root_mem_cgroup);
+
 void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
 {
     struct mem_cgroup *memcg = mem_cgroup_from_css(css);
@@ -2467,51 +2473,61 @@ void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
 
     zswap_memcg_offline_cleanup(memcg);
 
-    memcg_offline_kmem(memcg);
+    memcg_offline_kmem(memcg) {
+        struct mem_cgroup *parent;
+
+        if (mem_cgroup_kmem_disabled())
+            return;
+
+        if (unlikely(mem_cgroup_is_root(memcg)))
+            return;
+
+        parent = parent_mem_cgroup(memcg);
+        if (!parent)
+            parent = root_mem_cgroup;
+
+        memcg_reparent_list_lrus(memcg, parent);
+    }
     reparent_deferred_split_queue(memcg);
-    reparent_shrinker_deferred(memcg);
-    wb_memcg_offline(memcg);
-    lru_gen_offline_memcg(memcg);
 
-    drain_all_stock(memcg);
+    memcg_reparent_objcgs(memcg) {
+        struct obj_cgroup *objcg;
+        struct mem_cgroup *parent = parent_mem_cgroup(memcg);
 
-    mem_cgroup_id_put(memcg);
-}
+    retry:
+        if (lru_gen_enabled())
+            max_lru_gen_memcg(parent);
 
-void memcg_offline_kmem(struct mem_cgroup *memcg)
-{
-    struct mem_cgroup *parent;
+        reparent_locks(memcg, parent);
+        if (lru_gen_enabled()) {
+            if (!recheck_lru_gen_max_memcg(parent)) {
+                reparent_unlocks(memcg, parent);
+                cond_resched();
+                goto retry;
+            }
+            lru_gen_reparent_memcg(memcg, parent);
+        } else {
+            lru_reparent_memcg(memcg, parent);
+        }
 
-    if (mem_cgroup_kmem_disabled())
-        return;
+        objcg = __memcg_reparent_objcgs(memcg, parent) {
+            struct obj_cgroup *objcg, *iter;
 
-    if (unlikely(mem_cgroup_is_root(memcg)))
-        return;
+            objcg = rcu_replace_pointer(memcg->objcg, NULL, true);
+            /* 1) Ready to reparent active objcg. */
+            list_add(&objcg->list, &memcg->objcg_list);
+            /* 2) Reparent active objcg and already reparented objcgs to parent. */
+            list_for_each_entry(iter, &memcg->objcg_list, list)
+                WRITE_ONCE(iter->memcg, parent);
+            /* 3) Move already reparented objcgs to the parent's list */
+            list_splice(&memcg->objcg_list, &parent->objcg_list);
 
-    parent = parent_mem_cgroup(memcg);
-    if (!parent)
-        parent = root_mem_cgroup;
+            return objcg;
+        }
 
-    memcg_reparent_list_lrus(memcg, parent);
+        reparent_unlocks(memcg, parent);
 
-    /* Objcg's reparenting must be after list_lru's, make sure list_lru
-     * helpers won't use parent's list_lru until child is drained. */
-    memcg_reparent_objcgs(memcg, parent) {
-        struct obj_cgroup *objcg, *iter;
-
-        objcg = rcu_replace_pointer(memcg->objcg, NULL, true);
-
-        spin_lock_irq(&objcg_lock);
-
-        /* 1) Ready to reparent active objcg. */
-        list_add(&objcg->list, &memcg->objcg_list);
-        /* 2) Reparent active objcg and already reparented objcgs to parent. */
-        list_for_each_entry(iter, &memcg->objcg_list, list)
-            WRITE_ONCE(iter->memcg, parent);
-        /* 3) Move already reparented objcgs to the parent's list */
-        list_splice(&memcg->objcg_list, &parent->objcg_list);
-
-        spin_unlock_irq(&objcg_lock);
+        reparent_state_local(memcg, parent);
 
         percpu_ref_kill(&objcg->refcnt) {
             percpu_ref_kill_and_confirm(ref, NULL) {
@@ -2559,6 +2575,14 @@ void memcg_offline_kmem(struct mem_cgroup *memcg)
             }
         }
     }
+    
+    reparent_shrinker_deferred(memcg);
+    wb_memcg_offline(memcg);
+    lru_gen_offline_memcg(memcg);
+
+    drain_all_stock(memcg);
+
+    mem_cgroup_id_put(memcg);
 }
 
 void obj_cgroup_release(struct percpu_ref *ref)
