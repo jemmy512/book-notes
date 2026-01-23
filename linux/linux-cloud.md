@@ -2447,7 +2447,7 @@ void mem_cgroup_css_online(struct cgroup_subsys_state *css)
     return 0;
 
 free_shrinker:
-	free_shrinker_info(memcg);
+    free_shrinker_info(memcg);
 offline_kmem:
     memcg_offline_kmem(memcg);
 remove_id:
@@ -2575,7 +2575,7 @@ void mem_cgroup_css_offline(struct cgroup_subsys_state *css)
             }
         }
     }
-    
+
     reparent_shrinker_deferred(memcg);
     wb_memcg_offline(memcg);
     lru_gen_offline_memcg(memcg);
@@ -2962,184 +2962,10 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
     memcg = get_mem_cgroup_from_mm(mm);
     ret = charge_memcg(folio, memcg, gfp) {
         ret = try_charge(memcg, gfp, folio_nr_pages(folio)) {
-            unsigned int batch = max(MEMCG_CHARGE_BATCH, nr_pages);
-            int nr_retries = MAX_RECLAIM_RETRIES;
-            struct mem_cgroup *mem_over_limit;
-            struct page_counter *counter;
-            unsigned long nr_reclaimed;
-            bool passed_oom = false;
-            unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
-            bool drained = false;
-            bool raised_max_event = false;
-            unsigned long pflags;
-
-        retry:
-        /* 1. Initial Attempt with Stock, per-cpu optimization */
-            if (consume_stock(memcg, nr_pages))
+            if (mem_cgroup_is_root(memcg))
                 return 0;
 
-        /* 2. Try Charging the Counters: */
-            if (!do_memsw_account() || page_counter_try_charge(&memcg->memsw, batch, &counter)) {
-                if (page_counter_try_charge(&memcg->memory, batch, &counter))
-                    goto done_restock;
-                if (do_memsw_account())
-                    page_counter_uncharge(&memcg->memsw, batch);
-                mem_over_limit = mem_cgroup_from_counter(counter, memory);
-            } else {
-                mem_over_limit = mem_cgroup_from_counter(counter, memsw);
-                reclaim_options &= ~MEMCG_RECLAIM_MAY_SWAP;
-            }
-
-            if (batch > nr_pages) {
-                batch = nr_pages;
-                goto retry;
-            }
-
-        /* 3. Special Cases: */
-            if (unlikely(current->flags & PF_MEMALLOC))
-                goto force;
-
-            if (unlikely(task_in_memcg_oom(current)))
-                goto nomem;
-
-            if (!gfpflags_allow_blocking(gfp_mask))
-                goto nomem;
-
-        /* 4. Reclaim Process: */
-            memcg_memory_event(mem_over_limit, MEMCG_MAX);
-            raised_max_event = true;
-
-            psi_memstall_enter(&pflags);
-            nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages, gfp_mask, reclaim_options, NULL);
-            psi_memstall_leave(&pflags);
-
-            if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
-                goto retry;
-
-            if (!drained) {
-                drain_all_stock(mem_over_limit);
-                drained = true;
-                goto retry;
-            }
-
-            if (gfp_mask & __GFP_NORETRY)
-                goto nomem;
-            /* Even though the limit is exceeded at this point, reclaim
-             * may have been able to free some pages.  Retry the charge
-             * before killing the task.
-             *
-             * Only for regular pages, though: huge pages are rather
-             * unlikely to succeed so close to the limit, and we fall back
-             * to regular pages anyway in case of failure. */
-            if (nr_reclaimed && nr_pages <= (1 << PAGE_ALLOC_COSTLY_ORDER))
-                goto retry;
-
-            if (nr_retries--)
-                goto retry;
-
-            if (gfp_mask & __GFP_RETRY_MAYFAIL)
-                goto nomem;
-
-            /* Avoid endless loop for tasks bypassed by the oom killer */
-            if (passed_oom && task_is_dying())
-                goto nomem;
-
-        /* 5. OOM Handling: */
-            if (mem_cgroup_oom(mem_over_limit, gfp_mask, get_order(nr_pages * PAGE_SIZE))) {
-                passed_oom = true;
-                nr_retries = MAX_RECLAIM_RETRIES;
-                goto retry;
-            }
-
-        nomem:
-            /* Memcg doesn't have a dedicated reserve for atomic
-            * allocations. But like the global atomic pool, we need to
-            * put the burden of reclaim on regular allocation requests
-            * and let these go through as privileged allocations. */
-            if (!(gfp_mask & (__GFP_NOFAIL | __GFP_HIGH)))
-                return -ENOMEM;
-        force:
-            /* If the allocation has to be enforced, don't forget to raise
-            * a MEMCG_MAX event. */
-            if (!raised_max_event)
-                memcg_memory_event(mem_over_limit, MEMCG_MAX);
-
-            /* The allocation either can't fail or will lead to more memory
-            * being freed very soon.  Allow memory usage go over the limit
-            * temporarily by force charging it. */
-            page_counter_charge(&memcg->memory, nr_pages);
-            if (do_memsw_account())
-                page_counter_charge(&memcg->memsw, nr_pages);
-
-            return 0;
-
-        done_restock:
-            if (batch > nr_pages) {
-                refill_stock(memcg, batch - nr_pages) {
-                    struct memcg_stock_pcp *stock;
-                    unsigned int stock_pages;
-
-                    stock = this_cpu_ptr(&memcg_stock);
-                    if (READ_ONCE(stock->cached) != memcg) { /* reset if necessary */
-                        drain_stock(stock);
-                        css_get(&memcg->css);
-                        WRITE_ONCE(stock->cached, memcg);
-                    }
-                    stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
-                    WRITE_ONCE(stock->nr_pages, stock_pages);
-
-                    if (stock_pages > MEMCG_CHARGE_BATCH)
-                        drain_stock(stock);
-                }
-            }
-
-            /* If the hierarchy is above the normal consumption range, schedule
-            * reclaim on returning to userland.  We can perform reclaim here
-            * if __GFP_RECLAIM but let's always punt for simplicity and so that
-            * GFP_KERNEL can consistently be used during reclaim.  @memcg is
-            * not recorded as it most likely matches current's and won't
-            * change in the meantime.  As high limit is checked again before
-            * reclaim, the cost of mismatch is negligible. */
-            do {
-                bool mem_high, swap_high;
-
-                mem_high = page_counter_read(&memcg->memory) >
-                    READ_ONCE(memcg->memory.high);
-                swap_high = page_counter_read(&memcg->swap) >
-                    READ_ONCE(memcg->swap.high);
-
-                /* Don't bother a random interrupted task */
-                if (!in_task()) {
-                    if (mem_high) {
-                        schedule_work(&memcg->high_work);
-                        break;
-                    }
-                    continue;
-                }
-
-                if (mem_high || swap_high) {
-                    /* The allocating tasks in this cgroup will need to do
-                    * reclaim or be throttled to prevent further growth
-                    * of the memory or swap footprints.
-                    *
-                    * Target some best-effort fairness between the tasks,
-                    * and distribute reclaim work and delay penalties
-                    * based on how much each task is actually allocating. */
-                    current->memcg_nr_pages_over_high += batch;
-                    set_notify_resume(current);
-                    break;
-                }
-            } while ((memcg = parent_mem_cgroup(memcg)));
-
-            /* Reclaim is set up above to be called from the userland
-            * return path. But also attempt synchronous reclaim to avoid
-            * excessive overrun while the task is still inside the
-            * kernel. If this is successful, the return path will see it
-            * when it rechecks the overage and simply bail out. */
-            if (current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH &&
-                !(current->flags & PF_MEMALLOC) && gfpflags_allow_blocking(gfp_mask))
-                mem_cgroup_handle_over_high(gfp_mask);
-            return 0;
+            return try_charge_memcg(memcg, gfp_mask, nr_pages);
         }
         if (ret)
             goto out;
@@ -3151,6 +2977,223 @@ mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
     css_put(&memcg->css);
 
     return ret;
+}
+
+static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask, unsigned int nr_pages)
+{
+    unsigned int batch = max(MEMCG_CHARGE_BATCH, nr_pages);
+    int nr_retries = MAX_RECLAIM_RETRIES;
+    struct mem_cgroup *mem_over_limit;
+    struct page_counter *counter;
+    unsigned long nr_reclaimed;
+    bool passed_oom = false;
+    unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
+    bool drained = false;
+    bool raised_max_event = false;
+    unsigned long pflags;
+
+retry:
+/* 1. Initial Attempt with Stock, per-cpu optimization */
+    if (consume_stock(memcg, nr_pages))
+        return 0;
+
+/* 2. Try Charging the Counters: */
+    if (!do_memsw_account() || page_counter_try_charge(&memcg->memsw, batch, &counter)) {
+        if (page_counter_try_charge(&memcg->memory, batch, &counter))
+            goto done_restock;
+        if (do_memsw_account())
+            page_counter_uncharge(&memcg->memsw, batch);
+        mem_over_limit = mem_cgroup_from_counter(counter, memory);
+    } else {
+        mem_over_limit = mem_cgroup_from_counter(counter, memsw);
+        reclaim_options &= ~MEMCG_RECLAIM_MAY_SWAP;
+    }
+
+    if (batch > nr_pages) {
+        batch = nr_pages;
+        goto retry;
+    }
+
+/* 3. Special Cases: */
+    if (unlikely(current->flags & PF_MEMALLOC))
+        goto force;
+
+    if (unlikely(task_in_memcg_oom(current)))
+        goto nomem;
+
+    if (!gfpflags_allow_blocking(gfp_mask))
+        goto nomem;
+
+/* 4. Reclaim Process: */
+    memcg_memory_event(mem_over_limit, MEMCG_MAX);
+    raised_max_event = true;
+
+    psi_memstall_enter(&pflags);
+    nr_reclaimed = try_to_free_mem_cgroup_pages(mem_over_limit, nr_pages, gfp_mask, reclaim_options, NULL) {
+        unsigned long nr_reclaimed;
+        unsigned int noreclaim_flag;
+        struct scan_control sc = {
+            .nr_to_reclaim = max(nr_pages, SWAP_CLUSTER_MAX),
+            .proactive_swappiness = swappiness,
+            .gfp_mask = (current_gfp_context(gfp_mask) & GFP_RECLAIM_MASK) |
+                    (GFP_HIGHUSER_MOVABLE & ~GFP_RECLAIM_MASK),
+            .reclaim_idx = MAX_NR_ZONES - 1,
+            .target_mem_cgroup = memcg,
+            .priority = DEF_PRIORITY,
+            .may_writepage = 1,
+            .may_unmap = 1,
+            .may_swap = !!(reclaim_options & MEMCG_RECLAIM_MAY_SWAP),
+            .proactive = !!(reclaim_options & MEMCG_RECLAIM_PROACTIVE),
+        };
+        /*
+        * Traverse the ZONELIST_FALLBACK zonelist of the current node to put
+        * equal pressure on all the nodes. This is based on the assumption that
+        * the reclaim does not bail out early.
+        */
+        struct zonelist *zonelist = node_zonelist(numa_node_id(), sc.gfp_mask);
+
+        set_task_reclaim_state(current, &sc.reclaim_state);
+        trace_mm_vmscan_memcg_reclaim_begin(0, sc.gfp_mask);
+        noreclaim_flag = memalloc_noreclaim_save();
+
+        nr_reclaimed = do_try_to_free_pages(zonelist, &sc);
+            --->
+
+        memalloc_noreclaim_restore(noreclaim_flag);
+        trace_mm_vmscan_memcg_reclaim_end(nr_reclaimed);
+        set_task_reclaim_state(current, NULL);
+
+        return nr_reclaimed;
+    }
+    psi_memstall_leave(&pflags);
+
+    if (mem_cgroup_margin(mem_over_limit) >= nr_pages)
+        goto retry;
+
+    if (!drained) {
+        drain_all_stock(mem_over_limit);
+        drained = true;
+        goto retry;
+    }
+
+    if (gfp_mask & __GFP_NORETRY)
+        goto nomem;
+    /* Even though the limit is exceeded at this point, reclaim
+    * may have been able to free some pages.  Retry the charge
+    * before killing the task.
+    *
+    * Only for regular pages, though: huge pages are rather
+    * unlikely to succeed so close to the limit, and we fall back
+    * to regular pages anyway in case of failure. */
+    if (nr_reclaimed && nr_pages <= (1 << PAGE_ALLOC_COSTLY_ORDER))
+        goto retry;
+
+    if (nr_retries--)
+        goto retry;
+
+    if (gfp_mask & __GFP_RETRY_MAYFAIL)
+        goto nomem;
+
+    /* Avoid endless loop for tasks bypassed by the oom killer */
+    if (passed_oom && task_is_dying())
+        goto nomem;
+
+/* 5. OOM Handling: */
+    if (mem_cgroup_oom(mem_over_limit, gfp_mask, get_order(nr_pages * PAGE_SIZE))) {
+        passed_oom = true;
+        nr_retries = MAX_RECLAIM_RETRIES;
+        goto retry;
+    }
+
+nomem:
+    /* Memcg doesn't have a dedicated reserve for atomic
+    * allocations. But like the global atomic pool, we need to
+    * put the burden of reclaim on regular allocation requests
+    * and let these go through as privileged allocations. */
+    if (!(gfp_mask & (__GFP_NOFAIL | __GFP_HIGH)))
+        return -ENOMEM;
+force:
+    /* If the allocation has to be enforced, don't forget to raise
+    * a MEMCG_MAX event. */
+    if (!raised_max_event)
+        memcg_memory_event(mem_over_limit, MEMCG_MAX);
+
+    /* The allocation either can't fail or will lead to more memory
+    * being freed very soon.  Allow memory usage go over the limit
+    * temporarily by force charging it. */
+    page_counter_charge(&memcg->memory, nr_pages);
+    if (do_memsw_account())
+        page_counter_charge(&memcg->memsw, nr_pages);
+
+    return 0;
+
+done_restock:
+    if (batch > nr_pages) {
+        refill_stock(memcg, batch - nr_pages) {
+            struct memcg_stock_pcp *stock;
+            unsigned int stock_pages;
+
+            stock = this_cpu_ptr(&memcg_stock);
+            if (READ_ONCE(stock->cached) != memcg) { /* reset if necessary */
+                drain_stock(stock);
+                css_get(&memcg->css);
+                WRITE_ONCE(stock->cached, memcg);
+            }
+            stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
+            WRITE_ONCE(stock->nr_pages, stock_pages);
+
+            if (stock_pages > MEMCG_CHARGE_BATCH)
+                drain_stock(stock);
+        }
+    }
+
+    /* If the hierarchy is above the normal consumption range, schedule
+    * reclaim on returning to userland.  We can perform reclaim here
+    * if __GFP_RECLAIM but let's always punt for simplicity and so that
+    * GFP_KERNEL can consistently be used during reclaim.  @memcg is
+    * not recorded as it most likely matches current's and won't
+    * change in the meantime.  As high limit is checked again before
+    * reclaim, the cost of mismatch is negligible. */
+    do {
+        bool mem_high, swap_high;
+
+        mem_high = page_counter_read(&memcg->memory) >
+            READ_ONCE(memcg->memory.high);
+        swap_high = page_counter_read(&memcg->swap) >
+            READ_ONCE(memcg->swap.high);
+
+        /* Don't bother a random interrupted task */
+        if (!in_task()) {
+            if (mem_high) {
+                schedule_work(&memcg->high_work);
+                break;
+            }
+            continue;
+        }
+
+        if (mem_high || swap_high) {
+            /* The allocating tasks in this cgroup will need to do
+            * reclaim or be throttled to prevent further growth
+            * of the memory or swap footprints.
+            *
+            * Target some best-effort fairness between the tasks,
+            * and distribute reclaim work and delay penalties
+            * based on how much each task is actually allocating. */
+            current->memcg_nr_pages_over_high += batch;
+            set_notify_resume(current);
+            break;
+        }
+    } while ((memcg = parent_mem_cgroup(memcg)));
+
+    /* Reclaim is set up above to be called from the userland
+    * return path. But also attempt synchronous reclaim to avoid
+    * excessive overrun while the task is still inside the
+    * kernel. If this is successful, the return path will see it
+    * when it rechecks the overage and simply bail out. */
+    if (current->memcg_nr_pages_over_high > MEMCG_CHARGE_BATCH &&
+        !(current->flags & PF_MEMALLOC) && gfpflags_allow_blocking(gfp_mask))
+        mem_cgroup_handle_over_high(gfp_mask);
+    return 0;
 }
 ```
 

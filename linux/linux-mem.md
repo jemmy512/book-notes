@@ -2623,11 +2623,15 @@ try_this_zone:
                         }
                     }
                 }
-
-                if (alloc_flags & ALLOC_NO_WATERMARKS)
-                    set_page_pfmemalloc(page);
-                else
-                    clear_page_pfmemalloc(page);
+                if (alloc_flags & ALLOC_NO_WATERMARKS) {
+                    set_page_pfmemalloc(page) {
+                        page->lru.next = (void *)BIT(1);
+                    }
+                } else {
+                    clear_page_pfmemalloc(page) {
+                        page->lru.next = NULL;
+                    }
+                }
             }
 
             /* If this is a high-order atomic allocation then check
@@ -5111,10 +5115,6 @@ SLAB_MATCH(memcg_data, obj_exts);
 
 ![](../images/kernel/mem-slub.drawio.svg)
 
----
-
-![](../images/kernel/mem-slab_alloc.png)
-
 ```c
 static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s, struct list_lru *lru,
         gfp_t gfpflags, int node, unsigned long addr, size_t orig_size)
@@ -5284,9 +5284,7 @@ void *alloc_from_pcs(struct kmem_cache *s, gfp_t gfp, int node)
              * to a particular node.
              * Otherwise we apply the memory policy to get
              * the node we need to allocate on. */
-            if (mpol->mode != MPOL_BIND ||
-                    !node_isset(numa_mem_id(), mpol->nodes))
-
+            if (mpol->mode != MPOL_BIND ||!node_isset(numa_mem_id(), mpol->nodes))
                 node = mempolicy_slab_node();
         }
     }
@@ -5379,7 +5377,19 @@ void *alloc_from_pcs(struct kmem_cache *s, gfp_t gfp, int node)
                     free_empty_sheaf(s, empty);
                 }
             } else {
-                full = alloc_full_sheaf(s, gfp);
+                full = alloc_full_sheaf(s, gfp) {
+                    struct slab_sheaf *sheaf = alloc_empty_sheaf(s, gfp);
+
+                    if (!sheaf)
+                        return NULL;
+
+                    if (refill_sheaf(s, sheaf, gfp | __GFP_NOMEMALLOC)) {
+                        free_empty_sheaf(s, sheaf);
+                        return NULL;
+                    }
+
+                    return sheaf;
+                }
             }
 
             if (!full)
@@ -5469,8 +5479,40 @@ redo:
             reread_slab:
                 slab = READ_ONCE(c->slab);
                 if (!slab) {
+                    /* if the node is not online or has no normal memory, just
+                    * ignore the node constraint */
+                    if (unlikely(node != NUMA_NO_NODE && !node_isset(node, slab_nodes)))
+                        node = NUMA_NO_NODE;
                     goto new_slab;
                 }
+
+                if (unlikely(!node_match(slab, node))) {
+                    /* same as above but node_match() being false already
+                    * implies node != NUMA_NO_NODE.
+                    *
+                    * We don't strictly honor pfmemalloc and NUMA preferences
+                    * when !allow_spin because:
+                    *
+                    * 1. Most kmalloc() users allocate objects on the local node,
+                    *    so kmalloc_nolock() tries not to interfere with them by
+                    *    deactivating the cpu slab.
+                    *
+                    * 2. Deactivating due to NUMA or pfmemalloc mismatch may cause
+                    *    unnecessary slab allocations even when n->partial list
+                    *    is not empty. */
+                    if (!node_isset(node, slab_nodes) || !allow_spin) {
+                        node = NUMA_NO_NODE;
+                    } else {
+                        stat(s, ALLOC_NODE_MISMATCH);
+                        goto deactivate_slab;
+                    }
+                }
+
+                /* By rights, we should be searching for a slab page that was
+                * PFMEMALLOC but right now, we are losing the pfmemalloc
+                * information when the page leaves the per-cpu allocator */
+                if (unlikely(!pfmemalloc_match(slab, gfpflags) && allow_spin))
+                    goto deactivate_slab;
 
                 if (unlikely(slab != c->slab)) {
                     local_unlock_irqrestore(&s->cpu_slab->lock, flags);
@@ -5519,7 +5561,8 @@ redo:
                 c->tid = next_tid(c->tid);
                 return freelist;
 
-            deactivate_slab: /* Finishes removing the cpu slab, merges cpu's freelist with slab's freelist */
+            /* Finishes removing the cpu slab, merges cpu's freelist with slab's freelist */
+            deactivate_slab:
                 struct slab new;
                 struct slab old;
                 if (slab != c->slab) {
@@ -5603,34 +5646,57 @@ redo:
             new_slab:
             #ifdef CONFIG_SLUB_CPU_PARTIAL
                 while (slub_percpu_partial(c)) {
+                    local_lock_cpu_slab(s, flags);
                     if (unlikely(c->slab)) {
+                        local_unlock_cpu_slab(s, flags);
                         goto reread_slab;
                     }
                     if (unlikely(!slub_percpu_partial(c))) {
+                        local_unlock_cpu_slab(s, flags);
                         /* we were preempted and partial list got empty */
                         goto new_objects;
                     }
 
                     slab = slub_percpu_partial(c);
                     slub_set_percpu_partial(c, slab) {
-                        c->partial = slab->next;
+                        slub_percpu_partial(c) = (p)->next;
                     }
 
-                    if (unlikely(!node_match(slab, node) || !pfmemalloc_match(slab, gfpflags))) {
-                        slab->next = NULL;
-                        __put_partials(s, slab);
-                        continue;
+                    if (likely(node_match(slab, node) && pfmemalloc_match(slab, gfpflags)) || !allow_spin) {
+                        c->slab = slab;
+                        freelist = get_freelist(s, slab);
+                        VM_BUG_ON(!freelist);
+                        stat(s, CPU_PARTIAL_ALLOC);
+                        goto load_freelist;
                     }
 
-                    freelist = freeze_slab(s, slab);
-                    goto retry_load_slab;
+                    local_unlock_cpu_slab(s, flags);
+
+                    slab->next = NULL;
+                    __put_partials(s, slab);
                 }
             #endif
 
             new_objects:
                 /* get partial from node */
                 pc.flags = gfpflags;
-                pc.slab = &slab;
+                /* When a preferred node is indicated but no __GFP_THISNODE
+                *
+                * 1) try to get a partial slab from target node only by having
+                *    __GFP_THISNODE in pc.flags for get_partial()
+                * 2) if 1) failed, try to allocate a new slab from target node with
+                *    GPF_NOWAIT | __GFP_THISNODE opportunistically
+                * 3) if 2) failed, retry with original gfpflags which will allow
+                *    get_partial() try partial lists of other nodes before potentially
+                *    allocating new page from other nodes */
+                if (unlikely(node != NUMA_NO_NODE && !(gfpflags & __GFP_THISNODE)
+                        && try_thisnode)) {
+                    if (unlikely(!allow_spin))
+                        /* Do not upgrade gfp to NOWAIT from more restrictive mode */
+                        pc.flags = gfpflags | __GFP_THISNODE;
+                    else
+                        pc.flags = GFP_NOWAIT | __GFP_THISNODE;
+                }
                 pc.orig_size = orig_size;
                 slab = get_partial(s, node, &pc) {
                     obj = get_partial_node(s, n) {
@@ -5819,14 +5885,26 @@ redo:
                 c = slub_get_cpu_ptr(s->cpu_slab);
 
                 if (unlikely(!slab)) {
+                    if (node != NUMA_NO_NODE && !(gfpflags & __GFP_THISNODE) && try_thisnode) {
+                        try_thisnode = false;
+                        goto new_objects;
+                    }
                     slab_out_of_memory(s, gfpflags, node);
                     return NULL;
                 }
+
 
                 freelist = slab->freelist;
                 slab->freelist = NULL;
                 slab->inuse = slab->objects;
                 slab->frozen = 1;
+
+                if (unlikely(!pfmemalloc_match(slab, gfpflags) && allow_spin)) {
+                    /* For !pfmemalloc_match() case we don't load freelist so that
+                    * we don't make further mismatched allocations easier. */
+                    deactivate_slab(s, slab, get_freepointer(s, freelist));
+                    return freelist;
+                }
 
             retry_load_slab:
                 if (unlikely(c->slab)) {
@@ -5837,7 +5915,22 @@ redo:
                     c->freelist = NULL;
                     c->tid = next_tid(c->tid);
 
-                    deactivate_slab(s, flush_slab, flush_freelist);
+                    if (unlikely(!allow_spin)) {
+                        /* Reentrant slub cannot take locks, defer */
+                        defer_deactivate_slab(flush_slab, flush_freelist) {
+                            struct defer_free *df;
+
+                            slab->flush_freelist = flush_freelist;
+
+                            guard(preempt)();
+
+                            df = this_cpu_ptr(&defer_free_objects);
+                            if (llist_add(&slab->llnode, &df->slabs))
+                                irq_work_queue(&df->work);
+                        }
+                    } else {
+                        deactivate_slab(s, flush_slab, flush_freelist);
+                    }
 
                     goto retry_load_slab;
                 }
@@ -5892,8 +5985,7 @@ slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
     * soon. The redzone operation for this extra space could be seen as a
     * replacement of current poisoning under certain debug option, and
     * won't break other sanity checks. */
-    if (kmem_cache_debug_flags(s, SLAB_STORE_USER | SLAB_RED_ZONE) &&
-        (s->flags & SLAB_KMALLOC))
+    if (kmem_cache_debug_flags(s, SLAB_STORE_USER | SLAB_RED_ZONE) && (s->flags & SLAB_KMALLOC))
         zero_size = orig_size;
 
     /* When slab_debug is enabled, avoid memory initialization integrated
@@ -5991,7 +6083,11 @@ slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
             return true;
 
         if (likely(size == 1)) {
-            memcg_alloc_abort_single(s, *p);
+            memcg_alloc_abort_single(s, *p) {
+                if (likely(slab_free_hook(s, object, slab_want_init_on_free(s), false))) {
+		            do_slab_free(s, virt_to_slab(object), object, object, 1, _RET_IP_);
+                }
+            }
             *p = NULL;
         } else {
             kmem_cache_free_bulk(s, size, p);
@@ -7833,12 +7929,10 @@ void workingset_refault(struct folio *folio, void *shadow)
                     long t;
 
                     if (vmstat_item_in_bytes(item)) {
-                        /*
-                        * Only cgroups use subpage accounting right now; at
+                        /* Only cgroups use subpage accounting right now; at
                         * the global level, these items still change in
                         * multiples of whole pages. Store them as pages
-                        * internally to keep the per-cpu counters compact.
-                        */
+                        * internally to keep the per-cpu counters compact. */
                         VM_WARN_ON_ONCE(delta & (PAGE_SIZE - 1));
                         delta >>= PAGE_SHIFT;
                     }
@@ -7853,7 +7947,7 @@ void workingset_refault(struct folio *folio, void *shadow)
                     if (unlikely(abs(x) > t)) {
                         node_page_state_add(x, pgdat, item) {
                             atomic_long_add(x, &pgdat->vm_stat[item]);
-	                        atomic_long_add(x, &vm_node_stat[item]);
+                            atomic_long_add(x, &vm_node_stat[item]);
                         }
                         x = 0;
                     }
@@ -17010,7 +17104,7 @@ cma_init_reserved_areas(void) {
                             unsigned long word;
 
                             get_pfnblock_bitmap_bitidx(page, pfn, &bitmap_word, &bitidx) {
-                                	unsigned long *bitmap;
+                                    unsigned long *bitmap;
                                 unsigned long word_bitidx;
 
                             #ifdef CONFIG_MEMORY_ISOLATION
@@ -31728,7 +31822,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
                 raw_spin_unlock_irqrestore(&fbc->lock, flags);
                 return ret;
             }
-	        return ret < 0 ? 0 : ret;
+            return ret < 0 ? 0 : ret;
         }
     }
 
