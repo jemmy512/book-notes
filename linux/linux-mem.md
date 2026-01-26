@@ -4075,7 +4075,48 @@ bool free_pages_prepare(struct page *page,
             if (!objcg)
                 return;
 
-            obj_cgroup_uncharge_pages(objcg, nr_pages);
+            obj_cgroup_uncharge_pages(objcg, nr_pages) {
+                struct mem_cgroup *memcg;
+
+                memcg = get_mem_cgroup_from_objcg(objcg);
+
+                account_kmem_nmi_safe(memcg, -nr_pages) {
+                    if (likely(!in_nmi())) {
+                        mod_memcg_state(memcg, MEMCG_KMEM, val) {
+                            int i = memcg_stats_index(idx);
+                            int cpu;
+
+                            if (mem_cgroup_disabled())
+                                return;
+
+                            if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
+                                return;
+
+                            while (memcg_is_dying(memcg))
+                                memcg = parent_mem_cgroup(memcg);
+
+                            cpu = get_cpu();
+
+                            this_cpu_add(memcg->vmstats_percpu->state[i], val);
+                            val = memcg_state_val_in_pages(idx, val);
+                            memcg_rstat_updated(memcg, val, cpu);
+                            trace_mod_memcg_state(memcg, idx, val);
+
+                            put_cpu();
+                        }
+                    } else {
+                        /* preemption is disabled in_nmi(). */
+                        css_rstat_updated(&memcg->css, smp_processor_id());
+                        atomic_add(val, &memcg->kmem_stat);
+                    }
+                }
+                memcg1_account_kmem(memcg, -nr_pages);
+                if (!mem_cgroup_is_root(memcg)) {
+                    refill_stock(memcg, nr_pages);
+                }
+
+                css_put(&memcg->css);
+            }
             page->memcg_data = 0;
             obj_cgroup_put(objcg);
         }
@@ -5526,24 +5567,23 @@ redo:
                 /* Check the slab->freelist and either transfer the freelist to the
                  * per cpu freelist or deactivate the slab. */
                 freelist = get_freelist(s, slab) {
-                    struct slab new;
-                    unsigned long counters;
-                    void *freelist;
+                        struct freelist_counters old, new;
 
-                    do {
-                        freelist = slab->freelist;
-                        counters = slab->counters;
+                        lockdep_assert_held(this_cpu_ptr(&s->cpu_slab->lock));
 
-                        new.counters = counters;
-                        new.inuse = slab->objects;
-                        new.frozen = freelist != NULL;
-                    } while (!__slab_update_freelist(s, slab,
-                        freelist, counters,
-                        NULL, new.counters,
-                        "get_freelist")
-                    );
+                        do {
+                            old.freelist = slab->freelist;
+                            old.counters = slab->counters;
 
-                    return freelist;
+                            new.freelist = NULL;
+                            new.counters = old.counters;
+
+                            new.inuse = old.objects;
+                            new.frozen = old.freelist != NULL;
+
+                        } while (!__slab_update_freelist(s, slab, &old, &new, "get_freelist"));
+
+                        return old.freelist;
                 }
                 if (!freelist) {
                     c->slab = NULL;
@@ -6085,7 +6125,7 @@ slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
         if (likely(size == 1)) {
             memcg_alloc_abort_single(s, *p) {
                 if (likely(slab_free_hook(s, object, slab_want_init_on_free(s), false))) {
-		            do_slab_free(s, virt_to_slab(object), object, object, 1, _RET_IP_);
+                    do_slab_free(s, virt_to_slab(object), object, object, 1, _RET_IP_);
                 }
             }
             *p = NULL;
@@ -6260,49 +6300,65 @@ void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
     local_unlock(&obj_stock.lock);
 out:
     if (nr_pages) {
-        obj_cgroup_uncharge_pages(objcg, nr_pages) {
+        obj_cgroup_uncharge_pages(objcg, nr_pages);
+    }
+}
+
+void drain_obj_stock(struct obj_stock_pcp *stock)
+{
+    struct obj_cgroup *old = READ_ONCE(stock->cached_objcg);
+
+    if (!old)
+        return;
+
+    if (stock->nr_bytes) {
+        unsigned int nr_pages = stock->nr_bytes >> PAGE_SHIFT;
+        unsigned int nr_bytes = stock->nr_bytes & (PAGE_SIZE - 1);
+
+        if (nr_pages) {
             struct mem_cgroup *memcg;
 
-            memcg = get_mem_cgroup_from_objcg(objcg);
+            memcg = get_mem_cgroup_from_objcg(old);
 
-            account_kmem_nmi_safe(memcg, -nr_pages) {
-                if (likely(!in_nmi())) {
-                    mod_memcg_state(memcg, MEMCG_KMEM, val) {
-                        int i = memcg_stats_index(idx);
-                        int cpu;
-
-                        if (mem_cgroup_disabled())
-                            return;
-
-                        if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
-                            return;
-
-                        while (memcg_is_dying(memcg))
-                            memcg = parent_mem_cgroup(memcg);
-
-                        cpu = get_cpu();
-
-                        this_cpu_add(memcg->vmstats_percpu->state[i], val);
-                        val = memcg_state_val_in_pages(idx, val);
-                        memcg_rstat_updated(memcg, val, cpu);
-                        trace_mod_memcg_state(memcg, idx, val);
-
-                        put_cpu();
-                    }
-                } else {
-                    /* preemption is disabled in_nmi(). */
-                    css_rstat_updated(&memcg->css, smp_processor_id());
-                    atomic_add(val, &memcg->kmem_stat);
-                }
-            }
+            mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
             memcg1_account_kmem(memcg, -nr_pages);
-            if (!mem_cgroup_is_root(memcg)) {
-                refill_stock(memcg, nr_pages);
-            }
+            if (!mem_cgroup_is_root(memcg))
+                memcg_uncharge(memcg, nr_pages);
 
             css_put(&memcg->css);
         }
+
+        /* The leftover is flushed to the centralized per-memcg value.
+         * On the next attempt to refill obj stock it will be moved
+         * to a per-cpu stock (probably, on an other CPU), see
+         * refill_obj_stock().
+         *
+         * How often it's flushed is a trade-off between the memory
+         * limit enforcement accuracy and potential CPU contention,
+         * so it might be changed in the future. */
+        atomic_add(nr_bytes, &old->nr_charged_bytes);
+        stock->nr_bytes = 0;
     }
+
+    /* Flush the vmstat data in current stock */
+    if (stock->nr_slab_reclaimable_b || stock->nr_slab_unreclaimable_b) {
+        if (stock->nr_slab_reclaimable_b) {
+            mod_objcg_mlstate(old, stock->cached_pgdat,
+                      NR_SLAB_RECLAIMABLE_B,
+                      stock->nr_slab_reclaimable_b);
+            stock->nr_slab_reclaimable_b = 0;
+        }
+        if (stock->nr_slab_unreclaimable_b) {
+            mod_objcg_mlstate(old, stock->cached_pgdat,
+                      NR_SLAB_UNRECLAIMABLE_B,
+                      stock->nr_slab_unreclaimable_b);
+            stock->nr_slab_unreclaimable_b = 0;
+        }
+        stock->cached_pgdat = NULL;
+    }
+
+    WRITE_ONCE(stock->cached_objcg, NULL);
+    obj_cgroup_put(old);
 }
 ```
 

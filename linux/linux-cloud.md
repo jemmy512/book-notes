@@ -2216,6 +2216,201 @@ int cgroup_get_tree(struct fs_context *fc)
 }
 ```
 
+### cgroup_kf_syscall_ops
+
+```c
+static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
+	.show_options		= cgroup_show_options,
+	.mkdir			= cgroup_mkdir,
+	.rmdir			= cgroup_rmdir,
+	.show_path		= cgroup_show_path,
+};
+```
+
+#### cgroup_rmdir
+
+```c
+int cgroup_rmdir(struct kernfs_node *kn)
+{
+	struct cgroup *cgrp;
+	int ret = 0;
+
+	cgrp = cgroup_kn_lock_live(kn, false);
+	if (!cgrp)
+		return 0;
+
+	ret = cgroup_destroy_locked(cgrp);
+	if (!ret)
+		TRACE_CGROUP_PATH(rmdir, cgrp);
+
+	cgroup_kn_unlock(kn);
+	return ret;
+}
+
+int cgroup_destroy_locked(struct cgroup *cgrp)
+	__releases(&cgroup_mutex) __acquires(&cgroup_mutex)
+{
+	struct cgroup *tcgrp, *parent = cgroup_parent(cgrp);
+	struct cgroup_subsys_state *css;
+	struct cgrp_cset_link *link;
+	int ssid, ret;
+
+	lockdep_assert_held(&cgroup_mutex);
+
+	/*
+	 * Only migration can raise populated from zero and we're already
+	 * holding cgroup_mutex.
+	 */
+	if (cgroup_is_populated(cgrp))
+		return -EBUSY;
+
+	/*
+	 * Make sure there's no live children.  We can't test emptiness of
+	 * ->self.children as dead children linger on it while being
+	 * drained; otherwise, "rmdir parent/child parent" may fail.
+	 */
+	if (css_has_online_children(&cgrp->self))
+		return -EBUSY;
+
+	/*
+	 * Mark @cgrp and the associated csets dead.  The former prevents
+	 * further task migration and child creation by disabling
+	 * cgroup_kn_lock_live().  The latter makes the csets ignored by
+	 * the migration path.
+	 */
+	cgrp->self.flags &= ~CSS_ONLINE;
+
+	spin_lock_irq(&css_set_lock);
+	list_for_each_entry(link, &cgrp->cset_links, cset_link)
+		link->cset->dead = true;
+	spin_unlock_irq(&css_set_lock);
+
+	/* initiate massacre of all css's */
+	for_each_css(css, ssid, cgrp) {
+		kill_css(css) {
+            if (css->flags & CSS_DYING)
+                return;
+
+            /*
+            * Call css_killed(), if defined, before setting the CSS_DYING flag
+            */
+            if (css->ss->css_killed)
+                css->ss->css_killed(css);
+
+            css->flags |= CSS_DYING;
+
+            /*
+            * This must happen before css is disassociated with its cgroup.
+            * See seq_css() for details.
+            */
+            css_clear_dir(css);
+
+            /*
+            * Killing would put the base ref, but we need to keep it alive
+            * until after ->css_offline().
+            */
+            css_get(css);
+
+            /*
+            * cgroup core guarantees that, by the time ->css_offline() is
+            * invoked, no new css reference will be given out via
+            * css_tryget_online().  We can't simply call percpu_ref_kill() and
+            * proceed to offlining css's because percpu_ref_kill() doesn't
+            * guarantee that the ref is seen as killed on all CPUs on return.
+            *
+            * Use percpu_ref_kill_and_confirm() to get notifications as each
+            * css is confirmed to be seen as killed on all CPUs.
+            */
+            percpu_ref_kill_and_confirm(&css->refcnt, css_killed_ref_fn);
+        }
+    }
+
+	/* clear and remove @cgrp dir, @cgrp has an extra ref on its kn */
+	css_clear_dir(&cgrp->self);
+	kernfs_remove(cgrp->kn);
+
+	if (cgroup_is_threaded(cgrp))
+		parent->nr_threaded_children--;
+
+	spin_lock_irq(&css_set_lock);
+	for (tcgrp = parent; tcgrp; tcgrp = cgroup_parent(tcgrp)) {
+		tcgrp->nr_descendants--;
+		tcgrp->nr_dying_descendants++;
+		/*
+		 * If the dying cgroup is frozen, decrease frozen descendants
+		 * counters of ancestor cgroups.
+		 */
+		if (test_bit(CGRP_FROZEN, &cgrp->flags))
+			tcgrp->freezer.nr_frozen_descendants--;
+	}
+	spin_unlock_irq(&css_set_lock);
+
+	cgroup1_check_for_release(parent);
+
+	ret = blocking_notifier_call_chain(&cgroup_lifetime_notifier,
+					   CGROUP_LIFETIME_OFFLINE, cgrp);
+	WARN_ON_ONCE(notifier_to_errno(ret));
+
+	/* put the base reference */
+	percpu_ref_kill(&cgrp->self.refcnt);
+
+	return 0;
+};
+
+static void css_killed_ref_fn(struct percpu_ref *ref)
+{
+	struct cgroup_subsys_state *css =
+		container_of(ref, struct cgroup_subsys_state, refcnt);
+
+	if (atomic_dec_and_test(&css->online_cnt)) {
+		INIT_WORK(&css->destroy_work, css_killed_work_fn);
+		queue_work(cgroup_offline_wq, &css->destroy_work);
+	}
+}
+
+static void css_killed_work_fn(struct work_struct *work)
+{
+	struct cgroup_subsys_state *css =
+		container_of(work, struct cgroup_subsys_state, destroy_work);
+
+	cgroup_lock();
+
+	do {
+		offline_css(css) {
+            struct cgroup_subsys *ss = css->ss;
+
+            lockdep_assert_held(&cgroup_mutex);
+
+            if (!(css->flags & CSS_ONLINE))
+                return;
+
+            if (ss->css_offline)
+                ss->css_offline(css);
+
+            css->flags &= ~CSS_ONLINE;
+            RCU_INIT_POINTER(css->cgroup->subsys[ss->id], NULL);
+
+            wake_up_all(&css->cgroup->offline_waitq);
+
+            css->cgroup->nr_dying_subsys[ss->id]++;
+            /*
+            * Parent css and cgroup cannot be freed until after the freeing
+            * of child css, see css_free_rwork_fn().
+            */
+            while ((css = css->parent)) {
+                css->nr_descendants--;
+                css->cgroup->nr_dying_subsys[ss->id]++;
+            }
+        }
+		css_put(css);
+		/* @css can't go away while we're holding cgroup_mutex */
+		css = css->parent;
+	} while (css && atomic_dec_and_test(&css->online_cnt));
+
+	cgroup_unlock();
+}
+```
+
 ## mem_cgroup
 
 ![](../images/kernel/cgroup-mem_cgroup_charge.svg)
