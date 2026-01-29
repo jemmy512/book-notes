@@ -433,7 +433,9 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 
     /* Check whether the interrupt nests into another interrupt
      * thread. */
-    nested = irq_settings_is_nested_thread(desc);
+    nested = irq_settings_is_nested_thread(desc) {
+        return !(desc->status_use_accessors & _IRQ_NOTHREAD);
+    }
     if (nested) {
         if (!new->thread_fn) {
             ret = -EINVAL;
@@ -445,7 +447,39 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
         new->handler = irq_nested_primary_handler;
     } else {
         if (irq_settings_can_thread(desc)) {
-            ret = irq_setup_forced_threading(new);
+            ret = irq_setup_forced_threading(new) {
+                if (!force_irqthreads())
+                    return 0;
+                if (new->flags & (IRQF_NO_THREAD | IRQF_PERCPU | IRQF_ONESHOT))
+                    return 0;
+
+                /* No further action required for interrupts which are requested as
+                * threaded interrupts already */
+                if (new->handler == irq_default_primary_handler)
+                    return 0;
+
+                new->flags |= IRQF_ONESHOT;
+
+                /* Handle the case where we have a real primary handler and a
+                * thread handler. We force thread them as well by creating a
+                * secondary action. */
+                if (new->handler && new->thread_fn) {
+                    /* Allocate the secondary action */
+                    new->secondary = kzalloc(sizeof(struct irqaction), GFP_KERNEL);
+                    if (!new->secondary)
+                        return -ENOMEM;
+                    new->secondary->handler = irq_forced_secondary_handler;
+                    new->secondary->thread_fn = new->thread_fn;
+                    new->secondary->dev_id = new->dev_id;
+                    new->secondary->irq = new->irq;
+                    new->secondary->name = new->name;
+                }
+                /* Deal with the primary handler */
+                set_bit(IRQTF_FORCED_THREAD, &new->thread_flags);
+                new->thread_fn = new->handler;
+                new->handler = irq_default_primary_handler;
+                return 0;
+            }
             if (ret)
                 goto out_mput;
         }
@@ -545,15 +579,13 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
             (oldtype != (new->flags & IRQF_TRIGGER_MASK)))
             goto mismatch;
 
-        if ((old->flags & IRQF_ONESHOT) &&
-            (new->flags & IRQF_COND_ONESHOT))
+        if ((old->flags & IRQF_ONESHOT) && (new->flags & IRQF_COND_ONESHOT))
             new->flags |= IRQF_ONESHOT;
         else if ((old->flags ^ new->flags) & IRQF_ONESHOT)
             goto mismatch;
 
         /* All handlers must agree on per-cpuness */
-        if ((old->flags & IRQF_PERCPU) !=
-            (new->flags & IRQF_PERCPU))
+        if ((old->flags & IRQF_PERCPU) != (new->flags & IRQF_PERCPU))
             goto mismatch;
 
         /* add new interrupt at end of irq queue */
@@ -622,8 +654,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
     if (!shared) {
         /* Setup the type (level, edge polarity) if configured: */
         if (new->flags & IRQF_TRIGGER_MASK) {
-            ret = __irq_set_trigger(desc,
-                        new->flags & IRQF_TRIGGER_MASK);
+            ret = __irq_set_trigger(desc, new->flags & IRQF_TRIGGER_MASK);
 
             if (ret)
                 goto out_unlock;
@@ -782,6 +813,54 @@ int irq_thread(void *data)
     init_task_work(&on_exit_work, irq_thread_dtor);
     task_work_add(current, &on_exit_work, TWA_NONE);
 
+    irq_wait_for_interrupt = []() {
+        for (;;) {
+            set_current_state(TASK_INTERRUPTIBLE);
+            irq_thread_check_affinity(desc, action) {
+                cpumask_var_t mask;
+
+                if (!test_and_clear_bit(IRQTF_AFFINITY, &action->thread_flags))
+                    return;
+
+                __set_current_state(TASK_RUNNING);
+
+                /* In case we are out of memory we set IRQTF_AFFINITY again and
+                * try again next time */
+                if (!alloc_cpumask_var(&mask, GFP_KERNEL)) {
+                    set_bit(IRQTF_AFFINITY, &action->thread_flags);
+                    return;
+                }
+
+                scoped_guard(raw_spinlock_irq, &desc->lock) {
+                    const struct cpumask *m;
+
+                    m = irq_data_get_effective_affinity_mask(&desc->irq_data) {
+                        return d->common->effective_affinity;
+                    }
+                    cpumask_copy(mask, m);
+                }
+
+                set_cpus_allowed_ptr(current, mask);
+                free_cpumask_var(mask);
+            }
+
+            if (kthread_should_stop()) {
+                /* may need to run one last time */
+                if (test_and_clear_bit(IRQTF_RUNTHREAD, &action->thread_flags)) {
+                    __set_current_state(TASK_RUNNING);
+                    return 0;
+                }
+                __set_current_state(TASK_RUNNING);
+                return -1;
+            }
+
+            if (test_and_clear_bit(IRQTF_RUNTHREAD, &action->thread_flags)) {
+                __set_current_state(TASK_RUNNING);
+                return 0;
+            }
+            schedule();
+        }
+    }
     while (!irq_wait_for_interrupt(desc, action)) {
         irqreturn_t action_ret;
 
@@ -820,6 +899,20 @@ int irq_thread(void *data)
 
     return 0;
 }
+
+static irqreturn_t irq_forced_thread_fn(struct irq_desc *desc, struct irqaction *action)
+{
+    irqreturn_t ret;
+
+    local_bh_disable();
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+        local_irq_disable();
+    ret = irq_thread_fn(desc, action);
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+        local_irq_enable();
+    local_bh_enable();
+    return ret;
+}
 ```
 
 ## irq_thead_fn
@@ -832,7 +925,64 @@ static irqreturn_t irq_thread_fn(struct irq_desc *desc, struct irqaction *action
     if (ret == IRQ_HANDLED)
         atomic_inc(&desc->threads_handled);
 
-    irq_finalize_oneshot(desc, action);
+    irq_finalize_oneshot(desc, action) {
+        if (!(desc->istate & IRQS_ONESHOT) ||
+            action->handler == irq_forced_secondary_handler)
+            return;
+    again:
+        chip_bus_lock(desc);
+        raw_spin_lock_irq(&desc->lock);
+
+        /* Implausible though it may be we need to protect us against
+        * the following scenario:
+        *
+        * The thread is faster done than the hard interrupt handler
+        * on the other CPU. If we unmask the irq line then the
+        * interrupt can come in again and masks the line, leaves due
+        * to IRQS_INPROGRESS and the irq line is masked forever.
+        *
+        * This also serializes the state of shared oneshot handlers
+        * versus "desc->threads_oneshot |= action->thread_mask;" in
+        * irq_wake_thread(). See the comment there which explains the
+        * serialization. */
+        if (unlikely(irqd_irq_inprogress(&desc->irq_data))) {
+            raw_spin_unlock_irq(&desc->lock);
+            chip_bus_sync_unlock(desc);
+            cpu_relax();
+            goto again;
+        }
+
+        /* Now check again, whether the thread should run. Otherwise
+        * we would clear the threads_oneshot bit of this thread which
+        * was just set. */
+        if (test_bit(IRQTF_RUNTHREAD, &action->thread_flags))
+            goto out_unlock;
+
+        desc->threads_oneshot &= ~action->thread_mask;
+
+        if (!desc->threads_oneshot && !irqd_irq_disabled(&desc->irq_data) && irqd_irq_masked(&desc->irq_data)) {
+            unmask_threaded_irq(desc) {
+                struct irq_chip *chip = desc->irq_data.chip;
+
+                if (chip->flags & IRQCHIP_EOI_THREADED)
+                    chip->irq_eoi(&desc->irq_data);
+
+                unmask_irq(desc) {
+                    if (!irqd_irq_masked(&desc->irq_data))
+                        return;
+
+                    if (desc->irq_data.chip->irq_unmask) {
+                        desc->irq_data.chip->irq_unmask(&desc->irq_data);
+                        irq_state_clr_masked(desc);
+                    }
+                }
+            }
+        }
+
+    out_unlock:
+        raw_spin_unlock_irq(&desc->lock);
+        chip_bus_sync_unlock(desc);
+    }
     return ret;
 }
 ```
@@ -1109,6 +1259,179 @@ static inline void arch_local_irq_restore(unsigned long flags)
 }
 ```
 
+# local_bh_disable
+
+```c
+static inline void local_bh_disable(void)
+{
+    __local_bh_disable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET);
+}
+
+void __local_bh_disable_ip(unsigned long ip, unsigned int cnt)
+{
+    unsigned long flags;
+    int newcnt;
+
+    WARN_ON_ONCE(in_hardirq());
+
+    lock_map_acquire_read(&bh_lock_map);
+
+    /* First entry of a task into a BH disabled section? */
+    if (!current->softirq_disable_cnt) {
+        if (preemptible()) {
+            if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK))
+                local_lock(&softirq_ctrl.lock);
+            else
+                migrate_disable();
+
+            /* Required to meet the RCU bottomhalf requirements. */
+            rcu_read_lock();
+        } else {
+            DEBUG_LOCKS_WARN_ON(this_cpu_read(softirq_ctrl.cnt));
+        }
+    }
+
+    /* Track the per CPU softirq disabled state. On RT this is per CPU
+     * state to allow preemption of bottom half disabled sections. */
+    if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK)) {
+        newcnt = this_cpu_add_return(softirq_ctrl.cnt, cnt);
+        /* Reflect the result in the task state to prevent recursion on the
+         * local lock and to make softirq_count() & al work. */
+        current->softirq_disable_cnt = newcnt;
+
+        if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && newcnt == cnt) {
+            raw_local_irq_save(flags);
+            lockdep_softirqs_off(ip);
+            raw_local_irq_restore(flags);
+        }
+    } else {
+        bool sirq_dis = false;
+
+        if (!current->softirq_disable_cnt)
+            sirq_dis = true;
+
+        this_cpu_add(softirq_ctrl.cnt, cnt);
+        current->softirq_disable_cnt += cnt;
+        WARN_ON_ONCE(current->softirq_disable_cnt < 0);
+
+        if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && sirq_dis) {
+            raw_local_irq_save(flags);
+            lockdep_softirqs_off(ip);
+            raw_local_irq_restore(flags);
+        }
+    }
+}
+```
+
+# local_bh_enable
+
+```c
+static inline void local_bh_enable(void)
+{
+    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
+        bool preempt_on = preemptible() {
+            int cnt = preempt_count() {
+                return READ_ONCE(current_thread_info()->preempt.count);
+            }
+            return (cnt == 0 && !irqs_disabled());
+        }
+        unsigned long flags;
+        u32 pending;
+        int curcnt;
+
+        WARN_ON_ONCE(in_hardirq());
+        lockdep_assert_irqs_enabled();
+
+        lock_map_release(&bh_lock_map);
+
+        local_irq_save(flags);
+        curcnt = __this_cpu_read(softirq_ctrl.cnt);
+
+        /* If this is not reenabling soft interrupts, no point in trying to
+        * run pending ones. */
+        if (curcnt != cnt)
+            goto out;
+
+        pending = local_softirq_pending() {
+           return __this_cpu_read(local_softirq_pending_ref);
+        }
+        if (!pending)
+            goto out;
+
+        /* If this was called from non preemptible context, wake up the
+        * softirq daemon. */
+        if (!preempt_on) {
+            wakeup_softirqd();
+            goto out;
+        }
+
+        /* softirq is handled in preempt on ctx */
+
+        /* Adjust softirq count to SOFTIRQ_OFFSET which makes
+        * in_serving_softirq() become true. */
+        cnt = SOFTIRQ_OFFSET;
+        __local_bh_enable(cnt, false);
+        __do_softirq();
+
+    out:
+        __local_bh_enable(cnt, preempt_on) {
+            unsigned long flags;
+            int newcnt;
+
+            WARN_ON_ONCE(in_hardirq());
+
+            lock_map_acquire_read(&bh_lock_map);
+
+            /* First entry of a task into a BH disabled section? */
+            if (!current->softirq_disable_cnt) {
+                if (preemptible()) {
+                    if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK))
+                        local_lock(&softirq_ctrl.lock);
+                    else
+                        migrate_disable();
+
+                    /* Required to meet the RCU bottomhalf requirements. */
+                    rcu_read_lock();
+                } else {
+                    DEBUG_LOCKS_WARN_ON(this_cpu_read(softirq_ctrl.cnt));
+                }
+            }
+
+            /* Track the per CPU softirq disabled state. On RT this is per CPU
+            * state to allow preemption of bottom half disabled sections. */
+            if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK)) {
+                newcnt = this_cpu_add_return(softirq_ctrl.cnt, cnt);
+                /* Reflect the result in the task state to prevent recursion on the
+                * local lock and to make softirq_count() & al work. */
+                current->softirq_disable_cnt = newcnt;
+
+                if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && newcnt == cnt) {
+                    raw_local_irq_save(flags);
+                    lockdep_softirqs_off(ip);
+                    raw_local_irq_restore(flags);
+                }
+            } else {
+                bool sirq_dis = false;
+
+                if (!current->softirq_disable_cnt)
+                    sirq_dis = true;
+
+                this_cpu_add(softirq_ctrl.cnt, cnt);
+                current->softirq_disable_cnt += cnt;
+                WARN_ON_ONCE(current->softirq_disable_cnt < 0);
+
+                if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && sirq_dis) {
+                    raw_local_irq_save(flags);
+                    lockdep_softirqs_off(ip);
+                    raw_local_irq_restore(flags);
+                }
+            }
+        }
+        local_irq_restore(flags);
+    }
+}
+```
+
 # preempt_count
 
 ![](../images/kernel/intr-preempt_count.png)
@@ -1182,111 +1505,12 @@ static DEFINE_PER_CPU(struct softirq_ctrl, softirq_ctrl) = {
 
 static inline void local_bh_disable(void)
 {
-    __local_bh_disable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
-        unsigned long flags;
-        int newcnt;
-
-        WARN_ON_ONCE(in_hardirq());
-
-        lock_map_acquire_read(&bh_lock_map);
-
-        /* First entry of a task into a BH disabled section? */
-        if (!current->softirq_disable_cnt) {
-            if (preemptible()) {
-                local_lock(&softirq_ctrl.lock);
-                /* Required to meet the RCU bottomhalf requirements. */
-                rcu_read_lock();
-            } else {
-                DEBUG_LOCKS_WARN_ON(this_cpu_read(softirq_ctrl.cnt));
-            }
-        }
-
-        /* Track the per CPU softirq disabled state. On RT this is per CPU
-        * state to allow preemption of bottom half disabled sections. */
-        newcnt = __this_cpu_add_return(softirq_ctrl.cnt, cnt);
-
-        /* Reflect the result in the task state to prevent recursion on the
-        * local lock and to make softirq_count() & al work. */
-        current->softirq_disable_cnt = newcnt;
-
-        if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && newcnt == cnt) {
-            raw_local_irq_save(flags);
-            lockdep_softirqs_off(ip);
-            raw_local_irq_restore(flags);
-        }
-    }
+    __local_bh_disable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET);
 }
 
 static inline void local_bh_enable(void)
 {
-    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
-        bool preempt_on = preemptible() {
-            int cnt = preempt_count() {
-                return READ_ONCE(current_thread_info()->preempt.count);
-            }
-            return (cnt == 0 && !irqs_disabled());
-        }
-        unsigned long flags;
-        u32 pending;
-        int curcnt;
-
-        WARN_ON_ONCE(in_hardirq());
-        lockdep_assert_irqs_enabled();
-
-        lock_map_release(&bh_lock_map);
-
-        local_irq_save(flags);
-        curcnt = __this_cpu_read(softirq_ctrl.cnt);
-
-        /* If this is not reenabling soft interrupts, no point in trying to
-        * run pending ones. */
-        if (curcnt != cnt)
-            goto out;
-
-        pending = local_softirq_pending() {
-           return __this_cpu_read(local_softirq_pending_ref);
-        }
-        if (!pending)
-            goto out;
-
-        /* If this was called from non preemptible context, wake up the
-        * softirq daemon. */
-        if (!preempt_on) {
-            wakeup_softirqd();
-            goto out;
-        }
-
-        /* softirq is handled in preempt on ctx */
-
-        /* Adjust softirq count to SOFTIRQ_OFFSET which makes
-        * in_serving_softirq() become true. */
-        cnt = SOFTIRQ_OFFSET;
-        __local_bh_enable(cnt, false);
-        __do_softirq();
-
-    out:
-        __local_bh_enable(cnt, preempt_on) {
-            unsigned long flags;
-            int newcnt;
-
-            DEBUG_LOCKS_WARN_ON(current->softirq_disable_cnt != this_cpu_read(softirq_ctrl.cnt));
-
-            if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && softirq_count() == cnt) {
-                raw_local_irq_save(flags);
-                lockdep_softirqs_on(_RET_IP_);
-                raw_local_irq_restore(flags);
-            }
-
-            newcnt = __this_cpu_sub_return(softirq_ctrl.cnt, cnt);
-            current->softirq_disable_cnt = newcnt;
-
-            if (!newcnt && unlock) {
-                rcu_read_unlock();
-                local_unlock(&softirq_ctrl.lock);
-            }
-        }
-        local_irq_restore(flags);
-    }
+    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET);
 }
 ```
 
@@ -1916,29 +2140,6 @@ void open_softirq(int nr, void (*action)(struct softirq_action *))
 
 ## raise_softirq_irqoff
 
-```c
-/*         PREEMPT_MASK:    0x000000ff
- *         SOFTIRQ_MASK:    0x0000ff00
- *         HARDIRQ_MASK:    0x000f0000
- *             NMI_MASK:    0x00f00000
- * PREEMPT_NEED_RESCHED:    0x80000000 */
-
-struct thread_info {
-    union {
-        u64     preempt_count; /* 0 => preemptible, <0 => bug */
-        struct {
-#ifdef CONFIG_CPU_BIG_ENDIAN
-            u32    need_resched;
-            u32    count;
-#else
-            u32    count;
-            u32    need_resched;
-#endif
-        } preempt;
-    };
-};
-```
-
 ![](../images/kernel/intr-preempt_count.png)
 
 To summarize, each softirq goes through the following stages:
@@ -2241,4 +2442,121 @@ static inline void kstat_incr_softirqs_this_cpu(unsigned int irq)
 
 DECLARE_PER_CPU(struct kernel_stat, kstat);
 DECLARE_PER_CPU(struct kernel_cpustat, kernel_cpustat);
+```
+
+## /proc/irq/<irq>/smp_affinity
+
+```c
+proc_create_data("smp_affinity", umode, desc->dir, &irq_affinity_proc_ops, irqp);
+
+static const struct proc_ops irq_affinity_proc_ops = {
+    .proc_open    = irq_affinity_proc_open,
+    .proc_read    = seq_read,
+    .proc_lseek    = seq_lseek,
+    .proc_release    = single_release,
+    .proc_write    = irq_affinity_proc_write,
+};
+
+static ssize_t irq_affinity_proc_write(struct file *file,
+        const char __user *buffer, size_t count, loff_t *pos)
+{
+    return write_irq_affinity(0, file, buffer, count, pos) {
+        unsigned int irq = (int)(long)pde_data(file_inode(file));
+        cpumask_var_t new_value;
+        int err;
+
+        if (!irq_can_set_affinity_usr(irq) || no_irq_affinity)
+            return -EPERM;
+
+        if (!zalloc_cpumask_var(&new_value, GFP_KERNEL))
+            return -ENOMEM;
+
+        if (type)
+            err = cpumask_parselist_user(buffer, count, new_value);
+        else
+            err = cpumask_parse_user(buffer, count, new_value);
+        if (err)
+            goto free_cpumask;
+
+        /* Do not allow disabling IRQs completely - it's a too easy
+        * way to make the system unusable accidentally :-) At least
+        * one online CPU still has to be targeted. */
+        if (!cpumask_intersects(new_value, cpu_online_mask)) {
+            /* Special case for empty set - allow the architecture code
+            * to set default SMP affinity. */
+            err = irq_select_affinity_usr(irq) ? -EINVAL : count;
+        } else {
+            err = irq_set_affinity(irq, new_value) {
+                return __irq_set_affinity(irq, cpumask, false) {
+                    struct irq_desc *desc = irq_to_desc(irq);
+
+                    if (!desc)
+                        return -EINVAL;
+
+                    guard(raw_spinlock_irqsave)(&desc->lock);
+                    return irq_set_affinity_locked(irq_desc_get_irq_data(desc), mask, force);
+                        --->
+                }
+            }
+            if (!err)
+                err = count;
+        }
+
+    free_cpumask:
+        free_cpumask_var(new_value);
+        return err;
+    }
+}
+
+int irq_set_affinity_locked(struct irq_data *data, const struct cpumask *mask,
+                bool force)
+{
+    struct irq_chip *chip = irq_data_get_irq_chip(data);
+    struct irq_desc *desc = irq_data_to_desc(data);
+    int ret = 0;
+
+    if (!chip || !chip->irq_set_affinity)
+        return -EINVAL;
+
+    if (irq_set_affinity_deactivated(data, mask) {
+        struct irq_desc *desc = irq_data_to_desc(data);
+
+        /* Handle irq chips which can handle affinity only in activated
+        * state correctly
+        *
+        * If the interrupt is not yet activated, just store the affinity
+        * mask and do not call the chip driver at all. On activation the
+        * driver has to make sure anyway that the interrupt is in a
+        * usable state so startup works. */
+        if (!IS_ENABLED(CONFIG_IRQ_DOMAIN_HIERARCHY) ||
+            irqd_is_activated(data) || !irqd_affinity_on_activate(data))
+            return false;
+
+        cpumask_copy(desc->irq_common_data.affinity, mask);
+        irq_data_update_effective_affinity(data, mask) {
+            cpumask_copy(d->common->effective_affinity, m);
+        }
+        irqd_set(data, IRQD_AFFINITY_SET);
+        return true;
+    })
+        return 0;
+
+    if (irq_can_move_pcntxt(data) && !irqd_is_setaffinity_pending(data)) {
+        ret = irq_try_set_affinity(data, mask, force);
+    } else {
+        irqd_set_move_pending(data);
+        irq_copy_pending(desc, mask);
+    }
+
+    if (desc->affinity_notify) {
+        kref_get(&desc->affinity_notify->kref);
+        if (!schedule_work(&desc->affinity_notify->work)) {
+            /* Work was already scheduled, drop our extra ref */
+            kref_put(&desc->affinity_notify->kref, desc->affinity_notify->release);
+        }
+    }
+    irqd_set(data, IRQD_AFFINITY_SET);
+
+    return ret;
+}
 ```
