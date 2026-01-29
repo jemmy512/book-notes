@@ -8215,6 +8215,90 @@ __up_write(struct rw_semaphore *sem)
 
 * [mlock锁原理剖析 - 内核工匠](https://mp.weixin.qq.com/s/2b7zHDXoQycoMwlPO_UUrg)
 
+## local_lock
+
+```c
+#ifndef CONFIG_PREEMPT_RT
+
+typedef struct {
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    struct lockdep_map    dep_map;
+    struct task_struct    *owner;
+#endif
+} local_lock_t;
+
+#else
+
+typedef spinlock_t local_lock_t;
+
+#endif
+
+#define local_lock(lock)        __local_lock(this_cpu_ptr(lock))
+#define local_unlock(lock)        __local_unlock(this_cpu_ptr(lock))
+
+#define local_lock_nested_bh(_lock) \
+    __local_lock_nested_bh(this_cpu_ptr(_lock))
+
+#define local_unlock_nested_bh(_lock) \
+    __local_unlock_nested_bh(this_cpu_ptr(_lock))
+```
+
+### local_lock_rt
+
+```c
+#define __local_lock(__lock)        \
+    do {                            \
+        migrate_disable();          \
+        spin_lock((__lock));        \
+    } while (0)
+
+#define __local_lock_nested_bh(lock) \
+do { \
+    lockdep_assert_in_softirq_func(); \
+    spin_lock((lock)); \
+} while (0)
+```
+
+### local_lock_no_rt
+
+```c
+#define __local_lock(lock)          \
+    do {                            \
+        preempt_disable();          \
+        __local_lock_acquire(lock); \
+    } while (0)
+
+#define __local_lock_nested_bh(lock) \
+    do { \
+        lockdep_assert_in_softirq(); \
+        local_lock_acquire((lock)); \
+    } while (0)
+
+#define __local_lock_acquire(lock) \
+    do { \
+        local_trylock_t *__tl; \
+        local_lock_t *__l; \
+ \
+        __l = (local_lock_t *)(lock); \
+        __tl = (local_trylock_t *)__l; \
+        _Generic((lock), \
+            local_trylock_t *: ({ \
+                lockdep_assert(__tl->acquired == 0); \
+                WRITE_ONCE(__tl->acquired, 1); \
+            }), \
+            local_lock_t *: (void)0); \
+        local_lock_acquire(__l); \
+    } while (0)
+
+static inline void local_lock_acquire(local_lock_t *l)
+{
+    lock_map_acquire(&l->dep_map);
+    DEBUG_LOCKS_WARN_ON(l->owner);
+    l->owner = current;
+}
+
+```
+
 # vdso
 
 * [Unified Virtual Dynamic Shared Object (vDSO).ppt](https://lpc.events/event/7/contributions/664/attachments/509/918/Unified_vDSO_LPC_2020.pdf)
