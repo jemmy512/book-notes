@@ -49,6 +49,308 @@
     #define MDSCR_MDE    (1 << 15)   // Monitor Debug Enable
 ```
 
+## stack_trace_save_tsk
+
+```c
+unsigned int stack_trace_save(unsigned long *store, unsigned int size, unsigned int skipnr);
+unsigned int stack_trace_save_tsk(struct task_struct *task,
+                  unsigned long *store, unsigned int size,
+                  unsigned int skipnr);
+unsigned int stack_trace_save_regs(struct pt_regs *regs, unsigned long *store,
+                   unsigned int size, unsigned int skipnr);
+unsigned int stack_trace_save_user(unsigned long *store, unsigned int size);
+
+
+unsigned int stack_trace_save_tsk(struct task_struct *tsk, unsigned long *store,
+                  unsigned int size, unsigned int skipnr)
+{
+    stack_trace_consume_fn consume_entry = stack_trace_consume_entry_nosched(cookie, addr) {
+        if (in_sched_functions(addr) {
+            return in_lock_functions(addr) {
+                /* Linker adds these: start and end of __lockfunc functions */
+                extern char __lock_text_start[], __lock_text_end[];
+
+                return addr >= (unsigned long)__lock_text_start
+                && addr < (unsigned long)__lock_text_end;
+            }
+            || (addr >= (unsigned long)__sched_text_start
+                && addr < (unsigned long)__sched_text_end);
+        })
+            return true;
+
+        return stack_trace_consume_entry(cookie, addr) {
+            struct stacktrace_cookie *c = cookie;
+
+            if (c->len >= c->size)
+                return false;
+
+            if (c->skip > 0) {
+                c->skip--;
+                return true;
+            }
+            c->store[c->len++] = addr;
+            return c->len < c->size;
+        }
+    };
+
+    struct stacktrace_cookie c = {
+        .store    = store,
+        .size    = size,
+        /* skip this function if they are tracing us */
+        .skip    = skipnr + (current == tsk),
+    };
+
+    if (!try_get_task_stack(tsk))
+        return 0;
+
+    arch_stack_walk(consume_entry, &c, tsk, NULL);
+    put_task_stack(tsk);
+    return c.len;
+}
+
+/* sched/arch/arm64/kernel/stacktrace.c */
+noinline noinstr void arch_stack_walk(stack_trace_consume_fn consume_entry,
+                  void *cookie, struct task_struct *task,
+                  struct pt_regs *regs)
+{
+    struct kunwind_consume_entry_data data = {
+        .consume_entry = consume_entry,
+        .cookie = cookie,
+    };
+
+    kunwind_stack_walk(arch_kunwind_consume_entry, &data, task, regs);
+}
+
+static __always_inline int
+kunwind_stack_walk(kunwind_consume_fn consume_state,
+           void *cookie, struct task_struct *task,
+           struct pt_regs *regs)
+{
+    struct stack_info stacks[] = {
+        stackinfo_get_task(task),
+        STACKINFO_CPU(irq),
+        STACKINFO_CPU(overflow),
+#if defined(CONFIG_ARM_SDE_INTERFACE)
+        STACKINFO_SDEI(normal),
+        STACKINFO_SDEI(critical),
+#endif
+#ifdef CONFIG_EFI
+        STACKINFO_EFI,
+#endif
+    };
+    struct kunwind_state state = {
+        .common = {
+            .stacks = stacks,
+            .nr_stacks = ARRAY_SIZE(stacks),
+        },
+    };
+
+    if (regs) {
+        if (task != current)
+            return -EINVAL;
+        kunwind_init_from_regs(&state, regs);
+    } else if (task == current) {
+        kunwind_init_from_caller(&state);
+    } else {
+        kunwind_init_from_task(&state, task);
+    }
+
+    return do_kunwind(&state, consume_state, cookie);
+}
+
+static __always_inline int
+do_kunwind(struct kunwind_state *state, kunwind_consume_fn consume_state,
+       void *cookie)
+{
+    int ret;
+
+    ret = kunwind_recover_return_address(state);
+    if (ret)
+        return ret;
+
+    while (1) {
+        if (!consume_state(state, cookie))
+            return -EINVAL;
+        ret = kunwind_next(state);
+        if (ret == -ENOENT)
+            return 0;
+        if (ret < 0)
+            return ret;
+    }
+}
+
+static __always_inline int
+kunwind_next(struct kunwind_state *state)
+{
+    int err;
+
+    state->flags.all = 0;
+
+    switch (state->source) {
+    case KUNWIND_SOURCE_FRAME:
+    case KUNWIND_SOURCE_CALLER:
+    case KUNWIND_SOURCE_TASK:
+    case KUNWIND_SOURCE_REGS_PC:
+        err = kunwind_next_frame_record(state);
+        break;
+    default:
+        err = -EINVAL;
+    }
+
+    if (err)
+        return err;
+
+    state->common.pc = ptrauth_strip_kernel_insn_pac(state->common.pc);
+
+    return kunwind_recover_return_address(state) {
+        #ifdef CONFIG_FUNCTION_GRAPH_TRACER
+        if (state->task->ret_stack &&
+            (state->common.pc == (unsigned long)return_to_handler)) {
+            unsigned long orig_pc;
+            orig_pc = ftrace_graph_ret_addr(state->task, &state->graph_idx,
+                            state->common.pc,
+                            (void *)state->common.fp);
+            if (state->common.pc == orig_pc) {
+                WARN_ON_ONCE(state->task == current);
+                return -EINVAL;
+            }
+            state->common.pc = orig_pc;
+            state->flags.fgraph = 1;
+        }
+    #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
+
+    #ifdef CONFIG_KRETPROBES
+        if (is_kretprobe_trampoline(state->common.pc)) {
+            unsigned long orig_pc;
+            orig_pc = kretprobe_find_ret_addr(state->task,
+                            (void *)state->common.fp,
+                            &state->kr_cur);
+            if (!orig_pc)
+                return -EINVAL;
+            state->common.pc = orig_pc;
+            state->flags.kretprobe = 1;
+        }
+    #endif /* CONFIG_KRETPROBES */
+
+        return 0;
+    }
+}
+
+static __always_inline int
+kunwind_next_frame_record(struct kunwind_state *state)
+{
+    unsigned long fp = state->common.fp;
+    struct frame_record *record;
+    struct stack_info *info;
+    unsigned long new_fp, new_pc;
+
+    if (fp & 0x7)
+        return -EINVAL;
+
+    info = unwind_find_stack(&state->common, fp, sizeof(*record)) {
+        struct stack_info *info = &state->stack;
+
+        if (stackinfo_on_stack(info, sp, size))
+            return info;
+
+        for (int i = 0; i < state->nr_stacks; i++) {
+            info = &state->stacks[i];
+            if (stackinfo_on_stack(info, sp, size))
+                return info;
+        }
+
+        return NULL;
+    }
+    if (!info)
+        return -EINVAL;
+
+    record = (struct frame_record *)fp;
+    new_fp = READ_ONCE(record->fp);
+    new_pc = READ_ONCE(record->lr);
+
+    if (!new_fp && !new_pc) {
+        return kunwind_next_frame_record_meta(state) {
+            struct task_struct *tsk = state->task;
+            unsigned long fp = state->common.fp;
+            struct frame_record_meta *meta;
+            struct stack_info *info;
+
+            info = unwind_find_stack(&state->common, fp, sizeof(*meta));
+            if (!info)
+                return -EINVAL;
+
+            meta = (struct frame_record_meta *)fp;
+            switch (READ_ONCE(meta->type)) {
+            case FRAME_META_TYPE_FINAL:
+                if (meta == &task_pt_regs(tsk)->stackframe)
+                    return -ENOENT;
+                WARN_ON_ONCE(tsk == current);
+                return -EINVAL;
+            case FRAME_META_TYPE_PT_REGS:
+                return kunwind_next_regs_pc(state) {
+                    struct stack_info *info;
+                    unsigned long fp = state->common.fp;
+                    struct pt_regs *regs;
+
+                    regs = container_of((u64 *)fp, struct pt_regs, stackframe.record.fp);
+
+                    info = unwind_find_stack(&state->common, (unsigned long)regs, sizeof(*regs));
+                    if (!info)
+                        return -EINVAL;
+
+                    unwind_consume_stack(&state->common, info, (unsigned long)regs,
+                                sizeof(*regs));
+
+                    state->regs = regs;
+                    state->common.pc = regs->pc;
+                    state->common.fp = regs->regs[29];
+                    state->regs = NULL;
+                    state->source = KUNWIND_SOURCE_REGS_PC;
+                    return 0;
+                }
+            default:
+                WARN_ON_ONCE(tsk == current);
+                return -EINVAL;
+            }
+        }
+    }
+
+    unwind_consume_stack(&state->common, info, fp, sizeof(*record)) {
+        struct stack_info tmp;
+
+        /* Stack transitions are strictly one-way, and once we've
+        * transitioned from one stack to another, it's never valid to
+        * unwind back to the old stack.
+        *
+        * Destroy the old stack info so that it cannot be found upon a
+        * subsequent transition. If the stack has not changed, we'll
+        * immediately restore the current stack info.
+        *
+        * Note that stacks can nest in several valid orders, e.g.
+        *
+        *   TASK -> IRQ -> OVERFLOW -> SDEI_NORMAL
+        *   TASK -> SDEI_NORMAL -> SDEI_CRITICAL -> OVERFLOW
+        *   HYP -> OVERFLOW
+        *
+        * ... so we do not check the specific order of stack
+        * transitions. */
+        tmp = *info;
+        *info = stackinfo_get_unknown();
+        state->stack = tmp;
+
+        /* Future unwind steps can only consume stack above this frame record.
+        * Update the current stack to start immediately above it. */
+        state->stack.low = sp + size;
+    }
+
+    state->common.fp = new_fp;
+    state->common.pc = new_pc;
+    state->source = KUNWIND_SOURCE_FRAME;
+
+    return 0;
+}
+```
+
 # ptrace
 
 ![](../images/kernel/trace-ss-brk-handler.svg)
@@ -1694,11 +1996,11 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
 /sys/kernel/debug/kprobes/list # Lists all registered Kprobes/Kretprobes
 /sys/kernel/debug/kprobes/blacklist
     /sys/kernel/debug/kprobes/enabled
-/sys/kernel/debug/tracing/kprobe_events # Register/unregister Kprobes/Kretprobes
-/sys/kernel/debug/tracing/kprobe_profile
-/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/enabled
-/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/filter
-/sys/kernel/debug/tracing/kprobes/<GRP>/<EVENT>/format
+/sys/kernel/tracing/kprobe_events # Register/unregister Kprobes/Kretprobes
+/sys/kernel/tracing/kprobe_profile
+/sys/kernel/tracing/kprobes/<GRP>/<EVENT>/enabled
+/sys/kernel/tracing/kprobes/<GRP>/<EVENT>/filter
+/sys/kernel/tracing/kprobes/<GRP>/<EVENT>/format
 ```
 
 Feature | ftrace | kprobes
@@ -3380,40 +3682,40 @@ sudo mount -t debugfs debugfs /sys/kernel/debug
 
 
 # List available tracers
-cat /sys/kernel/debug/tracing/available_tracers
+cat /sys/kernel/tracing/available_tracers
 
 
 # Enable the function tracer to trace all kernel functions:
-echo function > /sys/kernel/debug/tracing/current_tracer
+echo function > /sys/kernel/tracing/current_tracer
 # Alternatively, use function_graph for call stack tracing:
-echo function_graph > /sys/kernel/debug/tracing/current_tracer
+echo function_graph > /sys/kernel/tracing/current_tracer
 
 
 # Enable tracing to start logging:
-echo 1 > /sys/kernel/debug/tracing/tracing_on
+echo 1 > /sys/kernel/tracing/tracing_on
 
 
 # Trace specific functions using set_ftrace_filter:
-echo kernel_clone > /sys/kernel/debug/tracing/set_ftrace_filter
+echo kernel_clone > /sys/kernel/tracing/set_ftrace_filter
 # Use wildcards for groups:
-echo 'vfs_*' > /sys/kernel/debug/tracing/set_ftrace_filter
+echo 'vfs_*' > /sys/kernel/tracing/set_ftrace_filter
 # Clear filters:
-echo > /sys/kernel/debug/tracing/set_ftrace_filter
+echo > /sys/kernel/tracing/set_ftrace_filter
 # Exclude noisy functions using set_ftrace_notrace:
-echo 'schedule*' > /sys/kernel/debug/tracing/set_ftrace_notrace
+echo 'schedule*' > /sys/kernel/tracing/set_ftrace_notrace
 
 
 # Read the Trace Buffer:
-cat /sys/kernel/debug/tracing/trace
+cat /sys/kernel/tracing/trace
 # Continuous Monitoring:
-cat /sys/kernel/debug/tracing/trace_pipe
+cat /sys/kernel/tracing/trace_pipe
 # Clear the Buffer:
-echo > /sys/kernel/debug/tracing/trace
+echo > /sys/kernel/tracing/trace
 ```
 
 ```sh
 # Basic Ftrace Directory Structure:
-/sys/kernel/debug/tracing/  [Main Ftrace Directory]
+/sys/kernel/tracing/  [Main Ftrace Directory]
 ├── available_tracers       # List of available tracers
 ├── current_tracer          # Currently active tracer
 ├── tracing_on              # Global on/off switch
@@ -3426,7 +3728,7 @@ echo > /sys/kernel/debug/tracing/trace
 └── instances/              # Per-instance trace buffers
 
 # Event Directory Structure:
-/sys/kernel/debug/tracing/events/
+/sys/kernel/tracing/events/
 ├── enable                  # Global events on/off
 ├── sched/                  # Scheduler events
 │   ├── sched_switch/
@@ -3441,7 +3743,7 @@ echo > /sys/kernel/debug/tracing/trace
     └── sys_exit_read/
 
 # Function Tracing Files:
-/sys/kernel/debug/tracing/
+/sys/kernel/tracing/
 ├── available_filter_functions  # Traceable functions
 ├── set_ftrace_filter           # Function filter
 ├── set_ftrace_pid              # Process filter
@@ -3452,7 +3754,7 @@ echo > /sys/kernel/debug/tracing/trace
     └── traceable_functions
 
 # Dynamic events
-/sys/kernel/debug/tracing/
+/sys/kernel/tracing/
 ├── dynamic_events              # Dynamic event definitions
 ├── kprobe_events               # Kprobe definitions
 ├── uprobe_events               # Uprobe definitions
@@ -4873,6 +5175,96 @@ TRACE_EVENT(sched_switch,
 );
 ```
 
+```c
+void trace_event_buffer_commit(struct trace_event_buffer *fbuffer)
+{
+    enum event_trigger_type tt = ETT_NONE;
+    struct trace_event_file *file = fbuffer->trace_file;
+
+    if (__event_trigger_test_discard(file, fbuffer->buffer, fbuffer->event,
+            fbuffer->entry, &tt))
+        goto discard;
+
+    if (static_key_false(&tracepoint_printk_key.key))
+        output_printk(fbuffer);
+
+    if (static_branch_unlikely(&trace_event_exports_enabled))
+        ftrace_exports(fbuffer->event, TRACE_EXPORT_EVENT);
+
+    trace_buffer_unlock_commit_regs(file->tr, fbuffer->buffer,
+            fbuffer->event, fbuffer->trace_ctx, fbuffer->regs);
+
+discard:
+    if (tt)
+        event_triggers_post_call(file, tt);
+
+}
+```
+
+## trace_point
+
+```c
+#define DECLARE_TRACE(name, proto, args)                \
+    __DECLARE_TRACE(name##_tp, PARAMS(proto), PARAMS(args),        \
+            cpu_online(raw_smp_processor_id()),        \
+            PARAMS(void *__data, proto))
+
+#define __DECLARE_TRACE_COMMON(name, proto, args, data_proto)        \
+    extern int __traceiter_##name(data_proto);            \
+    DECLARE_STATIC_CALL(tp_func_##name, __traceiter_##name);    \
+    extern struct tracepoint __tracepoint_##name;            \
+    extern void rust_do_trace_##name(proto);            \
+    static inline int                        \
+    register_trace_##name(void (*probe)(data_proto), void *data)    \
+    {                                \
+        return tracepoint_probe_register(&__tracepoint_##name,    \
+                        (void *)probe, data);    \
+    }                                \
+    static inline int                        \
+    register_trace_prio_##name(void (*probe)(data_proto), void *data,\
+                   int prio)                \
+    {                                \
+        return tracepoint_probe_register_prio(&__tracepoint_##name, \
+                          (void *)probe, data, prio); \
+    }                                \
+    static inline int                        \
+    unregister_trace_##name(void (*probe)(data_proto), void *data)    \
+    {                                \
+        return tracepoint_probe_unregister(&__tracepoint_##name,\
+                        (void *)probe, data);    \
+    }                                \
+    static inline void                        \
+    check_trace_callback_type_##name(void (*cb)(data_proto))    \
+    {                                \
+    }                                \
+    static inline bool                        \
+    trace_##name##_enabled(void)                    \
+    {                                \
+        return static_branch_unlikely(&__tracepoint_##name.key);\
+    }
+
+#define __DECLARE_TRACE(name, proto, args, cond, data_proto)        \
+    __DECLARE_TRACE_COMMON(name, PARAMS(proto), PARAMS(args), PARAMS(data_proto)) \
+    static inline void __do_trace_##name(proto)            \
+    {                                \
+        TRACEPOINT_CHECK(name)                    \
+        if (cond) {                        \
+            guard(preempt_notrace)();            \
+            __DO_TRACE_CALL(name, TP_ARGS(args));        \
+        }                            \
+    }                                \
+    static inline void trace_##name(proto)                \
+    {                                \
+        if (static_branch_unlikely(&__tracepoint_##name.key))    \
+            __do_trace_##name(args);            \
+        if (IS_ENABLED(CONFIG_LOCKDEP) && (cond)) {        \
+            WARN_ONCE(!rcu_is_watching(),            \
+                  "RCU not watching for tracepoint");    \
+        }                            \
+    }
+
+```
+
 ## ftrace-cmd
 
 ```sh
@@ -4933,6 +5325,1573 @@ sudo apt-get install kernelshark
 
 # View traces:
 kernelshark trace.dat
+```
+
+## trace_buffer
+
+![](../images/kernel/trace-trace_buffer.drawio.svg)
+
+* https://www.cnblogs.com/pwl999/p/15535038.html
+
+### tracer_alloc_buffers
+
+```c
+
+static struct trace_array global_trace = {
+    .trace_flags = TRACE_DEFAULT_FLAGS,
+};
+
+static struct trace_array *printk_trace = &global_trace;
+
+
+void __init early_trace_init(void)
+{
+    if (tracepoint_printk) {
+        tracepoint_print_iter =
+            kzalloc(sizeof(*tracepoint_print_iter), GFP_KERNEL);
+        if (MEM_FAIL(!tracepoint_print_iter, "Failed to allocate trace iterator\n"))
+            tracepoint_printk = 0;
+        else
+            static_key_enable(&tracepoint_printk_key.key);
+    }
+    tracer_alloc_buffers();
+
+    init_events();
+}
+
+static int tracer_alloc_buffers(void)
+{
+    int ring_buf_size;
+    int ret = -ENOMEM;
+
+
+    if (security_locked_down(LOCKDOWN_TRACEFS)) {
+        pr_warn("Tracing disabled due to lockdown\n");
+        return -EPERM;
+    }
+
+    /* Make sure we don't accidentally add more trace options
+     * than we have bits for. */
+    BUILD_BUG_ON(TRACE_ITER_LAST_BIT > TRACE_FLAGS_MAX_SIZE);
+
+    if (!alloc_cpumask_var(&tracing_buffer_mask, GFP_KERNEL))
+        return -ENOMEM;
+
+    if (!alloc_cpumask_var(&global_trace.tracing_cpumask, GFP_KERNEL))
+        goto out_free_buffer_mask;
+
+    /* Only allocate trace_printk buffers if a trace_printk exists */
+    if (&__stop___trace_bprintk_fmt != &__start___trace_bprintk_fmt)
+        /* Must be called before global_trace.buffer is allocated */
+        trace_printk_init_buffers();
+
+    /* To save memory, keep the ring buffer size to its minimum */
+    if (global_trace.ring_buffer_expanded)
+        ring_buf_size = trace_buf_size; /* set_buf_size */
+    else
+        ring_buf_size = 1;
+
+    cpumask_copy(tracing_buffer_mask, cpu_possible_mask);
+    cpumask_copy(global_trace.tracing_cpumask, cpu_all_mask);
+
+    raw_spin_lock_init(&global_trace.start_lock);
+
+    /* The prepare callbacks allocates some memory for the ring buffer. We
+     * don't free the buffer if the CPU goes down. If we were to free
+     * the buffer, then the user would lose any trace that was in the
+     * buffer. The memory will be removed once the "instance" is removed. */
+    ret = cpuhp_setup_state_multi(CPUHP_TRACE_RB_PREPARE, "trace/RB:prepare", trace_rb_cpu_prepare, NULL);
+    if (ret < 0)
+        goto out_free_cpumask;
+    /* Used for event triggers */
+    ret = -ENOMEM;
+    temp_buffer = ring_buffer_alloc(PAGE_SIZE, RB_FL_OVERWRITE);
+    if (!temp_buffer)
+        goto out_rm_hp_state;
+
+    if (trace_create_savedcmd() < 0)
+        goto out_free_temp_buffer;
+
+    if (!zalloc_cpumask_var(&global_trace.pipe_cpumask, GFP_KERNEL))
+        goto out_free_savedcmd;
+
+    /* TODO: make the number of buffers hot pluggable with CPUS */
+    if (allocate_trace_buffers(&global_trace, ring_buf_size) < 0) {
+        MEM_FAIL(1, "tracer: failed to allocate ring buffer!\n");
+        goto out_free_pipe_cpumask;
+    }
+    if (global_trace.buffer_disabled)
+        tracing_off();
+
+    if (trace_boot_clock) {
+        ret = tracing_set_clock(&global_trace, trace_boot_clock);
+        if (ret < 0)
+            pr_warn("Trace clock %s not defined, going back to default\n",
+                trace_boot_clock);
+    }
+
+    /* register_tracer() might reference current_trace, so it
+     * needs to be set before we register anything. This is
+     * just a bootstrap of current_trace anyway. */
+    global_trace.current_trace = &nop_trace;
+    global_trace.current_trace_flags = nop_trace.flags;
+
+    global_trace.max_lock = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
+#ifdef CONFIG_TRACER_MAX_TRACE
+    spin_lock_init(&global_trace.snapshot_trigger_lock);
+#endif
+    ftrace_init_global_array_ops(&global_trace);
+
+#ifdef CONFIG_MODULES
+    INIT_LIST_HEAD(&global_trace.mod_events);
+#endif
+
+    init_trace_flags_index(&global_trace);
+
+    INIT_LIST_HEAD(&global_trace.tracers);
+
+    /* All seems OK, enable tracing */
+    tracing_disabled = 0;
+
+    atomic_notifier_chain_register(&panic_notifier_list,
+                       &trace_panic_notifier);
+
+    register_die_notifier(&trace_die_notifier);
+
+    global_trace.flags = TRACE_ARRAY_FL_GLOBAL;
+
+    global_trace.syscall_buf_sz = syscall_buf_size;
+
+    INIT_LIST_HEAD(&global_trace.systems);
+    INIT_LIST_HEAD(&global_trace.events);
+    INIT_LIST_HEAD(&global_trace.hist_vars);
+    INIT_LIST_HEAD(&global_trace.err_log);
+    list_add(&global_trace.marker_list, &marker_copies);
+    list_add(&global_trace.list, &ftrace_trace_arrays);
+
+    register_tracer(&nop_trace);
+
+    /* Function tracing may start here (via kernel command line) */
+    init_function_trace();
+
+    apply_trace_boot_options();
+
+    register_snapshot_cmd();
+
+    return 0;
+
+out_free_pipe_cpumask:
+    free_cpumask_var(global_trace.pipe_cpumask);
+out_free_savedcmd:
+    trace_free_saved_cmdlines_buffer();
+out_free_temp_buffer:
+    ring_buffer_free(temp_buffer);
+out_rm_hp_state:
+    cpuhp_remove_multi_state(CPUHP_TRACE_RB_PREPARE);
+out_free_cpumask:
+    free_cpumask_var(global_trace.tracing_cpumask);
+out_free_buffer_mask:
+    free_cpumask_var(tracing_buffer_mask);
+    return ret;
+}
+```
+
+#### ring_buffer_alloc
+
+```c
+#define ring_buffer_alloc(size, flags)            \
+({                            \
+    static struct lock_class_key __key;        \
+    __ring_buffer_alloc((size), (flags), &__key);    \
+})
+
+struct trace_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
+                    struct lock_class_key *key)
+{
+    /* Default buffer page size - one system page */
+    return alloc_buffer(size, flags, 0, 0, 0, 0, key);
+
+}
+
+struct trace_buffer *alloc_buffer(unsigned long size, unsigned flags,
+                     int order, unsigned long start,
+                     unsigned long end,
+                     unsigned long scratch_size,
+                     struct lock_class_key *key)
+{
+    struct trace_buffer *buffer __free(kfree) = NULL;
+    long nr_pages;
+    int subbuf_size;
+    int bsize;
+    int cpu;
+    int ret;
+
+    /* keep it in its own cache line */
+    buffer = kzalloc(ALIGN(sizeof(*buffer), cache_line_size()),
+             GFP_KERNEL);
+    if (!buffer)
+        return NULL;
+
+    if (!zalloc_cpumask_var(&buffer->cpumask, GFP_KERNEL))
+        return NULL;
+
+    buffer->subbuf_order = order;
+    subbuf_size = (PAGE_SIZE << order);
+    buffer->subbuf_size = subbuf_size - BUF_PAGE_HDR_SIZE;
+
+    /* Max payload is buffer page size - header (8bytes) */
+    buffer->max_data_size = buffer->subbuf_size - (sizeof(u32) * 2);
+
+    buffer->flags = flags;
+    buffer->clock = trace_clock_local;
+    buffer->reader_lock_key = key;
+
+    init_irq_work(&buffer->irq_work.work, rb_wake_up_waiters);
+    init_waitqueue_head(&buffer->irq_work.waiters);
+
+    buffer->cpus = nr_cpu_ids;
+
+    bsize = sizeof(void *) * nr_cpu_ids;
+    buffer->buffers = kzalloc(ALIGN(bsize, cache_line_size()),
+                  GFP_KERNEL);
+    if (!buffer->buffers)
+        goto fail_free_cpumask;
+
+    /* If start/end are specified, then that overrides size */
+    if (start && end) {
+        unsigned long buffers_start;
+        unsigned long ptr;
+        int n;
+
+        /* Make sure that start is word aligned */
+        start = ALIGN(start, sizeof(long));
+
+        /* scratch_size needs to be aligned too */
+        scratch_size = ALIGN(scratch_size, sizeof(long));
+
+        /* Subtract the buffer meta data and word aligned */
+        buffers_start = start + sizeof(struct ring_buffer_cpu_meta);
+        buffers_start = ALIGN(buffers_start, sizeof(long));
+        buffers_start += scratch_size;
+
+        /* Calculate the size for the per CPU data */
+        size = end - buffers_start;
+        size = size / nr_cpu_ids;
+
+        /* The number of sub-buffers (nr_pages) is determined by the
+         * total size allocated minus the meta data size.
+         * Then that is divided by the number of per CPU buffers
+         * needed, plus account for the integer array index that
+         * will be appended to the meta data. */
+        nr_pages = (size - sizeof(struct ring_buffer_cpu_meta)) /
+            (subbuf_size + sizeof(int));
+        /* Need at least two pages plus the reader page */
+        if (nr_pages < 3)
+            goto fail_free_buffers;
+
+ again:
+        /* Make sure that the size fits aligned */
+        for (n = 0, ptr = buffers_start; n < nr_cpu_ids; n++) {
+            ptr += sizeof(struct ring_buffer_cpu_meta) + sizeof(int) * nr_pages;
+            ptr = ALIGN(ptr, subbuf_size);
+            ptr += subbuf_size * nr_pages;
+        }
+        if (ptr > end) {
+            if (nr_pages <= 3)
+                goto fail_free_buffers;
+            nr_pages--;
+            goto again;
+        }
+
+        /* nr_pages should not count the reader page */
+        nr_pages--;
+        buffer->range_addr_start = start;
+        buffer->range_addr_end = end;
+
+        rb_range_meta_init(buffer, nr_pages, scratch_size);
+    } else {
+
+        /* need at least two pages */
+        nr_pages = DIV_ROUND_UP(size, buffer->subbuf_size);
+        if (nr_pages < 2)
+            nr_pages = 2;
+    }
+
+    cpu = raw_smp_processor_id();
+    cpumask_set_cpu(cpu, buffer->cpumask);
+    buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+    if (!buffer->buffers[cpu])
+        goto fail_free_buffers;
+
+    ret = cpuhp_state_add_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node);
+    if (ret < 0)
+        goto fail_free_buffers;
+
+    mutex_init(&buffer->mutex);
+
+    return_ptr(buffer);
+
+ fail_free_buffers:
+    for_each_buffer_cpu(buffer, cpu) {
+        if (buffer->buffers[cpu])
+            rb_free_cpu_buffer(buffer->buffers[cpu]);
+    }
+    kfree(buffer->buffers);
+
+ fail_free_cpumask:
+    free_cpumask_var(buffer->cpumask);
+
+    return NULL;
+}
+```
+
+#### allocate_trace_buffers
+
+```c
+int allocate_trace_buffers(struct trace_array *tr, int size)
+{
+    int ret;
+
+    ret = allocate_trace_buffer(tr, &tr->array_buffer, size);
+    if (ret)
+        return ret;
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+    /* Fix mapped buffer trace arrays do not have snapshot buffers */
+    if (tr->range_addr_start)
+        return 0;
+
+    ret = allocate_trace_buffer(tr, &tr->max_buffer, allocate_snapshot ? size : 1);
+    if (MEM_FAIL(ret, "Failed to allocate trace buffer\n")) {
+        free_trace_buffer(&tr->array_buffer);
+        return -ENOMEM;
+    }
+    tr->allocated_snapshot = allocate_snapshot;
+
+    allocate_snapshot = false;
+#endif
+
+    return 0;
+}
+```
+
+### ring_buffer_lock_reserve
+
+```c
+static __always_inline struct ring_buffer_event *
+__trace_buffer_lock_reserve(struct trace_buffer *buffer,
+              int type,
+              unsigned long len,
+              unsigned int trace_ctx)
+{
+    struct ring_buffer_event *event;
+
+    event = ring_buffer_lock_reserve(buffer, len);
+    if (event != NULL)
+        trace_event_setup(event, type, trace_ctx);
+
+    return event;
+}
+
+struct ring_buffer_event *
+ring_buffer_lock_reserve(struct trace_buffer *buffer, unsigned long length)
+{
+    struct ring_buffer_per_cpu *cpu_buffer;
+    struct ring_buffer_event *event;
+    int cpu;
+
+    /* If we are tracing schedule, we don't want to recurse */
+    preempt_disable_notrace();
+
+    if (unlikely(atomic_read(&buffer->record_disabled)))
+        goto out;
+
+    cpu = raw_smp_processor_id();
+
+    if (unlikely(!cpumask_test_cpu(cpu, buffer->cpumask)))
+        goto out;
+
+    cpu_buffer = buffer->buffers[cpu];
+
+    if (unlikely(atomic_read(&cpu_buffer->record_disabled)))
+        goto out;
+
+    if (unlikely(length > buffer->max_data_size))
+        goto out;
+
+    if (unlikely(trace_recursive_lock(cpu_buffer)))
+        goto out;
+
+    event = rb_reserve_next_event(buffer, cpu_buffer, length);
+    if (!event)
+        goto out_unlock;
+
+    return event;
+
+ out_unlock:
+    trace_recursive_unlock(cpu_buffer);
+ out:
+    preempt_enable_notrace();
+    return NULL;
+}
+
+static __always_inline struct ring_buffer_event *
+rb_reserve_next_event(struct trace_buffer *buffer,
+              struct ring_buffer_per_cpu *cpu_buffer,
+              unsigned long length)
+{
+    struct ring_buffer_event *event;
+    struct rb_event_info info;
+    int nr_loops = 0;
+    int add_ts_default;
+
+    /* ring buffer does cmpxchg as well as atomic64 operations
+     * (which some archs use locking for atomic64), make sure this
+     * is safe in NMI context */
+    if ((!IS_ENABLED(CONFIG_ARCH_HAVE_NMI_SAFE_CMPXCHG) ||
+         IS_ENABLED(CONFIG_GENERIC_ATOMIC64)) &&
+        (unlikely(in_nmi()))) {
+        return NULL;
+    }
+
+    rb_start_commit(cpu_buffer) {
+        /* when committing:
+         * == 1: the first writer, mv commit to tail when do full commit
+         * >  1: nth writer in interrupt, subtrace committing, do peding commit */
+        local_inc(&cpu_buffer->committing);
+        local_inc(&cpu_buffer->commits);
+    }
+    /* The commit page can not change after this */
+
+#ifdef CONFIG_RING_BUFFER_ALLOW_SWAP
+    /* Due to the ability to swap a cpu buffer from a buffer
+     * it is possible it was swapped before we committed.
+     * (committing stops a swap). We check for it here and
+     * if it happened, we have to fail the write. */
+    barrier();
+    if (unlikely(READ_ONCE(cpu_buffer->buffer) != buffer)) {
+        local_dec(&cpu_buffer->committing);
+        local_dec(&cpu_buffer->commits);
+        return NULL;
+    }
+#endif
+
+    info.length = rb_calculate_event_length(length) {
+        struct ring_buffer_event event; /* Used only for sizeof array */
+
+        /* zero length can cause confusions */
+        if (!length)
+            length++;
+
+        /* if len > (28 << 2), need array[0] to store the len */
+        if (length > RB_MAX_SMALL_DATA || RB_FORCE_8BYTE_ALIGNMENT)
+            length += sizeof(event.array[0]);
+
+        length += RB_EVNT_HDR_SIZE; /* (offsetof(struct ring_buffer_event, array)) */
+        length = ALIGN(length, RB_ARCH_ALIGNMENT);
+
+        /* In case the time delta is larger than the 27 bits for it
+        * in the header, we need to add a timestamp. If another
+        * event comes in when trying to discard this one to increase
+        * the length, then the timestamp will be added in the allocated
+        * space of this event. If length is bigger than the size needed
+        * for the TIME_EXTEND, then padding has to be used. The events
+        * length must be either RB_LEN_TIME_EXTEND, or greater than or equal
+        * to RB_LEN_TIME_EXTEND + 8, as 8 is the minimum size for padding.
+        * As length is a multiple of 4, we only need to worry if it
+        * is 12 (RB_LEN_TIME_EXTEND + 4). */
+        if (length == RB_LEN_TIME_EXTEND + RB_ALIGNMENT)
+            length += RB_ALIGNMENT;
+
+        return length;
+    }
+
+    if (ring_buffer_time_stamp_abs(cpu_buffer->buffer)) {
+        add_ts_default = RB_ADD_STAMP_ABSOLUTE;
+        info.length += RB_LEN_TIME_EXTEND;
+        if (info.length > cpu_buffer->buffer->max_data_size)
+            goto out_fail;
+    } else {
+        add_ts_default = RB_ADD_STAMP_NONE;
+    }
+
+ again:
+    info.add_timestamp = add_ts_default;
+    info.delta = 0;
+
+    /* We allow for interrupts to reenter here and do a trace.
+     * If one does, it will cause this original code to loop
+     * back here. Even with heavy interrupts happening, this
+     * should only happen a few times in a row. If this happens
+     * 1000 times in a row, there must be either an interrupt
+     * storm or we have something buggy.
+     * Bail! */
+    if (RB_WARN_ON(cpu_buffer, ++nr_loops > 1000))
+        goto out_fail;
+
+    event = __rb_reserve_next(cpu_buffer, &info);
+
+    if (unlikely(PTR_ERR(event) == -EAGAIN)) {
+        if (info.add_timestamp & (RB_ADD_STAMP_FORCE | RB_ADD_STAMP_EXTEND))
+            info.length -= RB_LEN_TIME_EXTEND;
+        goto again;
+    }
+
+    if (likely(event))
+        return event;
+
+ out_fail:
+    rb_end_commit(cpu_buffer);
+    return NULL;
+}
+
+static struct ring_buffer_event *
+__rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
+          struct rb_event_info *info)
+{
+    struct ring_buffer_event *event;
+    struct buffer_page *tail_page;
+    unsigned long tail, write, w;
+
+    /* Don't let the compiler play games with cpu_buffer->tail_page */
+    tail_page = info->tail_page = READ_ONCE(cpu_buffer->tail_page);
+
+/*A*/w = local_read(&tail_page->write) & RB_WRITE_MASK;
+    barrier();
+    rb_time_read(&cpu_buffer->before_stamp, &info->before);
+    rb_time_read(&cpu_buffer->write_stamp, &info->after);
+    barrier();
+    info->ts = rb_time_stamp(cpu_buffer->buffer);
+
+    if ((info->add_timestamp & RB_ADD_STAMP_ABSOLUTE)) {
+        info->delta = info->ts;
+    } else {
+        /* If interrupting an event time update, we may need an
+         * absolute timestamp.
+         * Don't bother if this is the start of a new page (w == 0). */
+        if (!w) {
+            /* Use the sub-buffer timestamp */
+            info->delta = 0;
+        } else if (unlikely(info->before != info->after)) {
+            info->add_timestamp |= RB_ADD_STAMP_FORCE | RB_ADD_STAMP_EXTEND;
+            info->length += RB_LEN_TIME_EXTEND;
+        } else {
+            info->delta = info->ts - info->after;
+            if (unlikely(test_time_stamp(info->delta))) {
+                info->add_timestamp |= RB_ADD_STAMP_EXTEND;
+                info->length += RB_LEN_TIME_EXTEND;
+            }
+        }
+    }
+
+ /*B*/    rb_time_set(&cpu_buffer->before_stamp, info->ts);
+
+ /*C*/    write = local_add_return(info->length, &tail_page->write);
+
+    /* set write to only the index of the write */
+    write &= RB_WRITE_MASK;
+
+    tail = write - info->length;
+
+    /* See if we shot pass the end of this buffer page */
+    if (unlikely(write > cpu_buffer->buffer->subbuf_size)) {
+        check_buffer(cpu_buffer, info, CHECK_FULL_PAGE);
+        return rb_move_tail(cpu_buffer, tail, info);
+    }
+
+    if (likely(tail == w)) {
+        /* Nothing interrupted us between A and C */
+ /*D*/        rb_time_set(&cpu_buffer->write_stamp, info->ts);
+        /* If something came in between C and D, the write stamp
+         * may now not be in sync. But that's fine as the before_stamp
+         * will be different and then next event will just be forced
+         * to use an absolute timestamp. */
+        if (likely(!(info->add_timestamp & (RB_ADD_STAMP_FORCE | RB_ADD_STAMP_ABSOLUTE))))
+            /* This did not interrupt any time update */
+            info->delta = info->ts - info->after;
+        else
+            /* Just use full timestamp for interrupting event */
+            info->delta = info->ts;
+        check_buffer(cpu_buffer, info, tail);
+    } else {
+        u64 ts;
+        /* SLOW PATH - Interrupted between A and C */
+
+        /* Save the old before_stamp */
+        rb_time_read(&cpu_buffer->before_stamp, &info->before);
+
+        /* Read a new timestamp and update the before_stamp to make
+         * the next event after this one force using an absolute
+         * timestamp. This is in case an interrupt were to come in
+         * between E and F. */
+        ts = rb_time_stamp(cpu_buffer->buffer);
+        rb_time_set(&cpu_buffer->before_stamp, ts);
+
+        barrier();
+ /*E*/  rb_time_read(&cpu_buffer->write_stamp, &info->after);
+        barrier();
+ /*F*/  if (write == (local_read(&tail_page->write) & RB_WRITE_MASK) &&
+            info->after == info->before && info->after < ts) {
+            /* Nothing came after this event between C and F, it is
+             * safe to use info->after for the delta as it
+             * matched info->before and is still valid. */
+            info->delta = ts - info->after;
+        } else {
+            /* Interrupted between C and F:
+             * Lost the previous events time stamp. Just set the
+             * delta to zero, and this will be the same time as
+             * the event this event interrupted. And the events that
+             * came after this will still be correct (as they would
+             * have built their delta on the previous event. */
+            info->delta = 0;
+        }
+        info->ts = ts;
+        info->add_timestamp &= ~RB_ADD_STAMP_FORCE;
+    }
+
+    /* If this is the first commit on the page, then it has the same
+     * timestamp as the page itself. */
+    if (unlikely(!tail && !(info->add_timestamp & (RB_ADD_STAMP_FORCE | RB_ADD_STAMP_ABSOLUTE))))
+        info->delta = 0;
+
+    /* We reserved something on the buffer */
+    event = __rb_page_index(tail_page, tail) {
+        return bpage->page->data + index;
+    }
+    rb_update_event(cpu_buffer, event, info) {
+        unsigned length = info->length;
+        u64 delta = info->delta;
+        unsigned int nest = local_read(&cpu_buffer->committing) - 1;
+
+        if (!WARN_ON_ONCE(nest >= MAX_NEST))
+            cpu_buffer->event_stamp[nest] = info->ts;
+
+        /* If we need to add a timestamp, then we
+        * add it to the start of the reserved space. */
+        if (unlikely(info->add_timestamp))
+            rb_add_timestamp(cpu_buffer, &event, info, &delta, &length);
+
+        event->time_delta = delta;
+        length -= RB_EVNT_HDR_SIZE;
+        if (length > RB_MAX_SMALL_DATA || RB_FORCE_8BYTE_ALIGNMENT) {
+            event->type_len = 0;
+            event->array[0] = length;
+        } else
+            event->type_len = DIV_ROUND_UP(length, RB_ALIGNMENT);
+    }
+
+    local_inc(&tail_page->entries);
+
+    /* If this is the first commit on the page, then update
+     * its timestamp. */
+    if (unlikely(!tail))
+        tail_page->page->time_stamp = info->ts;
+
+    /* account for these added bytes */
+    local_add(info->length, &cpu_buffer->entries_bytes);
+
+    return event;
+}
+```
+
+#### rb_move_tail
+
+```c
+static noinline struct ring_buffer_event *
+rb_move_tail(struct ring_buffer_per_cpu *cpu_buffer,
+         unsigned long tail, struct rb_event_info *info)
+{
+    struct buffer_page *tail_page = info->tail_page;
+    struct buffer_page *commit_page = cpu_buffer->commit_page;
+    struct trace_buffer *buffer = cpu_buffer->buffer;
+    struct buffer_page *next_page;
+    int ret;
+
+    next_page = tail_page;
+
+    rb_inc_page(&next_page) {
+        struct list_head *p = rb_list_head((*bpage)->list.next);
+
+        *bpage = list_entry(p, struct buffer_page, list);
+    }
+
+    /* If for some reason, we had an interrupt storm that made
+     * it all the way around the buffer, bail, and warn
+     * about it. */
+    if (unlikely(next_page == commit_page)) {
+        local_inc(&cpu_buffer->commit_overrun);
+        goto out_reset;
+    }
+
+    /* This is where the fun begins!
+     *
+     * We are fighting against races between a reader that
+     * could be on another CPU trying to swap its reader
+     * page with the buffer head.
+     *
+     * We are also fighting against interrupts coming in and
+     * moving the head or tail on us as well.
+     *
+     * If the next page is the head page then we have filled
+     * the buffer, unless the commit page is still on the
+     * reader page. */
+    if (rb_is_head_page(next_page, &tail_page->list)) {
+        /* If the commit is not on the reader page, then move the header page. */
+        if (!rb_is_reader_page(cpu_buffer->commit_page)) {
+            /* If we are not in overwrite mode,
+             * this is easy, just stop here. */
+            if (!(buffer->flags & RB_FL_OVERWRITE)) {
+                local_inc(&cpu_buffer->dropped_events);
+                goto out_reset;
+            }
+
+            ret = rb_handle_head_page(cpu_buffer, tail_page, next_page);
+            if (ret < 0)
+                goto out_reset;
+            if (ret)
+                goto out_again;
+        } else {
+            /* We need to be careful here too. The
+             * commit page could still be on the reader
+             * page. We could have a small buffer, and
+             * have filled up the buffer with events
+             * from interrupts and such, and wrapped.
+             *
+             * Note, if the tail page is also on the
+             * reader_page, we let it move out. */
+            if (unlikely((cpu_buffer->commit_page !=
+                      cpu_buffer->tail_page) &&
+                     (cpu_buffer->commit_page ==
+                      cpu_buffer->reader_page))) {
+                local_inc(&cpu_buffer->commit_overrun);
+                goto out_reset;
+            }
+        }
+    }
+
+    rb_tail_page_update(cpu_buffer, tail_page, next_page);
+
+ out_again:
+
+    rb_reset_tail(cpu_buffer, tail, info);
+
+    /* Commit what we have for now. */
+    rb_end_commit(cpu_buffer);
+    /* rb_end_commit() decs committing */
+    local_inc(&cpu_buffer->committing);
+
+    /* fail and let the caller try again */
+    return ERR_PTR(-EAGAIN);
+
+ out_reset:
+    /* reset write */
+    rb_reset_tail(cpu_buffer, tail, info);
+
+    return NULL;
+}
+```
+
+#### rb_handle_head_page
+
+```c
+int rb_handle_head_page(struct ring_buffer_per_cpu *cpu_buffer,
+            struct buffer_page *tail_page,
+            struct buffer_page *next_page)
+{
+    struct buffer_page *new_head;
+    int entries;
+    int type;
+    int ret;
+
+    entries = rb_page_entries(next_page);
+
+    /* The hard part is here. We need to move the head
+     * forward, and protect against both readers on
+     * other CPUs and writers coming in via interrupts. */
+    type = rb_head_page_set_update(cpu_buffer, next_page, tail_page, RB_PAGE_HEAD) {
+        return rb_head_page_set(cpu_buffer, head, prev, old_flag, RB_PAGE_UPDATE);
+    }
+
+    /* type can be one of four:
+     *  NORMAL - an interrupt already moved it for us
+     *  HEAD   - we are the first to get here.
+     *  UPDATE - we are the interrupt interrupting
+     *           a current move.
+     *  MOVED  - a reader on another CPU moved the next
+     *           pointer to its reader page. Give up
+     *           and try again. */
+
+    switch (type) {
+    case RB_PAGE_HEAD:
+        /* We changed the head to UPDATE, thus
+         * it is our responsibility to update
+         * the counters. */
+        local_add(entries, &cpu_buffer->overrun);
+        local_sub(rb_page_commit(next_page), &cpu_buffer->entries_bytes);
+        local_inc(&cpu_buffer->pages_lost);
+
+        if (cpu_buffer->ring_meta)
+            rb_update_meta_head(cpu_buffer, next_page);
+        /* The entries will be zeroed out when we move the
+         * tail page. */
+
+        /* still more to do */
+        break;
+
+    case RB_PAGE_UPDATE:
+        /* This is an interrupt that interrupt the
+         * previous update. Still more to do. */
+        break;
+    case RB_PAGE_NORMAL:
+        /* An interrupt came in before the update
+         * and processed this for us.
+         * Nothing left to do. */
+        return 1;
+    case RB_PAGE_MOVED:
+        /* The reader is on another CPU and just did
+         * a swap with our next_page.
+         * Try again. */
+        return 1;
+    default:
+        RB_WARN_ON(cpu_buffer, 1); /* WTF??? */
+        return -1;
+    }
+
+    /* Now that we are here, the old head pointer is
+     * set to UPDATE. This will keep the reader from
+     * swapping the head page with the reader page.
+     * The reader (on another CPU) will spin till
+     * we are finished.
+     *
+     * We just need to protect against interrupts
+     * doing the job. We will set the next pointer
+     * to HEAD. After that, we set the old pointer
+     * to NORMAL, but only if it was HEAD before.
+     * otherwise we are an interrupt, and only
+     * want the outer most commit to reset it. */
+    new_head = next_page;
+    rb_inc_page(&new_head);
+
+    ret = rb_head_page_set_head(cpu_buffer, new_head, next_page, RB_PAGE_NORMAL) {
+        return rb_head_page_set(cpu_buffer, head, prev, old_flag, RB_PAGE_HEAD);
+    }
+
+    /* Valid returns are:
+     *  HEAD   - an interrupt came in and already set it.
+     *  NORMAL - One of two things:
+     *            1) We really set it.
+     *            2) A bunch of interrupts came in and moved
+     *               the page forward again. */
+    switch (ret) {
+    case RB_PAGE_HEAD:
+    case RB_PAGE_NORMAL:
+        /* OK */
+        break;
+    default:
+        RB_WARN_ON(cpu_buffer, 1);
+        return -1;
+    }
+
+    /* It is possible that an interrupt came in,
+     * set the head up, then more interrupts came in
+     * and moved it again. When we get back here,
+     * the page would have been set to NORMAL but we
+     * just set it back to HEAD.
+     *
+     * How do you detect this? Well, if that happened
+     * the tail page would have moved. */
+    if (ret == RB_PAGE_NORMAL) {
+        struct buffer_page *buffer_tail_page;
+
+        buffer_tail_page = READ_ONCE(cpu_buffer->tail_page);
+        /* If the tail had moved passed next, then we need
+         * to reset the pointer. */
+        if (buffer_tail_page != tail_page && buffer_tail_page != next_page)
+            rb_head_page_set_normal(cpu_buffer, new_head, next_page, RB_PAGE_HEAD);
+    }
+
+    /* If this was the outer most commit (the one that
+     * changed the original pointer from HEAD to UPDATE),
+     * then it is up to us to reset it to NORMAL. */
+    if (type == RB_PAGE_HEAD) {
+        ret = rb_head_page_set_normal(cpu_buffer, next_page, tail_page, RB_PAGE_UPDATE) {
+            return rb_head_page_set(cpu_buffer, head, prev, old_flag, RB_PAGE_NORMAL) {
+                struct list_head *list;
+                unsigned long val = (unsigned long)&head->list;
+                unsigned long ret;
+
+                list = &prev->list;
+
+                val &= ~RB_FLAG_MASK;
+
+                ret = cmpxchg((unsigned long *)&list->next, val | old_flag, val | new_flag);
+
+                /* check if the reader took the page */
+                if ((ret & ~RB_FLAG_MASK) != val)
+                    return RB_PAGE_MOVED;
+
+                return ret & RB_FLAG_MASK;
+            }
+        }
+        if (RB_WARN_ON(cpu_buffer, ret != RB_PAGE_UPDATE))
+            return -1;
+    }
+
+    return 0;
+}
+```
+
+#### rb_tail_page_update
+
+```c
+void rb_tail_page_update(struct ring_buffer_per_cpu *cpu_buffer,
+                   struct buffer_page *tail_page,
+                   struct buffer_page *next_page)
+{
+    unsigned long old_entries;
+    unsigned long old_write;
+
+    /* The tail page now needs to be moved forward.
+     *
+     * We need to reset the tail page, but without messing
+     * with possible erasing of data brought in by interrupts
+     * that have moved the tail page and are currently on it.
+     *
+     * We add a counter to the write field to denote this. */
+    old_write = local_add_return(RB_WRITE_INTCNT, &next_page->write);
+    old_entries = local_add_return(RB_WRITE_INTCNT, &next_page->entries);
+
+    /* Just make sure we have seen our old_write and synchronize
+     * with any interrupts that come in. */
+    barrier();
+
+    /* If the tail page is still the same as what we think
+     * it is, then it is up to us to update the tail
+     * pointer. */
+    if (tail_page == READ_ONCE(cpu_buffer->tail_page)) {
+        /* Zero the write counter */
+        unsigned long val = old_write & ~RB_WRITE_MASK;
+        unsigned long eval = old_entries & ~RB_WRITE_MASK;
+
+        /* This will only succeed if an interrupt did
+         * not come in and change it. In which case, we
+         * do not want to modify it.
+         *
+         * We add (void) to let the compiler know that we do not care
+         * about the return value of these functions. We use the
+         * cmpxchg to only update if an interrupt did not already
+         * do it for us. If the cmpxchg fails, we don't care. */
+        (void)local_cmpxchg(&next_page->write, old_write, val);
+        (void)local_cmpxchg(&next_page->entries, old_entries, eval);
+
+        /* No need to worry about races with clearing out the commit.
+         * it only can increment when a commit takes place. But that
+         * only happens in the outer most nested commit. */
+        local_set(&next_page->page->commit, 0);
+
+        /* Either we update tail_page or an interrupt does */
+        if (try_cmpxchg(&cpu_buffer->tail_page, &tail_page, next_page))
+            local_inc(&cpu_buffer->pages_touched);
+    }
+}
+```
+
+#### rb_reset_tail
+
+```c
+static inline void
+rb_reset_tail(struct ring_buffer_per_cpu *cpu_buffer,
+          unsigned long tail, struct rb_event_info *info)
+{
+    unsigned long bsize = READ_ONCE(cpu_buffer->buffer->subbuf_size);
+    struct buffer_page *tail_page = info->tail_page;
+    struct ring_buffer_event *event;
+    unsigned long length = info->length;
+
+    /* Only the event that crossed the page boundary
+     * must fill the old tail_page with padding. */
+    if (tail >= bsize) {
+        /* If the page was filled, then we still need
+         * to update the real_end. Reset it to zero
+         * and the reader will ignore it. */
+        if (tail == bsize)
+            tail_page->real_end = 0;
+
+        local_sub(length, &tail_page->write);
+        return;
+    }
+
+    event = __rb_page_index(tail_page, tail) {
+        return bpage->page->data + index;
+    }
+
+    /* Save the original length to the meta data.
+     * This will be used by the reader to add lost event
+     * counter. */
+    tail_page->real_end = tail;
+
+    /* If this event is bigger than the minimum size, then
+     * we need to be careful that we don't subtract the
+     * write counter enough to allow another writer to slip
+     * in on this page.
+     * We put in a discarded commit instead, to make sure
+     * that this space is not used again, and this space will
+     * not be accounted into 'entries_bytes'.
+     *
+     * If we are less than the minimum size, we don't need to
+     * worry about it. */
+    if (tail > (bsize - RB_EVNT_MIN_SIZE)) {
+        /* No room for any events */
+
+        /* Mark the rest of the page with padding */
+        rb_event_set_padding(event) {
+            /* padding has a NULL time_delta */
+            event->type_len = RINGBUF_TYPE_PADDING;
+            event->time_delta = 0;
+        }
+
+        /* Make sure the padding is visible before the write update */
+        smp_wmb();
+
+        /* Set the write back to the previous setting */
+        local_sub(length, &tail_page->write);
+        return;
+    }
+
+    /* Put in a discarded event */
+    event->array[0] = (bsize - tail) - RB_EVNT_HDR_SIZE;
+    event->type_len = RINGBUF_TYPE_PADDING;
+    /* time delta must be non zero */
+    event->time_delta = 1;
+
+    /* account for padding bytes */
+    local_add(bsize - tail, &cpu_buffer->entries_bytes);
+
+    /* Make sure the padding is visible before the tail_page->write update */
+    smp_wmb();
+
+    /* Set write to end of buffer */
+    length = (tail + length) - bsize;
+    local_sub(length, &tail_page->write);
+}
+```
+
+#### rb_end_commit
+
+```c
+void rb_end_commit(struct ring_buffer_per_cpu *cpu_buffer)
+{
+    unsigned long commits;
+
+    if (RB_WARN_ON(cpu_buffer, !local_read(&cpu_buffer->committing)))
+        return;
+
+ again:
+    commits = local_read(&cpu_buffer->commits);
+    /* synchronize with interrupts */
+    barrier();
+    if (local_read(&cpu_buffer->committing) == 1)
+        rb_set_commit_to_write(cpu_buffer);
+
+    local_dec(&cpu_buffer->committing);
+
+    /* synchronize with interrupts */
+    barrier();
+
+    /* Need to account for interrupts coming in between the
+     * updating of the commit page and the clearing of the
+     * committing counter. */
+    if (unlikely(local_read(&cpu_buffer->commits) != commits) &&
+        !local_read(&cpu_buffer->committing)) {
+        local_inc(&cpu_buffer->committing);
+        goto again;
+    }
+}
+
+ void
+rb_set_commit_to_write(struct ring_buffer_per_cpu *cpu_buffer)
+{
+    unsigned long max_count;
+
+    /* We only race with interrupts and NMIs on this CPU.
+     * If we own the commit event, then we can commit
+     * all others that interrupted us, since the interruptions
+     * are in stack format (they finish before they come
+     * back to us). This allows us to do a simple loop to
+     * assign the commit to the tail. */
+ again:
+    max_count = cpu_buffer->nr_pages * 100;
+
+    while (cpu_buffer->commit_page != READ_ONCE(cpu_buffer->tail_page)) {
+        if (RB_WARN_ON(cpu_buffer, !(--max_count)))
+            return;
+        if (RB_WARN_ON(cpu_buffer, rb_is_reader_page(cpu_buffer->tail_page)))
+            return;
+        /* No need for a memory barrier here, as the update
+         * of the tail_page did it for this page. */
+        local_set(&cpu_buffer->commit_page->page->commit, rb_page_write(cpu_buffer->commit_page));
+
+        rb_inc_page(&cpu_buffer->commit_page) {
+            struct list_head *p = rb_list_head((*bpage)->list.next);
+
+            *bpage = list_entry(p, struct buffer_page, list);
+        }
+        if (cpu_buffer->ring_meta) {
+            struct ring_buffer_cpu_meta *meta = cpu_buffer->ring_meta;
+            meta->commit_buffer = (unsigned long)cpu_buffer->commit_page->page;
+        }
+        /* add barrier to keep gcc from optimizing too much */
+        barrier();
+    }
+    while (rb_commit_index(cpu_buffer) != rb_page_write(cpu_buffer->commit_page)) {
+        /* Make sure the readers see the content of what is committed. */
+        smp_wmb();
+        local_set(&cpu_buffer->commit_page->page->commit, rb_page_write(cpu_buffer->commit_page));
+        RB_WARN_ON(cpu_buffer,
+               local_read(&cpu_buffer->commit_page->page->commit) &
+               ~RB_WRITE_MASK);
+        barrier();
+    }
+
+    /* again, keep gcc from optimizing */
+    barrier();
+
+    /* If an interrupt came in just after the first while loop
+     * and pushed the tail page forward, we will be left with
+     * a dangling commit that will never go forward. */
+    if (unlikely(cpu_buffer->commit_page != READ_ONCE(cpu_buffer->tail_page)))
+        goto again;
+}
+```
+
+### ring_buffer_unlock_commit
+
+```c
+int ring_buffer_unlock_commit(struct trace_buffer *buffer)
+{
+    struct ring_buffer_per_cpu *cpu_buffer;
+    int cpu = raw_smp_processor_id();
+
+    cpu_buffer = buffer->buffers[cpu];
+
+    rb_commit(cpu_buffer){
+        local_inc(&cpu_buffer->entries);
+        rb_end_commit(cpu_buffer);
+    }
+
+    rb_wakeups(buffer, cpu_buffer) {
+        if (buffer->irq_work.waiters_pending) {
+            buffer->irq_work.waiters_pending = false;
+            /* irq_work_queue() supplies it's own memory barriers */
+            irq_work_queue(&buffer->irq_work.work);
+        }
+
+        if (cpu_buffer->irq_work.waiters_pending) {
+            cpu_buffer->irq_work.waiters_pending = false;
+            /* irq_work_queue() supplies it's own memory barriers */
+            irq_work_queue(&cpu_buffer->irq_work.work);
+        }
+
+        if (cpu_buffer->last_pages_touch == local_read(&cpu_buffer->pages_touched))
+            return;
+
+        if (cpu_buffer->reader_page == cpu_buffer->commit_page)
+            return;
+
+        if (!cpu_buffer->irq_work.full_waiters_pending)
+            return;
+
+        cpu_buffer->last_pages_touch = local_read(&cpu_buffer->pages_touched);
+
+        if (!full_hit(buffer, cpu_buffer->cpu, cpu_buffer->shortest_full))
+            return;
+
+        cpu_buffer->irq_work.wakeup_full = true;
+        cpu_buffer->irq_work.full_waiters_pending = false;
+        /* irq_work_queue() supplies it's own memory barriers */
+        irq_work_queue(&cpu_buffer->irq_work.work);
+    }
+
+    trace_recursive_unlock(cpu_buffer);
+
+    preempt_enable_notrace();
+
+    return 0;
+}
+```
+
+### ring_buffer_wait
+
+```c
+int ring_buffer_wait(struct trace_buffer *buffer, int cpu, int full,
+             ring_buffer_cond_fn cond, void *data)
+{
+    struct ring_buffer_per_cpu *cpu_buffer;
+    struct wait_queue_head *waitq;
+    struct rb_irq_work *rbwork;
+    struct rb_wait_data rdata;
+    int ret = 0;
+
+    /* Depending on what the caller is waiting for, either any
+     * data in any cpu buffer, or a specific buffer, put the
+     * caller on the appropriate wait queue. */
+    if (cpu == RING_BUFFER_ALL_CPUS) {
+        rbwork = &buffer->irq_work;
+        /* Full only makes sense on per cpu reads */
+        full = 0;
+    } else {
+        if (!cpumask_test_cpu(cpu, buffer->cpumask))
+            return -ENODEV;
+        cpu_buffer = buffer->buffers[cpu];
+        rbwork = &cpu_buffer->irq_work;
+    }
+
+    if (full)
+        waitq = &rbwork->full_waiters;
+    else
+        waitq = &rbwork->waiters;
+
+    /* Set up to exit loop as soon as it is woken */
+    if (!cond) {
+        cond = rb_wait_once;
+        rdata.irq_work = rbwork;
+        rdata.seq = atomic_read_acquire(&rbwork->seq);
+        data = &rdata;
+    }
+
+    ret = wait_event_interruptible((*waitq),
+        rb_wait_cond(rbwork, buffer, cpu, full, cond, data));
+
+    return ret;
+}
+
+static inline bool
+rb_wait_cond(struct rb_irq_work *rbwork, struct trace_buffer *buffer,
+         int cpu, int full, ring_buffer_cond_fn cond, void *data)
+{
+    if (rb_watermark_hit(buffer, cpu, full))
+        return true;
+
+    if (cond(data))
+        return true;
+
+    /* The events can happen in critical sections where
+     * checking a work queue can cause deadlocks.
+     * After adding a task to the queue, this flag is set
+     * only to notify events to try to wake up the queue
+     * using irq_work.
+     *
+     * We don't clear it even if the buffer is no longer
+     * empty. The flag only causes the next event to run
+     * irq_work to do the work queue wake up. The worse
+     * that can happen if we race with !trace_empty() is that
+     * an event will cause an irq_work to try to wake up
+     * an empty queue.
+     *
+     * There's no reason to protect this flag either, as
+     * the work queue and irq_work logic will do the necessary
+     * synchronization for the wake ups. The only thing
+     * that is necessary is that the wake up happens after
+     * a task has been queued. It's OK for spurious wake ups. */
+    if (full)
+        rbwork->full_waiters_pending = true;
+    else
+        rbwork->waiters_pending = true;
+
+    return false;
+}
+
+bool rb_watermark_hit(struct trace_buffer *buffer, int cpu, int full)
+{
+    struct ring_buffer_per_cpu *cpu_buffer;
+    bool ret = false;
+
+    /* Reads of all CPUs always waits for any data */
+    if (cpu == RING_BUFFER_ALL_CPUS) {
+        return !ring_buffer_empty(buffer) {
+            struct ring_buffer_per_cpu *cpu_buffer;
+            unsigned long flags;
+            bool dolock;
+            bool ret;
+            int cpu;
+
+            /* yes this is racy, but if you don't like the race, lock the buffer */
+            for_each_buffer_cpu(buffer, cpu) {
+                cpu_buffer = buffer->buffers[cpu];
+                local_irq_save(flags);
+                dolock = rb_reader_lock(cpu_buffer);
+                ret = rb_per_cpu_empty(cpu_buffer) {
+                    return !rb_num_of_entries(cpu_buffer) {
+                        return local_read(&cpu_buffer->entries) -
+                            (local_read(&cpu_buffer->overrun) + cpu_buffer->read);
+                    }
+                }
+                rb_reader_unlock(cpu_buffer, dolock);
+                local_irq_restore(flags);
+
+                if (!ret)
+                    return false;
+            }
+
+            return true;
+        }
+    }
+
+    cpu_buffer = buffer->buffers[cpu];
+
+    if (!ring_buffer_empty_cpu(buffer, cpu)) {
+        unsigned long flags;
+        bool pagebusy;
+
+        if (!full)
+            return true;
+
+        raw_spin_lock_irqsave(&cpu_buffer->reader_lock, flags);
+        pagebusy = cpu_buffer->reader_page == cpu_buffer->commit_page;
+
+        ret = !pagebusy && full_hit(buffer, cpu, full) {
+            struct ring_buffer_per_cpu *cpu_buffer = buffer->buffers[cpu];
+            size_t nr_pages;
+            size_t dirty;
+
+            nr_pages = cpu_buffer->nr_pages;
+            if (!nr_pages || !full)
+                return true;
+
+            /* Add one as dirty will never equal nr_pages, as the sub-buffer
+            * that the writer is on is not counted as dirty.
+            * This is needed if "buffer_percent" is set to 100. */
+            dirty = ring_buffer_nr_dirty_pages(buffer, cpu) {
+                size_t read;
+                size_t lost;
+                size_t cnt;
+
+                read = local_read(&buffer->buffers[cpu]->pages_read);
+                lost = local_read(&buffer->buffers[cpu]->pages_lost);
+                cnt = local_read(&buffer->buffers[cpu]->pages_touched);
+
+                if (WARN_ON_ONCE(cnt < lost))
+                    return 0;
+
+                cnt -= lost;
+
+                /* The reader can read an empty page, but not more than that */
+                if (cnt < read) {
+                    WARN_ON_ONCE(read > cnt + 1);
+                    return 0;
+                }
+
+                return cnt - read;
+            } + 1;
+
+            return (dirty * 100) >= (full * nr_pages);
+        }
+
+        if (!ret && (!cpu_buffer->shortest_full || cpu_buffer->shortest_full > full)) {
+            cpu_buffer->shortest_full = full;
+        }
+
+        raw_spin_unlock_irqrestore(&cpu_buffer->reader_lock, flags);
+    }
+
+    return ret;
+}
+```
+
+## init_tracer_tracefs
+
+```c
+static void
+init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
+{
+    int cpu;
+
+    trace_create_file("available_tracers", TRACE_MODE_READ, d_tracer, tr, &show_traces_fops);
+
+    trace_create_file("current_tracer", TRACE_MODE_WRITE, d_tracer, tr, &set_tracer_fops);
+
+    trace_create_file("tracing_cpumask", TRACE_MODE_WRITE, d_tracer, tr, &tracing_cpumask_fops);
+
+    trace_create_file("trace_options", TRACE_MODE_WRITE, d_tracer,
+              tr, &tracing_iter_fops);
+
+    trace_create_file("trace", TRACE_MODE_WRITE, d_tracer,
+              tr, &tracing_fops);
+
+    trace_create_file("trace_pipe", TRACE_MODE_READ, d_tracer,
+              tr, &tracing_pipe_fops);
+
+    trace_create_file("buffer_size_kb", TRACE_MODE_WRITE, d_tracer,
+              tr, &tracing_entries_fops);
+
+    trace_create_file("buffer_total_size_kb", TRACE_MODE_READ, d_tracer,
+              tr, &tracing_total_entries_fops);
+
+    trace_create_file("free_buffer", 0200, d_tracer,
+              tr, &tracing_free_buffer_fops);
+
+    trace_create_file("trace_marker", 0220, d_tracer,
+              tr, &tracing_mark_fops);
+
+    tr->trace_marker_file = __find_event_file(tr, "ftrace", "print");
+
+    trace_create_file("trace_marker_raw", 0220, d_tracer,
+              tr, &tracing_mark_raw_fops);
+
+    trace_create_file("trace_clock", TRACE_MODE_WRITE, d_tracer, tr,
+              &trace_clock_fops);
+
+    trace_create_file("tracing_on", TRACE_MODE_WRITE, d_tracer,
+              tr, &rb_simple_fops);
+
+    trace_create_file("timestamp_mode", TRACE_MODE_READ, d_tracer, tr,
+              &trace_time_stamp_mode_fops);
+
+    tr->buffer_percent = 50;
+
+    trace_create_file("buffer_percent", TRACE_MODE_WRITE, d_tracer,
+            tr, &buffer_percent_fops);
+
+    trace_create_file("buffer_subbuf_size_kb", TRACE_MODE_WRITE, d_tracer,
+              tr, &buffer_subbuf_size_fops);
+
+    trace_create_file("syscall_user_buf_size", TRACE_MODE_WRITE, d_tracer,
+             tr, &tracing_syscall_buf_fops);
+
+    create_trace_options_dir(tr);
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+    trace_create_maxlat_file(tr, d_tracer);
+#endif
+
+    if (ftrace_create_function_files(tr, d_tracer))
+        MEM_FAIL(1, "Could not allocate function filter files");
+
+    if (tr->range_addr_start) {
+        trace_create_file("last_boot_info", TRACE_MODE_READ, d_tracer,
+                  tr, &last_boot_fops);
+#ifdef CONFIG_TRACER_SNAPSHOT
+    } else {
+        trace_create_file("snapshot", TRACE_MODE_WRITE, d_tracer,
+                  tr, &snapshot_fops);
+#endif
+    }
+
+    trace_create_file("error_log", TRACE_MODE_WRITE, d_tracer,
+              tr, &tracing_err_log_fops);
+
+    for_each_tracing_cpu(cpu)
+        tracing_init_tracefs_percpu(tr, cpu);
+
+    ftrace_init_tracefs(tr, d_tracer);
+}
+```
+
+### /sys/kernel/tracing/trace
+
+```c
+static void
+init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
+{
+    trace_create_file("trace", 0644, d_tracer, tr, &tracing_fops);
+}
+
+static const struct file_operations tracing_fops = {
+    .open           = tracing_open,
+    .read           = seq_read,
+    .write          = tracing_write_stub,
+    .llseek         = tracing_lseek,
+    .release        = tracing_release,
+};
+
+static const struct seq_operations tracer_seq_ops = {
+    .start          = s_start,
+    .next           = s_next,
+    .stop           = s_stop,
+    .show           = s_show,
+};
+```
+
+### /sys/kernel/tracing/trace_pipe
+
+```c
+trace_create_file("trace_pipe", 0444, d_tracer, tr, &tracing_pipe_fops);
+
+static const struct file_operations tracing_pipe_fops = {
+    .open           = tracing_open_pipe,
+    .poll           = tracing_poll_pipe,
+    .read           = tracing_read_pipe,
+    .splice_read    = tracing_splice_read_pipe,
+    .release        = tracing_release_pipe,
+    .llseek         = no_llseek,
+};
+```
+
+
+### /sys/kernel/tracing/tracing_on
+
+```c
+static const struct file_operations rb_simple_fops = {
+    .open           = tracing_open_generic_tr,
+    .read           = rb_simple_read,
+    .write          = rb_simple_write,
+    .release        = tracing_release_generic_tr,
+    .llseek         = default_llseek,
+};
+
+static ssize_t
+rb_simple_write(struct file *filp, const char __user *ubuf,
+        size_t cnt, loff_t *ppos)
+{
+    struct trace_array *tr = filp->private_data;
+    struct trace_buffer *buffer = tr->array_buffer.buffer;
+    unsigned long val;
+    int ret;
+
+    ret = kstrtoul_from_user(ubuf, cnt, 10, &val);
+    if (ret)
+        return ret;
+
+    if (buffer) {
+        guard(mutex)(&trace_types_lock);
+        if (!!val == tracer_tracing_is_on(tr)) {
+            val = 0; /* do nothing */
+        } else if (val) {
+            tracer_tracing_on(tr) {
+                if (tr->array_buffer.buffer) {
+                    ring_buffer_record_on(tr->array_buffer.buffer) {
+                        unsigned int rd;
+                        unsigned int new_rd;
+
+                        rd = atomic_read(&buffer->record_disabled);
+                        do {
+                            new_rd = rd & ~RB_BUFFER_OFF;
+                        } while (!atomic_try_cmpxchg(&buffer->record_disabled, &rd, new_rd));
+                    }
+                }
+                /* This flag is looked at when buffers haven't been allocated
+                * yet, or by some tracers (like irqsoff), that just want to
+                * know if the ring buffer has been disabled, but it can handle
+                * races of where it gets disabled but we still do a record.
+                * As the check is in the fast path of the tracers, it is more
+                * important to be fast than accurate. */
+                tr->buffer_disabled = 0;
+            }
+            if (tr->current_trace->start)
+                tr->current_trace->start(tr);
+        } else {
+            tracer_tracing_off(tr);
+            if (tr->current_trace->stop)
+                tr->current_trace->stop(tr);
+            /* Wake up any waiters */
+            ring_buffer_wake_waiters(buffer, RING_BUFFER_ALL_CPUS);
+        }
+    }
+
+    (*ppos)++;
+
+    return cnt;
+}
 ```
 
 # static_key
@@ -5372,7 +7331,7 @@ Example: `gdb vmlinux`, then target remote `/dev/ttyS0`. Practice on a test VM.
 
 Configure kdump (`CONFIG_KEXEC`, kexec-tools). After a crash, run `crash vmlinux /proc/vmcore`. Use commands like `bt` (backtrace), `ps` (processes), and `log` (dmesg). Practice with sample vmcores.
 
-# high ksoftirqd
+## high ksoftirqd
 
 ```sh
 # 1. softirq account
@@ -5392,12 +7351,12 @@ sysctl -w net.core.netdev_budget_usecs=8000
 perf top -C 3,4 -g
 
 # ftrace
-echo 0 > /sys/kernel/debug/tracing/tracing_on
-echo softirq_entry > /sys/kernel/debug/tracing/set_event
-echo softirq_exit  >> /sys/kernel/debug/tracing/set_event
-echo 1 > /sys/kernel/debug/tracing/tracing_on
+echo 0 > /sys/kernel/tracing/tracing_on
+echo softirq_entry > /sys/kernel/tracing/set_event
+echo softirq_exit  >> /sys/kernel/tracing/set_event
+echo 1 > /sys/kernel/tracing/tracing_on
 sleep 5
-cat /sys/kernel/debug/tracing/trace
+cat /sys/kernel/tracing/trace
 
 # Timer
 perf top | grep hrtimer
