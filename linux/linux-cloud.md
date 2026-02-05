@@ -3592,6 +3592,7 @@ void cpu_cgroup_attach(struct cgroup_taskset *tset)
         sched_move_task(struct task_struct *tsk, bool for_autogroup) {
             unsigned int queue_flags = DEQUEUE_SAVE | DEQUEUE_MOVE;
             bool resched = false;
+            bool queued = false;
             struct rq *rq;
 
             CLASS(task_rq_lock, rq_guard)(tsk);
@@ -3641,10 +3642,15 @@ void cpu_cgroup_attach(struct cgroup_taskset *tset)
                     scx_cgroup_move_task(tsk);
                 if (scope->running)
                     resched = true;
+                queued = scope->queued;
             }
 
             if (resched)
                 resched_curr(rq);
+            else if (queued)
+		        wakeup_preempt(rq, tsk, 0);
+
+            __balance_callbacks(rq, &rq_guard.rf);
         }
     }
 }
@@ -5182,6 +5188,208 @@ struct task_group *sched_create_group(struct task_group *parent) {
     alloc_uclamp_sched_group(tg, parent);
 
     return tg;
+}
+```
+
+## cpuset_cgrp
+
+```c
+struct cpuset {
+    struct cgroup_subsys_state css;
+
+    unsigned long flags;        /* "unsigned long" so bitops work */
+
+    /* On default hierarchy:
+     *
+     * The user-configured masks can only be changed by writing to
+     * cpuset.cpus and cpuset.mems, and won't be limited by the
+     * parent masks.
+     *
+     * The effective masks is the real masks that apply to the tasks
+     * in the cpuset. They may be changed if the configured masks are
+     * changed or hotplug happens.
+     *
+     * effective_mask == configured_mask & parent's effective_mask,
+     * and if it ends up empty, it will inherit the parent's mask.
+     *
+     *
+     * On legacy hierarchy:
+     *
+     * The user-configured masks are always the same with effective masks. */
+
+    /* user-configured CPUs and Memory Nodes allow to tasks */
+    cpumask_var_t cpus_allowed;
+    nodemask_t mems_allowed;
+
+    /* effective CPUs and Memory Nodes allow to tasks */
+    cpumask_var_t effective_cpus;
+    nodemask_t effective_mems;
+
+    /* Exclusive CPUs dedicated to current cgroup (default hierarchy only)
+     *
+     * The effective_cpus of a valid partition root comes solely from its
+     * effective_xcpus and some of the effective_xcpus may be distributed
+     * to sub-partitions below & hence excluded from its effective_cpus.
+     * For a valid partition root, its effective_cpus have no relationship
+     * with cpus_allowed unless its exclusive_cpus isn't set.
+     *
+     * This value will only be set if either exclusive_cpus is set or
+     * when this cpuset becomes a local partition root. */
+    cpumask_var_t effective_xcpus;
+
+    /* Exclusive CPUs as requested by the user (default hierarchy only)
+     *
+     * Its value is independent of cpus_allowed and designates the set of
+     * CPUs that can be granted to the current cpuset or its children when
+     * it becomes a valid partition root. The effective set of exclusive
+     * CPUs granted (effective_xcpus) depends on whether those exclusive
+     * CPUs are passed down by its ancestors and not yet taken up by
+     * another sibling partition root along the way.
+     *
+     * If its value isn't set, it defaults to cpus_allowed. */
+    cpumask_var_t exclusive_cpus;
+
+    /* This is old Memory Nodes tasks took on.
+     *
+     * - top_cpuset.old_mems_allowed is initialized to mems_allowed.
+     * - A new cpuset's old_mems_allowed is initialized when some
+     *   task is moved into it.
+     * - old_mems_allowed is used in cpuset_migrate_mm() when we change
+     *   cpuset.mems_allowed and have tasks' nodemask updated, and
+     *   then old_mems_allowed is updated to mems_allowed. */
+    nodemask_t old_mems_allowed;
+
+    struct fmeter fmeter;        /* memory_pressure filter */
+
+    /* Tasks are being attached to this cpuset.  Used to prevent
+     * zeroing cpus/mems_allowed between ->can_attach() and ->attach(). */
+    int attach_in_progress;
+
+    /* for custom sched domain */
+    int relax_domain_level;
+
+    /* partition root state */
+    int partition_root_state;
+
+    /* Whether cpuset is a remote partition.
+     * It used to be a list anchoring all remote partitions — we can switch back
+     * to a list if we need to iterate over the remote partitions. */
+    bool remote_partition;
+
+    /* number of SCHED_DEADLINE tasks attached to this cpuset, so that we
+     * know when to rebuild associated root domain bandwidth information. */
+    int nr_deadline_tasks;
+    int nr_migrate_dl_tasks;
+    u64 sum_migrate_dl_bw;
+
+    /* Invalid partition error code, not lock protected */
+    enum prs_errcode prs_err;
+
+    /* Handle for cpuset.cpus.partition */
+    struct cgroup_file partition_file;
+
+    /* Used to merge intersecting subsets for generate_sched_domains */
+    struct uf_node node;
+};
+```
+
+```c
+struct cgroup_subsys cpuset_cgrp_subsys = {
+    .css_alloc          = cpuset_css_alloc,
+    .css_online         = cpuset_css_online,
+    .css_offline        = cpuset_css_offline,
+    .css_killed         = cpuset_css_killed,
+    .css_free           = cpuset_css_free,
+    .can_attach         = cpuset_can_attach,
+    .cancel_attach      = cpuset_cancel_attach,
+    .attach             = cpuset_attach,
+    .bind               = cpuset_bind,
+    .can_fork           = cpuset_can_fork,
+    .cancel_fork        = cpuset_cancel_fork,
+    .fork               = cpuset_fork,
+#ifdef CONFIG_CPUSETS_V1
+    .legacy_cftypes     = cpuset1_files,
+#endif
+    .dfl_cftypes        = dfl_files,
+    .early_init         = true,
+    .threaded           = true,
+};
+```
+
+### cpuset_can_attach
+
+```c
+static int cpuset_can_attach(struct cgroup_taskset *tset)
+{
+    struct cgroup_subsys_state *css;
+    struct cpuset *cs, *oldcs;
+    struct task_struct *task;
+    bool cpus_updated, mems_updated;
+    int ret;
+
+    /* used later by cpuset_attach() */
+    cpuset_attach_old_cs = task_cs(cgroup_taskset_first(tset, &css));
+    oldcs = cpuset_attach_old_cs;
+    cs = css_cs(css);
+
+    mutex_lock(&cpuset_mutex);
+
+    /* Check to see if task is allowed in the cpuset */
+    ret = cpuset_can_attach_check(cs);
+    if (ret)
+        goto out_unlock;
+
+    cpus_updated = !cpumask_equal(cs->effective_cpus, oldcs->effective_cpus);
+    mems_updated = !nodes_equal(cs->effective_mems, oldcs->effective_mems);
+
+    cgroup_taskset_for_each(task, css, tset) {
+        ret = task_can_attach(task);
+        if (ret)
+            goto out_unlock;
+
+        /* Skip rights over task check in v2 when nothing changes,
+         * migration permission derives from hierarchy ownership in
+         * cgroup_procs_write_permission()). */
+        if (!cpuset_v2() || (cpus_updated || mems_updated)) {
+            ret = security_task_setscheduler(task);
+            if (ret)
+                goto out_unlock;
+        }
+
+        if (dl_task(task)) {
+            cs->nr_migrate_dl_tasks++;
+            cs->sum_migrate_dl_bw += task->dl.dl_bw;
+        }
+    }
+
+    if (!cs->nr_migrate_dl_tasks)
+        goto out_success;
+
+    if (!cpumask_intersects(oldcs->effective_cpus, cs->effective_cpus)) {
+        int cpu = cpumask_any_and(cpu_active_mask, cs->effective_cpus);
+
+        if (unlikely(cpu >= nr_cpu_ids)) {
+            reset_migrate_dl_data(cs);
+            ret = -EINVAL;
+            goto out_unlock;
+        }
+
+        ret = dl_bw_alloc(cpu, cs->sum_migrate_dl_bw) {
+
+        }
+        if (ret) {
+            reset_migrate_dl_data(cs);
+            goto out_unlock;
+        }
+    }
+
+out_success:
+    /* Mark attach is in progress.  This makes validate_change() fail
+     * changes which zero cpus/mems_allowed. */
+    cs->attach_in_progress++;
+out_unlock:
+    mutex_unlock(&cpuset_mutex);
+    return ret;
 }
 ```
 
