@@ -67,9 +67,7 @@
 
 * [slab](#slab)
     * [slab_alloc](#slab_alloc)
-* [slub](#slub)
-    * [slub_alloc](#slub_alloc)
-    * [slub_free](#slub_free)
+    * [slab_free](#slab_free)
 * [kernel mapping](#kernel-mapping)
 * [kmalloc](#kmalloc)
     * [kmalloc_caches](#kmalloc_caches)
@@ -227,7 +225,7 @@
     * [YouTube - Large Pages in the Linux Kernel - 2020.12.03 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=hoSpvGxXgNg)
     * [YouTuBe - Folios - 2022.6.20 Matthew Wilcox](https://www.youtube.com/watch?v=URTuP6wXYPA)
     * [YouTube - Memory Folios - 2022.6.23 Matthew Wilcox, Oracle](https://www.youtube.com/watch?v=nknQML80w3E)
-    * [论好名字的重要性： Linux内核page到folio的变迁](https://mp.weixin.qq.com/s/4XnyOCSQwf6NGXY8RIAI0A)
+    * [论好名字的重要性:  Linux内核page到folio的变迁](https://mp.weixin.qq.com/s/4XnyOCSQwf6NGXY8RIAI0A)
 * [LWN - Compund Page](https://lwn.net/Kernel/Index/#Memory_management-Compound_pages)
 * [wowo tech - memory management :cn:](http://www.wowotech.net/sort/memory_management)
     * [ARM64 Kernel Image Mapping](http://www.wowotech.net/memory_management/436.html)
@@ -260,7 +258,7 @@
     * [rmap](https://www.cnblogs.com/LoyenWang/p/12164683.html)
     * [cma](https://www.cnblogs.com/LoyenWang/p/12182594.html)
 
-* [内存管理2：ARM64 linux虚拟内存布局是怎样的](https://zhuanlan.zhihu.com/p/407063888)
+* [内存管理2: ARM64 linux虚拟内存布局是怎样的](https://zhuanlan.zhihu.com/p/407063888)
 
 * Cache
     * [深入学习Cache系列 :one: :link:](https://mp.weixin.qq.com/s/0_TRtwVxWW2B-izGFwykOw) ⊙ [:two: :link:](https://mp.weixin.qq.com/s/zN1BlEL378YSSKlcL96MGQ) ⊙ [:three: :link:](https://mp.weixin.qq.com/s/84BAFSCjasJBFDiN-XXUMg)
@@ -278,8 +276,8 @@
 
 *  深度 Linux
     * [探索三大分配器: bootmem, buddy, slab](https://mp.weixin.qq.com/s/Ki1z8na9-oVw1tk7PcdVrg)
-    * [Linux内存回收机制：系统性能的幕后守护者](https://mp.weixin.qq.com/s/DwYGCwdr4Qb_bFvW5c1-pA)
-    * [探秘IOMMU：从概念到原理的深度解析](https://mp.weixin.qq.com/s/XFwaEzFgN5FVDn5wheWhkA)
+    * [Linux内存回收机制: 系统性能的幕后守护者](https://mp.weixin.qq.com/s/DwYGCwdr4Qb_bFvW5c1-pA)
+    * [探秘IOMMU: 从概念到原理的深度解析](https://mp.weixin.qq.com/s/XFwaEzFgN5FVDn5wheWhkA)
 
 * Kernel Exploring
     * [内存管理的不同粒度](https://richardweiyang-2.gitbook.io/kernel-exploring/00-memory_a_bottom_up_view/13-physical-layer-partition)
@@ -2261,8 +2259,23 @@ struct page *__alloc_frozen_pages_noprof(gfp_t gfp, unsigned int order,
     page = __alloc_pages_slowpath(alloc_gfp, order, &ac);
 
 out:
+    ret = __memcg_kmem_charge_page(page, gfp, order) {
+        struct obj_cgroup *objcg;
+        int ret = 0;
+
+        objcg = current_obj_cgroup();
+        if (objcg) {
+            ret = obj_cgroup_charge_pages(objcg, gfp, 1 << order);
+            if (!ret) {
+                obj_cgroup_get(objcg);
+                page_set_objcg(page, objcg);
+                return 0;
+            }
+        }
+        return ret;
+    }
     if (memcg_kmem_online() && (gfp & __GFP_ACCOUNT) && page &&
-        unlikely(__memcg_kmem_charge_page(page, gfp, order) != 0)) {
+        unlikely(ret != 0)) {
         __free_pages(page, order);
         page = NULL;
     }
@@ -2461,6 +2474,8 @@ struct page * get_page_from_freelist(
     struct pglist_data *last_pgdat = NULL;
     bool last_pgdat_dirty_ok = false;
     bool no_fallback;
+    bool skip_kswapd_nodes = nr_online_nodes > 1;
+    bool skipped_kswapd_nodes = false;
 
 retry:
     /* Scan zonelist, looking for a zone with enough free.
@@ -2471,10 +2486,8 @@ retry:
         struct page *page;
         unsigned long mark;
 
-        if (cpusets_enabled() &&
-            (alloc_flags & ALLOC_CPUSET) &&
-            !__cpuset_zone_allowed(zone, gfp_mask))
-                continue;
+        if (cpusets_enabled() && (alloc_flags & ALLOC_CPUSET) && !__cpuset_zone_allowed(zone, gfp_mask))
+            continue;
 
         if (ac->spread_dirty_pages) {
             if (last_pgdat != zone->zone_pgdat) {
@@ -2505,6 +2518,16 @@ retry:
                 alloc_flags &= ~ALLOC_NOFRAGMENT;
                 goto retry;
             }
+        }
+
+        /* If kswapd is already active on a node, keep looking
+         * for other nodes that might be idle. This can happen
+         * if another process has NUMA bindings and is causing
+         * kswapd wakeups on only some nodes. Avoid accidental
+         * "node_reclaim_mode"-like behavior in this case. */
+        if (skip_kswapd_nodes && !waitqueue_active(&zone->zone_pgdat->kswapd_wait)) {
+            skipped_kswapd_nodes = true;
+            continue;
         }
 
         cond_accept_memory(zone, order, alloc_flags);
@@ -2641,17 +2664,27 @@ try_this_zone:
 
             return page;
         } else {
-            if (has_unaccepted_memory()) {
-                if (try_to_accept_memory(zone, order)) {
+            if (cond_accept_memory(zone, order, alloc_flags))
+                goto try_this_zone;
+
+            /* Try again if zone has deferred pages */
+            if (deferred_pages_enabled()) {
+                if (_deferred_grow_zone(zone, order))
                     goto try_this_zone;
-                }
             }
         }
     }
 
+    /* If we skipped over nodes with active kswapds and found no
+     * idle nodes, retry and place anywhere the watermarks permit. */
+    if (skip_kswapd_nodes && skipped_kswapd_nodes) {
+        skip_kswapd_nodes = false;
+        goto retry;
+    }
+
     /* It's possible on a UMA machine to get through all zones that are
      * fragmented. If avoiding fragmentation, reset and try again. */
-    if (no_fallback) {
+    if (no_fallback && !defrag_mode) {
         alloc_flags &= ~ALLOC_NOFRAGMENT;
         goto retry;
     }
@@ -3424,9 +3457,20 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
     unsigned int zonelist_iter_cookie;
     int reserve_flags;
 
+    if (unlikely(nofail)) {
+        /* Also we don't support __GFP_NOFAIL without __GFP_DIRECT_RECLAIM,
+         * otherwise, we may result in lockup. */
+        WARN_ON_ONCE(!can_direct_reclaim);
+        /* PF_MEMALLOC request from this context is rather bizarre
+         * because we cannot reclaim anything and only can loop waiting
+         * for somebody to do a work for us. */
+        WARN_ON_ONCE(current->flags & PF_MEMALLOC);
+    }
+
 restart:
     compaction_retries = 0;
     no_progress_loops = 0;
+    compact_result = COMPACT_SKIPPED;
     compact_priority = DEF_COMPACT_PRIORITY;
     cpuset_mems_cookie = read_mems_allowed_begin();
     zonelist_iter_cookie = zonelist_iter_begin();
@@ -3465,7 +3509,7 @@ restart:
     * could end up iterating over non-eligible zones endlessly. */
     ac->preferred_zoneref = first_zones_zonelist(
         ac->zonelist, ac->highest_zoneidx, ac->nodemask);
-    if (!ac->preferred_zoneref->zone)
+    if (!zonelist_zone(ac->preferred_zoneref))
         goto nopage;
 
     /* Check for insane configurations where the cpuset doesn't contain
@@ -3476,7 +3520,7 @@ restart:
             ac->zonelist,
             ac->highest_zoneidx,
             &cpuset_current_mems_allowed);
-        if (!z->zone)
+        if (!zonelist_zone(z))
             goto nopage;
     }
 
@@ -3532,7 +3576,7 @@ retry:
         wake_all_kswapds(order, gfp_mask, ac);
 
     /* "Process Flag: Memory Allocation" and signals that this task is special
-     * when it comes to memory allocation—it’s allowed to bypass normal restrictions
+     * when it comes to memory allocation-it’s allowed to bypass normal restrictions
      * and tap into reserved memory pools. */
     reserve_flags = __gfp_pfmemalloc_flags(gfp_mask) {
         if (unlikely(gfp_mask & __GFP_NOMEMALLOC))
@@ -3550,14 +3594,14 @@ retry:
 
         return 0; /* normal mem alloc */
     }
-    if (reserve_flags)
-        alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) |
-                    (alloc_flags & ALLOC_KSWAPD) {
-    #ifdef CONFIG_CMA
-        if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
-            alloc_flags |= ALLOC_CMA;
-    #endif
-        return alloc_flags;
+    if (reserve_flags) {
+        alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, reserve_flags) {
+        #ifdef CONFIG_CMA
+            if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
+                alloc_flags |= ALLOC_CMA;
+        #endif
+            return alloc_flags;
+        } | (alloc_flags & ALLOC_KSWAPD);
     }
 
     /* Reset the nodemask and zonelist iterators if memory policies can be
@@ -3602,7 +3646,7 @@ retry:
 
     /* Do not retry costly high order allocations unless they are
      * __GFP_RETRY_MAYFAIL */
-    if (costly_order && !(gfp_mask & __GFP_RETRY_MAYFAIL))
+    if (costly_order && (!can_compact || !(gfp_mask & __GFP_RETRY_MAYFAIL)))
         goto nopage;
 
     if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
@@ -3651,28 +3695,29 @@ nopage:
     /* Make sure that __GFP_NOFAIL request doesn't leak out and make sure
     * we always retry */
     if (gfp_mask & __GFP_NOFAIL) {
-        /* All existing users of the __GFP_NOFAIL are blockable, so warn
-        * of any new users that actually require GFP_NOWAIT */
-        if (WARN_ON_ONCE_GFP(!can_direct_reclaim, gfp_mask))
+        /* Lacking direct_reclaim we can't do anything to reclaim memory,
+         * we disregard these unreasonable nofail requests and still
+         * return NULL */
+        if (!can_direct_reclaim)
             goto fail;
-
-        /* PF_MEMALLOC request from this context is rather bizarre
-         * because we cannot reclaim anything and only can loop waiting
-         * for somebody to do a work for us */
-        WARN_ON_ONCE_GFP(current->flags & PF_MEMALLOC, gfp_mask);
-
-        /* non failing costly orders are a hard requirement which we
-         * are not prepared for much so let's warn about these users
-         * so that we can identify them and convert them to something
-         * else. */
-        WARN_ON_ONCE_GFP(costly_order, gfp_mask);
 
         /* Help non-failing allocations by giving some access to memory
          * reserves normally used for high priority non-blocking
          * allocations but do not use ALLOC_NO_WATERMARKS because this
          * could deplete whole memory reserves which would just make
          * the situation worse. */
-        page = __alloc_pages_cpuset_fallback(gfp_mask, order, ALLOC_MIN_RESERVE, ac);
+        page = __alloc_pages_cpuset_fallback(gfp_mask, order, ALLOC_MIN_RESERVE, ac) {
+            struct page *page;
+
+            page = get_page_from_freelist(gfp_mask, order, alloc_flags|ALLOC_CPUSET, ac);
+            /*
+            * fallback to ignore cpuset restriction if our nodes
+            * are depleted
+            */
+            if (!page)
+                page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
+            return page;
+        }
         if (page)
             goto got_pg;
 
@@ -3889,6 +3934,138 @@ struct page * __alloc_pages_may_oom(gfp_t gfp_mask, unsigned int order,
 out:
     mutex_unlock(&oom_lock);
     return page;
+}
+```
+
+### reserve_highatomic_pageblock
+
+```c
+void reserve_highatomic_pageblock(struct page *page, int order,
+                     struct zone *zone)
+{
+    int mt;
+    unsigned long max_managed, flags;
+
+    /* The number reserved as: minimum is 1 pageblock, maximum is
+     * roughly 1% of a zone. But if 1% of a zone falls below a
+     * pageblock size, then don't reserve any pageblocks.
+     * Check is race-prone but harmless. */
+    if ((zone_managed_pages(zone) / 100) < pageblock_nr_pages)
+        return;
+    max_managed = ALIGN((zone_managed_pages(zone) / 100), pageblock_nr_pages);
+    if (zone->nr_reserved_highatomic >= max_managed)
+        return;
+
+    spin_lock_irqsave(&zone->lock, flags);
+
+    /* Recheck the nr_reserved_highatomic limit under the lock */
+    if (zone->nr_reserved_highatomic >= max_managed)
+        goto out_unlock;
+
+    /* Yoink! */
+    mt = get_pageblock_migratetype(page);
+    /* Only reserve normal pageblocks (i.e., they can merge with others) */
+    if (!migratetype_is_mergeable(mt))
+        goto out_unlock;
+
+    if (order < pageblock_order) {
+        if (move_freepages_block(zone, page, mt, MIGRATE_HIGHATOMIC) == -1)
+            goto out_unlock;
+        zone->nr_reserved_highatomic += pageblock_nr_pages;
+    } else {
+        change_pageblock_range(page, order, MIGRATE_HIGHATOMIC);
+        zone->nr_reserved_highatomic += 1 << order;
+    }
+
+out_unlock:
+    spin_unlock_irqrestore(&zone->lock, flags);
+}
+
+static int move_freepages_block(struct zone *zone, struct page *page,
+                int old_mt, int new_mt)
+{
+    unsigned long start_pfn;
+    int res;
+
+    ret = prep_move_freepages_block(zone, page, &start_pfn, NULL, NULL) {
+        unsigned long pfn, start, end;
+
+        pfn = page_to_pfn(page);
+        start = pageblock_start_pfn(pfn);
+        end = pageblock_end_pfn(pfn);
+
+        /* The caller only has the lock for @zone, don't touch ranges
+        * that straddle into other zones. While we could move part of
+        * the range that's inside the zone, this call is usually
+        * accompanied by other operations such as migratetype updates
+        * which also should be locked. */
+        if (!zone_spans_pfn(zone, start))
+            return false;
+        if (!zone_spans_pfn(zone, end - 1))
+            return false;
+
+        *start_pfn = start;
+
+        if (num_free) {
+            *num_free = 0;
+            *num_movable = 0;
+            for (pfn = start; pfn < end;) {
+                page = pfn_to_page(pfn);
+                if (PageBuddy(page)) {
+                    int nr = 1 << buddy_order(page);
+
+                    *num_free += nr;
+                    pfn += nr;
+                    continue;
+                }
+                /* We assume that pages that could be isolated for
+                * migration are movable. But we don't actually try
+                * isolating, as that would be expensive. */
+                if (PageLRU(page) || page_has_movable_ops(page))
+                    (*num_movable)++;
+                pfn++;
+            }
+        }
+
+        return true;
+    }
+    if (!ret)
+        return -1;
+
+    res = __move_freepages_block(zone, start_pfn, old_mt, new_mt) {
+        struct page *page;
+        unsigned long pfn, end_pfn;
+        unsigned int order;
+        int pages_moved = 0;
+
+        VM_WARN_ON(start_pfn & (pageblock_nr_pages - 1));
+        end_pfn = pageblock_end_pfn(start_pfn);
+
+        for (pfn = start_pfn; pfn < end_pfn;) {
+            page = pfn_to_page(pfn);
+            if (!PageBuddy(page)) {
+                pfn++;
+                continue;
+            }
+
+            /* Make sure we are not inadvertently changing nodes */
+            VM_BUG_ON_PAGE(page_to_nid(page) != zone_to_nid(zone), page);
+            VM_BUG_ON_PAGE(page_zone(page) != zone, page);
+
+            order = buddy_order(page);
+
+            move_to_free_list(page, zone, order, old_mt, new_mt);
+
+            pfn += 1 << order;
+            pages_moved += 1 << order;
+        }
+
+        return pages_moved;
+    }
+    set_pageblock_migratetype(pfn_to_page(start_pfn), new_mt);
+
+    return res;
+
 }
 ```
 
@@ -4393,14 +4570,6 @@ LIST_HEAD(slab_caches);
 DEFINE_MUTEX(slab_mutex);
 struct kmem_cache *kmem_cache;
 
-/* mm/slab.c */
-struct kmem_cache kmem_cache_boot = {
-    .name   = "kmem_cache",
-    .size   = sizeof(struct kmem_cache),
-    .flags  = SLAB_PANIC,
-    .aligs  = ARCH_KMALLOC_MINALIGN,
-};
-
 struct kmem_cache {
     struct slub_percpu_sheaves __percpu *cpu_sheaves;
     /* Used for retrieving partial slabs, etc. */
@@ -4729,7 +4898,11 @@ out_unlock:
     }
     return s;
 }
+```
 
+### __kmem_cache_alias
+
+```c
 static struct kmem_cache *
 __kmem_cache_alias(const char *name, unsigned int size, slab_flags_t flags,
            struct kmem_cache_args *args)
@@ -4876,7 +5049,7 @@ int init_kmem_cache_nodes(struct kmem_cache *s)
 ![](../images/kernel/mem-slub-layout.png)
 
 ```c
-int calculate_sizes(struct kmem_cache *s) {
+static int calculate_sizes(struct kmem_cache_args *args, struct kmem_cache *s) {
     slab_flags_t flags = s->flags;
     unsigned int size = s->object_size;
     unsigned int order;
@@ -4897,10 +5070,11 @@ int calculate_sizes(struct kmem_cache *s) {
 
     s->inuse = size;
 
-    if (slub_debug_orig_size(s) ||
-        (flags & (SLAB_TYPESAFE_BY_RCU | SLAB_POISON)) ||
-        ((flags & SLAB_RED_ZONE) && s->object_size < sizeof(void *)) || s->ctor) {
-
+    if (((flags & SLAB_TYPESAFE_BY_RCU) && !args->use_freeptr_offset) ||
+            (flags & SLAB_POISON) ||
+            (s->ctor && !args->use_freeptr_offset) ||
+            ((flags & SLAB_RED_ZONE) &&
+                (s->object_size < sizeof(void *) || slub_debug_orig_size(s)))) {
 /* 3.1 | object_size + ALIGN | RHT_RED_ZONE | free_ptr | */
         s->offset = size;
         size += sizeof(void *);
@@ -4934,7 +5108,13 @@ int calculate_sizes(struct kmem_cache *s) {
 #endif
 
 /* 6. | LFT_RED_ZONE + ALIGN | object_size + ALIGN | RHT_RED_ZONE | free_ptr | ALIGN | */
-    size = ALIGN(size, s->align);
+    aligned_size = ALIGN(size, s->align);
+#if defined(CONFIG_SLAB_OBJ_EXT) && defined(CONFIG_64BIT)
+    if (slab_args_unmergeable(args, s->flags) &&
+            (aligned_size - size >= sizeof(struct slabobj_ext)))
+        s->flags |= SLAB_OBJ_EXT_IN_OBJ;
+#endif
+    size = aligned_size;
     s->size = size;
     s->reciprocal_size = reciprocal_value(size);
 
@@ -5196,120 +5376,8 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
 
     /* freeing to sheaves is so incompatible with the detached freelist so
      * once we go that way, we have to do everything differently */
-    if (s && s->cpu_sheaves) {
-        free_to_pcs_bulk(s, size, p) {
-            struct slub_percpu_sheaves *pcs;
-            struct slab_sheaf *main, *empty;
-            bool init = slab_want_init_on_free(s);
-            unsigned int batch, i = 0;
-            struct node_barn *barn;
-            void *remote_objects[PCS_BATCH_MAX];
-            unsigned int remote_nr = 0;
-            int node = numa_mem_id();
-
-        next_remote_batch:
-            while (i < size) {
-                struct slab *slab = virt_to_slab(p[i]);
-
-                memcg_slab_free_hook(s, slab, p + i, 1);
-                alloc_tagging_slab_free_hook(s, slab, p + i, 1);
-
-                if (unlikely(!slab_free_hook(s, p[i], init, false))) {
-                    p[i] = p[--size];
-                    continue;
-                }
-
-                if (unlikely((IS_ENABLED(CONFIG_NUMA) && slab_nid(slab) != node)
-                        || slab_test_pfmemalloc(slab))) {
-                    remote_objects[remote_nr] = p[i];
-                    p[i] = p[--size];
-                    if (++remote_nr >= PCS_BATCH_MAX)
-                        goto flush_remote;
-                    continue;
-                }
-
-                i++;
-            }
-
-            if (!size)
-                goto flush_remote;
-
-        next_batch:
-            if (!local_trylock(&s->cpu_sheaves->lock))
-                goto fallback;
-
-            pcs = this_cpu_ptr(s->cpu_sheaves);
-
-            if (likely(pcs->main->size < s->sheaf_capacity))
-                goto do_free;
-
-            barn = get_barn(s);
-            if (!barn)
-                goto no_empty;
-
-            if (!pcs->spare) {
-                empty = barn_get_empty_sheaf(barn);
-                if (!empty)
-                    goto no_empty;
-
-                pcs->spare = pcs->main;
-                pcs->main = empty;
-                goto do_free;
-            }
-
-            if (pcs->spare->size < s->sheaf_capacity) {
-                swap(pcs->main, pcs->spare);
-                goto do_free;
-            }
-
-            empty = barn_replace_full_sheaf(barn, pcs->main);
-            if (IS_ERR(empty)) {
-                stat(s, BARN_PUT_FAIL);
-                goto no_empty;
-            }
-
-            stat(s, BARN_PUT);
-            pcs->main = empty;
-
-        do_free:
-            main = pcs->main;
-            batch = min(size, s->sheaf_capacity - main->size);
-
-            memcpy(main->objects + main->size, p, batch * sizeof(void *));
-            main->size += batch;
-
-            local_unlock(&s->cpu_sheaves->lock);
-
-            stat_add(s, FREE_PCS, batch);
-
-            if (batch < size) {
-                p += batch;
-                size -= batch;
-                goto next_batch;
-            }
-
-            if (remote_nr)
-                goto flush_remote;
-
-            return;
-
-        no_empty:
-            local_unlock(&s->cpu_sheaves->lock);
-
-            /* if we depleted all empty sheaves in the barn or there are too
-            * many full sheaves, free the rest to slab pages */
-        fallback:
-            __kmem_cache_free_bulk(s, size, p);
-
-        flush_remote:
-            if (remote_nr) {
-                __kmem_cache_free_bulk(s, remote_nr, &remote_objects[0]);
-                if (i < size) {
-                    remote_nr = 0;
-                    goto next_remote_batch;
-                }
-            }
-        }
+    if (s && cache_has_sheaves(s)) {
+        free_to_pcs_bulk(s, size, p);
         return;
     }
 
@@ -5323,9 +5391,126 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
         slab_free_bulk(df.s, df.slab, df.freelist, df.tail, &p[size], df.cnt, _RET_IP_);
     } while (likely(size));
 }
+
+void free_to_pcs_bulk(struct kmem_cache *s, size_t size, void **p)
+{
+    struct slub_percpu_sheaves *pcs;
+    struct slab_sheaf *main, *empty;
+    bool init = slab_want_init_on_free(s);
+    unsigned int batch, i = 0;
+    struct node_barn *barn;
+    void *remote_objects[PCS_BATCH_MAX];
+    unsigned int remote_nr = 0;
+    int node = numa_mem_id();
+
+next_remote_batch:
+    while (i < size) {
+        struct slab *slab = virt_to_slab(p[i]);
+
+        memcg_slab_free_hook(s, slab, p + i, 1);
+        alloc_tagging_slab_free_hook(s, slab, p + i, 1);
+
+        if (unlikely(!slab_free_hook(s, p[i], init, false))) {
+            p[i] = p[--size];
+            continue;
+        }
+
+        if (unlikely((IS_ENABLED(CONFIG_NUMA) && slab_nid(slab) != node)
+                 || slab_test_pfmemalloc(slab))) {
+            remote_objects[remote_nr] = p[i];
+            p[i] = p[--size];
+            if (++remote_nr >= PCS_BATCH_MAX)
+                goto flush_remote;
+            continue;
+        }
+
+        i++;
+    }
+
+    if (!size)
+        goto flush_remote;
+
+next_batch:
+    if (!local_trylock(&s->cpu_sheaves->lock))
+        goto fallback;
+
+    pcs = this_cpu_ptr(s->cpu_sheaves);
+
+    if (likely(pcs->main->size < s->sheaf_capacity))
+        goto do_free;
+
+    barn = get_barn(s);
+    if (!barn)
+        goto no_empty;
+
+    if (!pcs->spare) {
+        empty = barn_get_empty_sheaf(barn, true);
+        if (!empty)
+            goto no_empty;
+
+        pcs->spare = pcs->main;
+        pcs->main = empty;
+        goto do_free;
+    }
+
+    if (pcs->spare->size < s->sheaf_capacity) {
+        swap(pcs->main, pcs->spare);
+        goto do_free;
+    }
+
+    empty = barn_replace_full_sheaf(barn, pcs->main, true);
+    if (IS_ERR(empty)) {
+        stat(s, BARN_PUT_FAIL);
+        goto no_empty;
+    }
+
+    stat(s, BARN_PUT);
+    pcs->main = empty;
+
+do_free:
+    main = pcs->main;
+    batch = min(size, s->sheaf_capacity - main->size);
+
+    memcpy(main->objects + main->size, p, batch * sizeof(void *));
+    main->size += batch;
+
+    local_unlock(&s->cpu_sheaves->lock);
+
+    stat_add(s, FREE_FASTPATH, batch);
+
+    if (batch < size) {
+        p += batch;
+        size -= batch;
+        goto next_batch;
+    }
+
+    if (remote_nr)
+        goto flush_remote;
+
+    return;
+
+no_empty:
+    local_unlock(&s->cpu_sheaves->lock);
+
+    /* if we depleted all empty sheaves in the barn or there are too
+     * many full sheaves, free the rest to slab pages */
+fallback:
+    __kmem_cache_free_bulk(s, size, p);
+    stat_add(s, FREE_SLOWPATH, size);
+
+flush_remote:
+    if (remote_nr) {
+        __kmem_cache_free_bulk(s, remote_nr, &remote_objects[0]);
+        stat_add(s, FREE_SLOWPATH, remote_nr);
+        if (i < size) {
+            remote_nr = 0;
+            goto next_remote_batch;
+        }
+    }
+}
 ```
 
-# slub
+# slab
 
 * [git.slab](https://git.kernel.org/pub/scm/linux/kernel/git/vbabka/slab.git)
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
@@ -5334,6 +5519,11 @@ void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
 * [[PATCH v8 00/23] SLUB percpu sheaves](https://lore.kernel.org/all/20250910-slub-percpu-caches-v8-14-ca3099d8352c@suse.cz/)
     * [benchmarks](https://lore.kernel.org/lkml/20250913000935.1021068-1-sudarsanm@google.com)
     * [LWN - Slabs, sheaves, and barns](https://lwn.net/Articles/1010667/) ⊙ [Slab allocator: sheaves and any-context allocations](https://lwn.net/Articles/1016001/)
+    * [[PATCH v4 00/22] slab: replace cpu (partial) slabs with sheaves](https://lore.kernel.org/all/20260123-sheaves-for-all-v4-0-041323d506f7@suse.cz)
+        * Old flow: Per-CPU active slab → per-CPU partial slabs (list) → node partial list → buddy allocator.
+        * New flow: Per-CPU sheaf (array cache of objects from multiple slabs) → node partial list → buddy allocator.
+        * :question: Why Performance Is Not Negatively Affected by the removing of CPU partial?
+            *
 
 * bin 的技术小屋
     * [80 张图带你一步一步推演 slab 内存池的设计与实现](https://mp.weixin.qq.com/s/yHF5xBm5yMXDAHmE_noeCg)
@@ -5416,9 +5606,13 @@ static_assert(IS_ALIGNED(offsetof(struct slab, freelist), sizeof(struct freelist
 #endif
 ```
 
-## slub_alloc
+## slab_alloc
 
-![](../images/kernel/mem-slub.drawio.svg)
+**Slab with Sheaves** | **Slab with CPU Partial**
+:-: | :-:
+![](../images/kernel/mem-slub-sheaves.drawio.svg) | ![](../images/kernel/mem-slub-cpu-partial.drawio.svg)
+
+---
 
 ```c
  void *slab_alloc_node(struct kmem_cache *s, struct list_lru *lru,
@@ -5719,25 +5913,7 @@ __pcs_replace_empty_main(struct kmem_cache *s, struct slub_percpu_sheaves *pcs, 
             if (!sheaf)
                 return NULL;
 
-            ret = refill_sheaf(s, sheaf, gfp | __GFP_NOMEMALLOC) {
-                int to_fill = s->sheaf_capacity - sheaf->size;
-                int filled;
-
-                if (!to_fill)
-                    return 0;
-
-                filled = refill_objects(s, &sheaf->objects[sheaf->size], gfp, to_fill,
-                            to_fill);
-
-                sheaf->size += filled;
-
-                stat_add(s, SHEAF_REFILL, filled);
-
-                if (filled < to_fill)
-                    return -ENOMEM;
-
-                return 0;
-            }
+            ret = refill_sheaf(s, sheaf, gfp | __GFP_NOMEMALLOC);
             if (ret) {
                 free_empty_sheaf(s, sheaf);
                 return NULL;
@@ -5787,7 +5963,7 @@ __pcs_replace_empty_main(struct kmem_cache *s, struct slub_percpu_sheaves *pcs, 
 }
 ```
 
-#### refill_sheaves
+#### refill_sheaf
 
 ```c
 refill_sheaf(s, sheaf, gfp | __GFP_NOMEMALLOC) {
@@ -5924,7 +6100,55 @@ __refill_objects_node(struct kmem_cache *s, void **p, gfp_t gfp, unsigned int mi
     return refilled;
 }
 
-#ifdef CONFIG_NUMA
+ bool get_partial_node_bulk(struct kmem_cache *s,
+                  struct kmem_cache_node *n,
+                  struct partial_bulk_context *pc)
+{
+    struct slab *slab, *slab2;
+    unsigned int total_free = 0;
+    unsigned long flags;
+
+    /* Racy check to avoid taking the lock unnecessarily. */
+    if (!n || data_race(!n->nr_partial))
+        return false;
+
+    INIT_LIST_HEAD(&pc->slabs);
+
+    spin_lock_irqsave(&n->list_lock, flags);
+
+    list_for_each_entry_safe(slab, slab2, &n->partial, slab_list) {
+        struct freelist_counters flc;
+        unsigned int slab_free;
+
+        if (!pfmemalloc_match(slab, pc->flags))
+            continue;
+
+        /* determine the number of free objects in the slab racily
+         *
+         * slab_free is a lower bound due to possible subsequent
+         * concurrent freeing, so the caller may get more objects than
+         * requested and must handle that */
+        flc.counters = data_race(READ_ONCE(slab->counters));
+        slab_free = flc.objects - flc.inuse;
+
+        /* we have already min and this would get us over the max */
+        if (total_free >= pc->min_objects
+            && total_free + slab_free > pc->max_objects)
+            break;
+
+        remove_partial(n, slab);
+
+        list_add(&slab->slab_list, &pc->slabs);
+
+        total_free += slab_free;
+        if (total_free >= pc->max_objects)
+            break;
+    }
+
+    spin_unlock_irqrestore(&n->list_lock, flags);
+    return total_free > 0;
+}
+
 static unsigned int
 __refill_objects_any(struct kmem_cache *s, void **p, gfp_t gfp, unsigned int min,
              unsigned int max)
@@ -6547,7 +6771,6 @@ unsigned int alloc_from_new_slab(struct kmem_cache *s, struct slab *slab,
     slab->freelist = object;
 
     if (needs_add_partial) {
-
         if (allow_spin) {
             n = get_node(s, slab_nid(slab));
             spin_lock_irqsave(&n->list_lock, flags);
@@ -7028,7 +7251,13 @@ void drain_obj_stock(struct obj_stock_pcp *stock)
 
 ## slab_free
 
-![](../images/kernel/mme-slab_free.png)
+* new slab with sheaves
+
+    ![](../images/kernel/mem-slub.drawio.svg)
+
+* old slab with cpu partial
+
+    ![](../images/kernel/mme-slab_free.png)
 
 ```c
 void kmem_cache_free(struct kmem_cache *s, void *x)
@@ -32859,7 +33088,7 @@ vm.watermark_boost_factor | 5000 | How far past the high watermark kswapd scans 
 vm.percpu_pagelist_fraction | 0 | This can override the default max fraction of pages that can be allocated to per-cpu page lists (a value of 10 limits to 1/10th of pages)
 vm.overcommit_memory | 0 | 0 = Use a heuristic to allow reasonable overcommits; 1 = always overcommit; 2 = don’t overcommit
 vm.swappiness | 60 | The degree to favor swapping (paging) for freeing memory over reclaiming it from the page cache
-vm.vfs_cache_pressure | 100 | The degree to reclaim cached directory and inode objects; lower values retain them more; 0 means never reclaim—can easily lead to out-of-memory conditions
+vm.vfs_cache_pressure | 100 | The degree to reclaim cached directory and inode objects; lower values retain them more; 0 means never reclaim-can easily lead to out-of-memory conditions
 kernel.numa_balancing | 1 |  Enables automatic NUMA page balancing
 kernel.numa_balancing_scan_size_mb  | 256 | How many Mbytes of pages are scanned for each NUMA balancing scan
 
