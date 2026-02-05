@@ -1734,6 +1734,42 @@ void call_rcu(struct rcu_head *head, rcu_callback_t func)
         local_irq_restore(flags);
     }
 }
+
+void rcu_force_quiescent_state(void)
+{
+    unsigned long flags;
+    bool ret;
+    struct rcu_node *rnp;
+    struct rcu_node *rnp_old = NULL;
+
+    if (!rcu_gp_in_progress())
+        return;
+
+    /* Funnel through hierarchy to reduce memory contention. */
+    rnp = raw_cpu_read(rcu_data.mynode);
+    for (; rnp != NULL; rnp = rnp->parent) {
+        ret = (READ_ONCE(rcu_state.gp_flags) & RCU_GP_FLAG_FQS) || !raw_spin_trylock(&rnp->fqslock);
+        if (rnp_old != NULL)
+            raw_spin_unlock(&rnp_old->fqslock);
+        if (ret)
+            return;
+        rnp_old = rnp;
+    }
+    /* rnp_old == rcu_get_root(), rnp == NULL. */
+
+    /* Reached the root of the rcu_node tree, acquire lock. */
+    raw_spin_lock_irqsave_rcu_node(rnp_old, flags);
+    raw_spin_unlock(&rnp_old->fqslock);
+    if (READ_ONCE(rcu_state.gp_flags) & RCU_GP_FLAG_FQS) {
+        raw_spin_unlock_irqrestore_rcu_node(rnp_old, flags);
+        return;  /* Someone beat us to it. */
+    }
+
+    WRITE_ONCE(rcu_state.gp_flags, rcu_state.gp_flags | RCU_GP_FLAG_FQS);
+    raw_spin_unlock_irqrestore_rcu_node(rnp_old, flags);
+
+    rcu_gp_kthread_wake();
+}
 ```
 
 #### rcu_cpu_kthread
