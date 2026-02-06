@@ -2146,7 +2146,7 @@ void sparse_remove_section(unsigned long pfn, unsigned long nr_pages,
 
 # alloc_pages
 
-![](../images/kernel/mem-alloc_pages.svg)
+![](../images/kernel/mem-alloc_pages.drawio.svg)
 
 * [Freezing out the page reference count](https://lwn.net/Articles/1000654/)
 
@@ -7251,13 +7251,7 @@ void drain_obj_stock(struct obj_stock_pcp *stock)
 
 ## slab_free
 
-* new slab with sheaves
-
-    ![](../images/kernel/mem-slub.drawio.svg)
-
-* old slab with cpu partial
-
-    ![](../images/kernel/mme-slab_free.png)
+![](../images/kernel/mem-slub-sheaves.drawio.svg)
 
 ```c
 void kmem_cache_free(struct kmem_cache *s, void *x)
