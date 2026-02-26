@@ -6474,9 +6474,13 @@ __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
          * absolute timestamp.
          * Don't bother if this is the start of a new page (w == 0). */
         if (!w) {
-            /* Use the sub-buffer timestamp */
+           /* w==0 means we're at the start of a fresh page.
+			* The page itself carries the timestamp, so delta=0 */
             info->delta = 0;
         } else if (unlikely(info->before != info->after)) {
+            /* we interrupted someone else:
+             * someone set before_stamp but hasn't updated write_stamp yet
+             * — i.e., they are mid-reservation right now */
             info->add_timestamp |= RB_ADD_STAMP_FORCE | RB_ADD_STAMP_EXTEND;
             info->length += RB_LEN_TIME_EXTEND;
         } else {
@@ -6505,7 +6509,7 @@ __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
 
     if (likely(tail == w)) {
         /* Nothing interrupted us between A and C */
- /*D*/        rb_time_set(&cpu_buffer->write_stamp, info->ts);
+ /*D*/  rb_time_set(&cpu_buffer->write_stamp, info->ts);
         /* If something came in between C and D, the write stamp
          * may now not be in sync. But that's fine as the before_stamp
          * will be different and then next event will just be forced
@@ -6534,8 +6538,8 @@ __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
         barrier();
  /*E*/  rb_time_read(&cpu_buffer->write_stamp, &info->after);
         barrier();
- /*F*/  if (write == (local_read(&tail_page->write) & RB_WRITE_MASK) &&
-            info->after == info->before && info->after < ts) {
+
+ /*F*/  if (write == (local_read(&tail_page->write) & RB_WRITE_MASK) && info->after == info->before && info->after < ts) {
             /* Nothing came after this event between C and F, it is
              * safe to use info->after for the delta as it
              * matched info->before and is still valid. */
@@ -6997,6 +7001,7 @@ void rb_end_commit(struct ring_buffer_per_cpu *cpu_buffer)
     /* comitting == 1: this is a full commit */
     if (local_read(&cpu_buffer->committing) == 1)
         rb_set_commit_to_write(cpu_buffer);
+            --->
 
     local_dec(&cpu_buffer->committing);
 
@@ -7887,7 +7892,13 @@ rb_get_reader_page(struct ring_buffer_per_cpu *cpu_buffer)
     cpu_buffer->pages = reader->list.prev;
 
     /* The reader page will be pointing to the new head */
-    rb_set_list_to_head(&cpu_buffer->reader_page->list);
+    rb_set_list_to_head(&cpu_buffer->reader_page->list) {
+        unsigned long *ptr;
+
+        ptr = (unsigned long *)&list->next;
+        *ptr |= RB_PAGE_HEAD;
+        *ptr &= ~RB_PAGE_UPDATE;
+    }
 
     /* We want to make sure we read the overruns after we set up our
      * pointers to the next object. The writer side does a
