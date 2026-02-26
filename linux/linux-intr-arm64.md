@@ -1014,6 +1014,68 @@ void sched_ttwu_pending(void *arg)
 }
 ```
 
+## IPI_IRQ_WORK
+
+```c
+void irq_work_run(void)
+{
+    irq_work_run_list(this_cpu_ptr(&raised_list));
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT)) {
+        irq_work_run_list(this_cpu_ptr(&lazy_list));
+    } else {
+        wake_irq_workd() {
+            struct task_struct *tsk = __this_cpu_read(irq_workd);
+
+            if (!llist_empty(this_cpu_ptr(&lazy_list)) && tsk)
+                wake_up_process(tsk);
+        }
+    }
+}
+
+void irq_work_run_list(struct llist_head *list)
+{
+    struct irq_work *work, *tmp;
+    struct llist_node *llnode;
+
+    /* On PREEMPT_RT IRQ-work which is not marked as HARD will be processed
+     * in a per-CPU thread in preemptible context. Only the items which are
+     * marked as IRQ_WORK_HARD_IRQ will be processed in hardirq context. */
+    BUG_ON(!irqs_disabled() && !IS_ENABLED(CONFIG_PREEMPT_RT));
+
+    if (llist_empty(list))
+        return;
+
+    llnode = llist_del_all(list);
+    llist_for_each_entry_safe(work, tmp, llnode, node.llist) {
+        irq_work_single(work) {
+            struct irq_work *work = arg;
+            int flags;
+
+            /* Clear the PENDING bit, after this point the @work can be re-used.
+            * The PENDING bit acts as a lock, and we own it, so we can clear it
+            * without atomic ops. */
+            flags = atomic_read(&work->node.a_flags);
+            flags &= ~IRQ_WORK_PENDING;
+            atomic_set(&work->node.a_flags, flags);
+
+            /* See irq_work_claim(). */
+            smp_mb();
+
+            lockdep_irq_work_enter(flags);
+            work->func(work);
+            lockdep_irq_work_exit(flags);
+
+            /* Clear the BUSY bit, if set, and return to the free state if no-one
+            * else claimed it meanwhile. */
+            (void)atomic_cmpxchg(&work->node.a_flags, flags, flags & ~IRQ_WORK_BUSY);
+
+            if ((IS_ENABLED(CONFIG_PREEMPT_RT) && !irq_work_is_hard(work)) || !arch_irq_work_has_interrupt())
+                rcuwait_wake_up(&work->irqwait);
+        }
+    }
+}
+```
+
 # gic_v3
 
 ![](../images/kernel/intr-gic_chip_data.png)
@@ -1347,7 +1409,11 @@ void __init gic_smp_init(void)
 
     set_smp_ipi_range(base_sgi, 8);
 }
+```
 
+#### set_smp_ipi_range
+
+```c
 static inline void set_smp_ipi_range(int ipi_base, int n)
 {
     set_smp_ipi_range_percpu(ipi_base, n, 0) {
@@ -1473,6 +1539,16 @@ static const struct irq_domain_ops gic_irq_domain_ops = {
     .select     = gic_irq_domain_select,
 };
 
+static int irq_domain_alloc_irqs_hierarchy(struct irq_domain *domain, unsigned int irq_base,
+                       unsigned int nr_irqs, void *arg)
+{
+    if (!domain->ops->alloc) {
+        pr_debug("domain->ops->alloc() is NULL\n");
+        return -ENOSYS;
+    }
+
+    return domain->ops->alloc(domain, irq_base, nr_irqs, arg);
+}
 static int gic_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
                 unsigned int nr_irqs, void *arg)
 {
@@ -1530,6 +1606,207 @@ static int gic_irq_domain_alloc(struct irq_domain *domain, unsigned int virq,
 }
 ```
 
+#### irq_domain_set_info
+
+```c
+void irq_domain_set_info(struct irq_domain *domain, unsigned int virq,
+             irq_hw_number_t hwirq, const struct irq_chip *chip,
+             void *chip_data, irq_flow_handler_t handler,
+             void *handler_data, const char *handler_name)
+{
+    irq_domain_set_hwirq_and_chip(domain, virq, hwirq, chip, chip_data) {
+        struct irq_data *irq_data = irq_domain_get_irq_data(domain, virq) {
+            struct irq_data *irq_data = irq_get_irq_data(virq) {
+                struct irq_desc *desc = irq_to_desc(irq) {
+                    return mtree_load(&sparse_irqs, irq);
+                }
+
+                return desc ? &desc->irq_data : NULL;
+            }
+
+            for (; irq_data; irq_data = irq_data->parent_data)
+                if (irq_data->domain == domain)
+                    return irq_data;
+
+            return NULL;
+        }
+
+        if (!irq_data)
+            return -ENOENT;
+
+        irq_data->hwirq = hwirq;
+        irq_data->chip = (struct irq_chip *)(chip ? chip : &no_irq_chip);
+        irq_data->chip_data = chip_data;
+    }
+
+    __irq_set_handler(virq, handler, 0, handler_name) {
+        scoped_irqdesc_get_and_buslock(irq, 0) {
+            __irq_do_set_handler(scoped_irqdesc, handle, is_chained, name) {
+                if (!handle) {
+                    handle = handle_bad_irq;
+                } else {
+                    struct irq_data *irq_data = &desc->irq_data;
+            #ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
+                    /* With hierarchical domains we might run into a
+                    * situation where the outermost chip is not yet set
+                    * up, but the inner chips are there.  Instead of
+                    * bailing we install the handler, but obviously we
+                    * cannot enable/startup the interrupt at this point. */
+                    while (irq_data) {
+                        if (irq_data->chip != &no_irq_chip)
+                            break;
+                        /* Bail out if the outer chip is not set up
+                        * and the interrupt supposed to be started
+                        * right away. */
+                        if (WARN_ON(is_chained))
+                            return;
+                        /* Try the parent */
+                        irq_data = irq_data->parent_data;
+                    }
+            #endif
+                    if (WARN_ON(!irq_data || irq_data->chip == &no_irq_chip))
+                        return;
+                }
+
+                /* Uninstall? */
+                if (handle == handle_bad_irq) {
+                    if (desc->irq_data.chip != &no_irq_chip)
+                        mask_ack_irq(desc);
+                    irq_state_set_disabled(desc);
+                    if (is_chained) {
+                        desc->action = NULL;
+                        WARN_ON(irq_chip_pm_put(irq_desc_get_irq_data(desc)));
+                    }
+                    desc->depth = 1;
+                }
+                desc->handle_irq = handle;
+                desc->name = name;
+
+                if (handle != handle_bad_irq && is_chained) {
+                    unsigned int type = irqd_get_trigger_type(&desc->irq_data);
+
+                    /* We're about to start this interrupt immediately,
+                    * hence the need to set the trigger configuration.
+                    * But the .set_type callback may have overridden the
+                    * flow handler, ignoring that we're dealing with a
+                    * chained interrupt. Reset it immediately because we
+                    * do know better. */
+                    if (type != IRQ_TYPE_NONE) {
+                        __irq_set_trigger(desc, type);
+                        desc->handle_irq = handle;
+                    }
+
+                    irq_settings_set_noprobe(desc) {
+                        desc->status_use_accessors |= _IRQ_NOPROBE;
+                    }
+
+                    irq_settings_set_norequest(desc) {
+                        desc->status_use_accessors |= _IRQ_NOREQUEST;
+                    }
+
+                    irq_settings_set_nothread(desc) {
+                        desc->status_use_accessors |= _IRQ_NOTHREAD;
+                    }
+
+                    desc->action = &chained_action;
+                    WARN_ON(irq_chip_pm_get(irq_desc_get_irq_data(desc)));
+                    irq_activate_and_startup(desc, IRQ_RESEND) {
+                        if (WARN_ON(irq_activate(desc)))
+                            return 0;
+                        return irq_startup(desc, resend, IRQ_START_FORCE);
+                    }
+                }
+            }
+        }
+    }
+
+    irq_set_handler_data(virq, handler_data) {
+        scoped_irqdesc_get_and_lock(irq, 0) {
+            scoped_irqdesc->irq_common_data.handler_data = data;
+            return 0;
+        }
+        return -EINVAL;
+    }
+}
+```
+
+#### irq_startup
+
+```c
+int irq_startup(struct irq_desc *desc, bool resend, bool force)
+{
+    struct irq_data *d = irq_desc_get_irq_data(desc);
+    const struct cpumask *aff = irq_data_get_affinity_mask(d);
+    int ret = 0;
+
+    desc->depth = 0;
+
+    if (irqd_is_started(d)) {
+        irq_enable(desc);
+    } else {
+        switch (__irq_startup_managed(desc, aff, force)) {
+        case IRQ_STARTUP_NORMAL:
+            if (d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP)
+                irq_setup_affinity(desc);
+            ret = __irq_startup(desc);
+            if (!(d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP))
+                irq_setup_affinity(desc);
+            break;
+        case IRQ_STARTUP_MANAGED:
+            irq_do_set_affinity(d, aff, false);
+            ret = __irq_startup(desc);
+            break;
+        case IRQ_STARTUP_ABORT:
+            desc->depth = 1;
+            irqd_set_managed_shutdown(d);
+            return 0;
+        }
+    }
+    if (resend)
+        check_irq_resend(desc, false);
+
+    return ret;
+}
+
+static int __irq_startup(struct irq_desc *desc)
+{
+    struct irq_data *d = irq_desc_get_irq_data(desc);
+    int ret = 0;
+
+    /* Warn if this interrupt is not activated but try nevertheless */
+    WARN_ON_ONCE(!irqd_is_activated(d));
+
+    if (d->chip->irq_startup) {
+        ret = d->chip->irq_startup(d);
+        irq_state_clr_disabled(desc);
+        irq_state_clr_masked(desc);
+    } else {
+        irq_enable(desc);
+    }
+    irq_state_set_started(desc);
+    return ret;
+}
+```
+
+### irq_enable
+
+```c
+static void irq_enable(struct irq_desc *desc)
+{
+    if (!irqd_irq_disabled(&desc->irq_data)) {
+        unmask_irq(desc);
+    } else {
+        irq_state_clr_disabled(desc);
+        if (desc->irq_data.chip->irq_enable) {
+            desc->irq_data.chip->irq_enable(&desc->irq_data);
+            irq_state_clr_masked(desc);
+        } else {
+            unmask_irq(desc);
+        }
+    }
+}
+```
+
 ## gic_handle_irq
 
 ![](../images/kernel/intr-gic_handle_irq.png)
@@ -1568,7 +1845,6 @@ static void __exception_irq_entry gic_handle_irq(struct pt_regs *regs)
 {
     if (unlikely(gic_supports_nmi() && !interrupts_enabled(regs))) {
         __gic_handle_irq_from_irqsoff(regs);
-
     } else {
         __gic_handle_irq_from_irqson(regs) {
             bool is_nmi;
@@ -1677,6 +1953,9 @@ int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
             = handle_percpu_irq(struct irq_desc *desc) {
 
             }
+            = handle_percpu_devid_irq(struct irq_desc *desc) {
+
+            }
 
             /* Signal: Triggered by a transition (rising or falling edge) on the interrupt line.
              * Handler: Acknowledges the interrupt (e.g., via GIC EOI),
@@ -1684,90 +1963,99 @@ int generic_handle_domain_irq(struct irq_domain *domain, unsigned int hwirq)
 
             /* Active as long as the condition persists (e.g., high or low voltage level). */
             = handle_level_irq(struct irq_desc *desc) {
-                raw_spin_lock(&desc->lock);
-                mask_ack_irq(desc) {
-                    if (desc->irq_data.chip->irq_mask_ack) {
-                        desc->irq_data.chip->irq_mask_ack(&desc->irq_data);
-                        irq_state_set_masked(desc);
-                    } else {
-                        mask_irq(desc);
-                        if (desc->irq_data.chip->irq_ack)
-                            desc->irq_data.chip->irq_ack(&desc->irq_data);
+
+            }
+        }
+    }
+}
+```
+
+#### handle_level_irq
+
+```c
+void handle_level_irq(struct irq_desc *desc)
+{
+    raw_spin_lock(&desc->lock);
+    mask_ack_irq(desc) {
+        if (desc->irq_data.chip->irq_mask_ack) {
+            desc->irq_data.chip->irq_mask_ack(&desc->irq_data);
+            irq_state_set_masked(desc);
+        } else {
+            mask_irq(desc);
+            if (desc->irq_data.chip->irq_ack)
+                desc->irq_data.chip->irq_ack(&desc->irq_data);
+        }
+    }
+
+    if (!irq_may_run(desc))
+        goto out_unlock;
+
+    desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
+
+    if (unlikely(!desc->action || irqd_irq_disabled(&desc->irq_data))) {
+        desc->istate |= IRQS_PENDING;
+        goto out_unlock;
+    }
+
+    handle_irq_event(desc) {
+        irqreturn_t ret;
+
+        desc->istate &= ~IRQS_PENDING;
+        irqd_set(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+        raw_spin_unlock(&desc->lock);
+
+        ret = handle_irq_event_percpu(desc) {
+            irqreturn_t retval;
+
+            retval = __handle_irq_event_percpu(desc) {
+                irqreturn_t retval = IRQ_NONE;
+                unsigned int irq = desc->irq_data.irq;
+                struct irqaction *action;
+
+                record_irq_time(desc);
+
+                for_each_action_of_desc(desc, action) {
+                    irqreturn_t res;
+                    res = act
+                    /* hanlder of dev driver
+                        * return IRQ_WAKE_THREAD for threaded handler */
+                    res = action->handler(irq, action->dev_id);
+
+                    switch (res) {
+                    case IRQ_WAKE_THREAD:
+                        __irq_wake_thread(desc, action);
+                    case IRQ_HANDLED:
+                        *flags |= action->flags;
+                        break;
+                    default:
+                        break;
                     }
+                    retval |= res;
                 }
+                return retval;
+            }
 
-                if (!irq_may_run(desc))
-                    goto out_unlock;
+            add_interrupt_randomness(desc->irq_data.irq);
 
-                desc->istate &= ~(IRQS_REPLAY | IRQS_WAITING);
+            if (!irq_settings_no_debug(desc))
+                note_interrupt(desc, retval);
+            return retval;
+        }
 
-                if (unlikely(!desc->action || irqd_irq_disabled(&desc->irq_data))) {
-                    desc->istate |= IRQS_PENDING;
-                    goto out_unlock;
-                }
+        raw_spin_lock(&desc->lock);
+        irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
+        return ret;
+    }
 
-                handle_irq_event(desc) {
-                    irqreturn_t ret;
+    cond_unmask_irq(desc) {
+        if (!irqd_irq_disabled(&desc->irq_data) && irqd_irq_masked(&desc->irq_data) && !desc->threads_oneshot) {
+            unmask_irq(desc) {
+                if (!irqd_irq_masked(&desc->irq_data))
+                    return;
 
-                    desc->istate &= ~IRQS_PENDING;
-                    irqd_set(&desc->irq_data, IRQD_IRQ_INPROGRESS);
-                    raw_spin_unlock(&desc->lock);
-
-                    ret = handle_irq_event_percpu(desc) {
-                        irqreturn_t retval;
-
-                        retval = __handle_irq_event_percpu(desc) {
-                            irqreturn_t retval = IRQ_NONE;
-                            unsigned int irq = desc->irq_data.irq;
-                            struct irqaction *action;
-
-                            record_irq_time(desc);
-
-                            for_each_action_of_desc(desc, action) {
-                                irqreturn_t res;
-                                res = act
-                                /* hanlder of dev driver
-                                 * return IRQ_WAKE_THREAD for threaded handler */
-                                res = action->handler(irq, action->dev_id);
-
-                                switch (res) {
-                                case IRQ_WAKE_THREAD:
-                                    __irq_wake_thread(desc, action);
-                                case IRQ_HANDLED:
-                                    *flags |= action->flags;
-                                    break;
-                                default:
-                                    break;
-                                }
-                                retval |= res;
-                            }
-                            return retval;
-                        }
-
-                        add_interrupt_randomness(desc->irq_data.irq);
-
-                        if (!irq_settings_no_debug(desc))
-                            note_interrupt(desc, retval);
-                        return retval;
-                    }
-
-                    raw_spin_lock(&desc->lock);
-                    irqd_clear(&desc->irq_data, IRQD_IRQ_INPROGRESS);
-                    return ret;
-                }
-
-                cond_unmask_irq(desc) {
-                    if (!irqd_irq_disabled(&desc->irq_data) && irqd_irq_masked(&desc->irq_data) && !desc->threads_oneshot) {
-                        unmask_irq(desc) {
-                            if (!irqd_irq_masked(&desc->irq_data))
-                                return;
-
-                            if (desc->irq_data.chip->irq_unmask) {
-                                desc->irq_data.chip->irq_unmask(&desc->irq_data);
-                                irq_state_clr_masked(desc);
-                            }
-                        }
-                    }
+                if (desc->irq_data.chip->irq_unmask) {
+                    desc->irq_data.chip->irq_unmask(&desc->irq_data);
+                    irq_state_clr_masked(desc);
                 }
             }
         }
@@ -1822,9 +2110,128 @@ struct irq_desc desc = irq_resolve_mapping(domain, hwirq, NULL/*irq*/) {
 }
 ```
 
-## irq_create_mapping
+## irq_of_parse_and_map
 
 ```c
+unsigned int irq_of_parse_and_map(struct device_node *dev, int index)
+{
+    struct of_phandle_args oirq;
+    unsigned int ret;
+
+    if (of_irq_parse_one(dev, index, &oirq))
+        return 0;
+
+    ret = irq_create_of_mapping(&oirq) {
+        struct irq_fwspec fwspec;
+
+        of_phandle_args_to_fwspec(irq_data->np, irq_data->args,
+                    irq_data->args_count, &fwspec);
+
+        return irq_create_fwspec_mapping(&fwspec) {
+            unsigned int type = IRQ_TYPE_NONE;
+            struct irq_domain *domain;
+            struct irq_data *irq_data;
+            irq_hw_number_t hwirq;
+            int virq;
+
+            domain = fwspec_to_domain(fwspec);
+            if (!domain) {
+                pr_warn("no irq domain found for %s !\n", of_node_full_name(to_of_node(fwspec->fwnode)));
+                return 0;
+            }
+
+            ret = irq_domain_translate(domain, fwspec, &hwirq, &type) {
+            #ifdef CONFIG_IRQ_DOMAIN_HIERARCHY
+                if (d->ops->translate)
+                    return d->ops->translate(d, fwspec, hwirq, type);
+            #endif
+                if (d->ops->xlate)
+                    return d->ops->xlate(d, to_of_node(fwspec->fwnode),
+                                fwspec->param, fwspec->param_count,
+                                hwirq, type);
+
+                /* If domain has no translation, then we assume interrupt line */
+                *hwirq = fwspec->param[0];
+                return 0;
+            }
+            if (ret)
+                return 0;
+
+            /* WARN if the irqchip returns a type with bits
+            * outside the sense mask set and clear these bits. */
+            if (WARN_ON(type & ~IRQ_TYPE_SENSE_MASK))
+                type &= IRQ_TYPE_SENSE_MASK;
+
+            mutex_lock(&domain->root->mutex);
+
+            /* If we've already configured this interrupt,
+            * don't do it again, or hell will break loose. */
+            virq = irq_find_mapping(domain, hwirq);
+            if (virq) {
+                /* If the trigger type is not specified or matches the
+                * current trigger type then we are done so return the
+                * interrupt number. */
+                if (type == IRQ_TYPE_NONE || type == irq_get_trigger_type(virq))
+                    goto out;
+
+                /* If the trigger type has not been set yet, then set
+                * it now and return the interrupt number. */
+                if (irq_get_trigger_type(virq) == IRQ_TYPE_NONE) {
+                    irq_data = irq_get_irq_data(virq);
+                    if (!irq_data) {
+                        virq = 0;
+                        goto out;
+                    }
+
+                    irqd_set_trigger_type(irq_data, type);
+                    goto out;
+                }
+
+                pr_warn("type mismatch, failed to map hwirq-%lu for %s!\n",
+                    hwirq, of_node_full_name(to_of_node(fwspec->fwnode)));
+                virq = 0;
+                goto out;
+            }
+
+            if (irq_domain_is_hierarchy(domain)) {
+                if (irq_domain_is_msi_device(domain)) {
+                    mutex_unlock(&domain->root->mutex);
+                    virq = msi_device_domain_alloc_wired(domain, hwirq, type);
+                    mutex_lock(&domain->root->mutex);
+                } else
+                    virq = irq_domain_alloc_irqs_locked(domain, -1, 1, NUMA_NO_NODE, fwspec, false, NULL);
+                        --->
+                if (virq <= 0) {
+                    virq = 0;
+                    goto out;
+                }
+            } else {
+                /* Create mapping */
+                virq = irq_create_mapping_affinity_locked(domain, hwirq, NULL);
+                    --->
+                if (!virq)
+                    goto out;
+            }
+
+            irq_data = irq_get_irq_data(virq);
+            if (WARN_ON(!irq_data)) {
+                virq = 0;
+                goto out;
+            }
+
+            /* Store trigger type */
+            irqd_set_trigger_type(irq_data, type);
+        out:
+            mutex_unlock(&domain->root->mutex);
+
+            return virq;
+        }
+    }
+    of_node_put(oirq.np);
+
+    return ret;
+}
+
 static inline unsigned int irq_create_mapping(struct irq_domain *host,
                         irq_hw_number_t hwirq)
 {
@@ -1848,177 +2255,393 @@ static inline unsigned int irq_create_mapping(struct irq_domain *host,
             goto out;
         }
 
-        virq = irq_create_mapping_affinity_locked(domain, hwirq, affinity) {
-            struct device_node *of_node = irq_domain_get_of_node(domain);
-            int virq;
-
-            pr_debug("irq_create_mapping(0x%p, 0x%lx)\n", domain, hwirq);
-
-            /* Allocate a virtual interrupt number */
-            virq = irq_domain_alloc_descs(-1, 1, hwirq, of_node_to_nid(of_node), affinity) {
-                unsigned int hint;
-
-                if (virq >= 0) {
-                    virq = __irq_alloc_descs(virq, virq, cnt, node, THIS_MODULE, affinity);
-                } else {
-                    hint = hwirq % irq_get_nr_irqs();
-                    if (hint == 0)
-                        hint++;
-                    virq = __irq_alloc_descs(-1, hint, cnt, node, THIS_MODULE, affinity);
-                    if (virq <= 0 && hint > 1) {
-                        virq = __irq_alloc_descs(-1, 1, cnt, node, THIS_MODULE, affinity) {
-                            int start, ret;
-
-                            if (!cnt)
-                                return -EINVAL;
-
-                            if (irq >= 0) {
-                                if (from > irq)
-                                    return -EINVAL;
-                                from = irq;
-                            } else {
-                                /* For interrupts which are freely allocated the
-                                * architecture can force a lower bound to the @from
-                                * argument. x86 uses this to exclude the GSI space. */
-                                from = arch_dynirq_lower_bound(from);
-                            }
-
-                            mutex_lock(&sparse_irq_lock);
-
-                            start = irq_find_free_area(from, cnt) {
-                                MA_STATE(mas, &sparse_irqs, 0, 0);
-
-                                if (mas_empty_area(&mas, from, MAX_SPARSE_IRQS, cnt))
-                                    return -ENOSPC;
-                                return mas.index;
-                            }
-                            ret = -EEXIST;
-                            if (irq >=0 && start != irq)
-                                goto unlock;
-
-                            if (start + cnt > nr_irqs) {
-                                ret = irq_expand_nr_irqs(start + cnt);
-                                if (ret)
-                                    goto unlock;
-                            }
-                            ret = alloc_descs(start, cnt, node, affinity, owner) {
-                                struct irq_desc *desc;
-                                int i;
-
-                                /* Validate affinity mask(s) */
-                                if (affinity) {
-                                    for (i = 0; i < cnt; i++) {
-                                        if (cpumask_empty(&affinity[i].mask))
-                                            return -EINVAL;
-                                    }
-                                }
-
-                                for (i = 0; i < cnt; i++) {
-                                    const struct cpumask *mask = NULL;
-                                    unsigned int flags = 0;
-
-                                    if (affinity) {
-                                        if (affinity->is_managed) {
-                                            flags = IRQD_AFFINITY_MANAGED | IRQD_MANAGED_SHUTDOWN;
-                                        }
-                                        flags |= IRQD_AFFINITY_SET;
-                                        mask = &affinity->mask;
-                                        node = cpu_to_node(cpumask_first(mask));
-                                        affinity++;
-                                    }
-
-                                    desc = alloc_desc(start + i, node, flags, mask, owner) {
-                                        struct irq_desc *desc;
-                                        int ret;
-
-                                        desc = kzalloc_node(sizeof(*desc), GFP_KERNEL, node);
-                                        if (!desc)
-                                            return NULL;
-
-                                        ret = init_desc(desc, irq, node, flags, affinity, owner) {
-                                            desc->kstat_irqs = alloc_percpu(struct irqstat);
-                                            if (!desc->kstat_irqs)
-                                                return -ENOMEM;
-
-                                            if (alloc_masks(desc, node)) {
-                                                free_percpu(desc->kstat_irqs);
-                                                return -ENOMEM;
-                                            }
-
-                                            raw_spin_lock_init(&desc->lock);
-                                            lockdep_set_class(&desc->lock, &irq_desc_lock_class);
-                                            mutex_init(&desc->request_mutex);
-                                            init_waitqueue_head(&desc->wait_for_threads);
-                                            desc_set_defaults(irq, desc, node, affinity, owner);
-                                            irqd_set(&desc->irq_data, flags);
-                                            irq_resend_init(desc);
-                                        #ifdef CONFIG_SPARSE_IRQ
-                                            kobject_init(&desc->kobj, &irq_kobj_type);
-                                            init_rcu_head(&desc->rcu);
-                                        #endif
-
-                                            return 0;
-                                        }
-                                        if (unlikely(ret)) {
-                                            kfree(desc);
-                                            return NULL;
-                                        }
-
-                                        return desc;
-                                    }
-                                    if (!desc)
-                                        goto err;
-                                    irq_insert_desc(start + i, desc) {
-                                        /* while all IRQ domains use the same global sparse_irqs infrastructure
-                                         * to store irq_desc structures for Linux IRQ numbers,
-                                         * each IRQ domain maintains its own mapping of HW IRQs to Linux IRQs,
-                                         * and the irq_desc structures themselves are not directly
-                                         * tied to HW IRQs but to Linux IRQ numbers.
-                                         *
-                                         * This tree is indexed by Linux IRQ numbers (e.g., 16, 48, 100),
-                                         * not HW IRQs. */
-                                        MA_STATE(mas, &sparse_irqs, irq, irq);
-                                        WARN_ON(mas_store_gfp(&mas, desc, GFP_KERNEL) != 0);
-                                    }
-                                    irq_sysfs_add(start + i, desc);
-                                    irq_add_debugfs_entry(start + i, desc);
-                                }
-                                return start;
-
-                            err:
-                                for (i--; i >= 0; i--)
-                                    free_desc(start + i);
-                                return -ENOMEM;
-                            }
-                        unlock:
-                            mutex_unlock(&sparse_irq_lock);
-                            return ret;
-                        }
-                    }
-                }
-
-                return virq;
-            }
-            if (virq <= 0) {
-                pr_debug("-> virq allocation failed\n");
-                return 0;
-            }
-
-            if (irq_domain_associate_locked(domain, virq, hwirq)) {
-                irq_free_desc(virq);
-                return 0;
-            }
-
-            pr_debug("irq %lu on domain %s mapped to virtual irq %u\n",
-                hwirq, of_node_full_name(of_node), virq);
-
-            return virq;
-        }
+        virq = irq_create_mapping_affinity_locked(domain, hwirq, affinity);
     out:
         mutex_unlock(&domain->root->mutex);
 
         return virq;
     }
+}
+```
+
+### irq_domain_alloc_irqs
+
+```c
+static inline int irq_domain_alloc_irqs(struct irq_domain *domain, unsigned int nr_irqs,
+                    int node, void *arg)
+{
+    return __irq_domain_alloc_irqs(domain, -1, nr_irqs, node, arg, false, NULL) {
+        int ret;
+
+        if (domain == NULL) {
+            domain = irq_default_domain;
+            if (WARN(!domain, "domain is NULL; cannot allocate IRQ\n"))
+                return -EINVAL;
+        }
+
+        mutex_lock(&domain->root->mutex);
+        ret = irq_domain_alloc_irqs_locked(domain, irq_base, nr_irqs, node, arg, realloc, affinity);
+        mutex_unlock(&domain->root->mutex);
+
+        return ret;
+    }
+}
+
+int irq_domain_alloc_irqs_locked(struct irq_domain *domain, int irq_base,
+                    unsigned int nr_irqs, int node, void *arg,
+                    bool realloc, const struct irq_affinity_desc *affinity)
+{
+    int i, ret, virq;
+
+    if (realloc && irq_base >= 0) {
+        virq = irq_base;
+    } else {
+        virq = irq_domain_alloc_descs(irq_base, nr_irqs, 0, node, affinity);
+            --->
+        if (virq < 0) {
+            pr_debug("cannot allocate IRQ(base %d, count %d)\n", irq_base, nr_irqs);
+            return virq;
+        }
+    }
+
+    ret = irq_domain_alloc_irq_data(domain, virq, nr_irqs) {
+        struct irq_data *irq_data;
+        struct irq_domain *parent;
+        int i;
+
+        /* The outermost irq_data is embedded in struct irq_desc */
+        for (i = 0; i < nr_irqs; i++) {
+            irq_data = irq_get_irq_data(virq + i);
+            irq_data->domain = domain;
+
+            for (parent = domain->parent; parent; parent = parent->parent) {
+                irq_data = irq_domain_insert_irq_data(parent/*domain*/, irq_data/*child*/) {
+                    struct irq_data *irq_data;
+
+                    irq_data = kzalloc_node(sizeof(*irq_data), GFP_KERNEL, irq_data_get_node(child));
+                    if (irq_data) {
+                        child->parent_data = irq_data;
+                        irq_data->irq = child->irq;
+                        irq_data->common = child->common;
+                        irq_data->domain = domain;
+                    }
+
+                    return irq_data;
+                }
+                if (!irq_data) {
+                    irq_domain_free_irq_data(virq, i + 1);
+                    return -ENOMEM;
+                }
+            }
+        }
+
+        return 0;
+    }
+    if (ret) {
+        pr_debug("cannot allocate memory for IRQ%d\n", virq);
+        ret = -ENOMEM;
+        goto out_free_desc;
+    }
+
+    ret = irq_domain_alloc_irqs_hierarchy(domain, virq, nr_irqs, arg) {
+        if (!domain->ops->alloc) {
+            pr_debug("domain->ops->alloc() is NULL\n");
+            return -ENOSYS;
+        }
+
+        /* gic_irq_domain_alloc */
+        return domain->ops->alloc(domain, irq_base, nr_irqs, arg);
+    }
+    if (ret < 0)
+        goto out_free_irq_data;
+
+    for (i = 0; i < nr_irqs; i++) {
+        ret = irq_domain_trim_hierarchy(virq + i);
+        if (ret)
+            goto out_free_irq_data;
+    }
+
+    for (i = 0; i < nr_irqs; i++) {
+        irq_domain_insert_irq(virq + i) {
+            struct irq_data *data;
+
+            for (data = irq_get_irq_data(virq); data; data = data->parent_data) {
+                struct irq_domain *domain = data->domain;
+
+                domain->mapcount++;
+                irq_domain_set_mapping(domain, data->hwirq, data) {
+                    if (irq_domain_is_nomap(domain))
+                        return;
+
+                    if (hwirq < domain->revmap_size)
+                        rcu_assign_pointer(domain->revmap[hwirq], irq_data);
+                    else
+                        radix_tree_insert(&domain->revmap_tree, hwirq, irq_data);
+                }
+            }
+
+            irq_clear_status_flags(virq, IRQ_NOREQUEST);
+        }
+    }
+
+    return virq;
+
+out_free_irq_data:
+    irq_domain_free_irq_data(virq, nr_irqs);
+out_free_desc:
+    irq_free_descs(virq, nr_irqs);
+    return ret;
+}
+```
+
+### irq_domain_alloc_descs
+
+```c
+int irq_domain_alloc_descs(int virq, unsigned int cnt, irq_hw_number_t hwirq,
+               int node, const struct irq_affinity_desc *affinity)
+{
+    unsigned int hint;
+
+    if (virq >= 0) {
+        virq = __irq_alloc_descs(virq, virq, cnt, node, THIS_MODULE, affinity);
+    } else {
+        hint = hwirq % irq_get_nr_irqs();
+        if (hint == 0)
+            hint++;
+        virq = __irq_alloc_descs(-1, hint, cnt, node, THIS_MODULE, affinity);
+        if (virq <= 0 && hint > 1) {
+            virq = __irq_alloc_descs(-1, 1, cnt, node, THIS_MODULE, affinity);
+        }
+    }
+
+    return virq;
+}
+
+int __ref __irq_alloc_descs(int irq, unsigned int from, unsigned int cnt, int node,
+                struct module *owner, const struct irq_affinity_desc *affinity)
+{
+    int start, ret;
+
+    if (!cnt)
+        return -EINVAL;
+
+    if (irq >= 0) {
+        if (from > irq)
+            return -EINVAL;
+        from = irq;
+    } else {
+        /* For interrupts which are freely allocated the
+        * architecture can force a lower bound to the @from
+        * argument. x86 uses this to exclude the GSI space. */
+        from = arch_dynirq_lower_bound(from);
+    }
+
+    mutex_lock(&sparse_irq_lock);
+
+    start = irq_find_free_area(from, cnt) {
+        MA_STATE(mas, &sparse_irqs, 0, 0);
+
+        if (mas_empty_area(&mas, from, MAX_SPARSE_IRQS, cnt))
+            return -ENOSPC;
+        return mas.index;
+    }
+    ret = -EEXIST;
+    if (irq >=0 && start != irq)
+        goto unlock;
+
+    if (start + cnt > nr_irqs) {
+        ret = irq_expand_nr_irqs(start + cnt);
+        if (ret)
+            goto unlock;
+    }
+
+    ret = alloc_descs(start, cnt, node, affinity, owner) {
+        struct irq_desc *desc;
+        int i;
+
+        /* Validate affinity mask(s) */
+        if (affinity) {
+            for (i = 0; i < cnt; i++) {
+                if (cpumask_empty(&affinity[i].mask))
+                    return -EINVAL;
+            }
+        }
+
+        for (i = 0; i < cnt; i++) {
+            const struct cpumask *mask = NULL;
+            unsigned int flags = 0;
+
+            if (affinity) {
+                if (affinity->is_managed) {
+                    flags = IRQD_AFFINITY_MANAGED | IRQD_MANAGED_SHUTDOWN;
+                }
+                flags |= IRQD_AFFINITY_SET;
+                mask = &affinity->mask;
+                node = cpu_to_node(cpumask_first(mask));
+                affinity++;
+            }
+
+            desc = alloc_desc(start + i, node, flags, mask, owner) {
+                struct irq_desc *desc;
+                int ret;
+
+                desc = kzalloc_node(sizeof(*desc), GFP_KERNEL, node);
+                if (!desc)
+                    return NULL;
+
+                ret = init_desc(desc, irq, node, flags, affinity, owner) {
+                    desc->kstat_irqs = alloc_percpu(struct irqstat);
+                    if (!desc->kstat_irqs)
+                        return -ENOMEM;
+
+                    if (alloc_masks(desc, node)) {
+                        free_percpu(desc->kstat_irqs);
+                        return -ENOMEM;
+                    }
+
+                    raw_spin_lock_init(&desc->lock);
+                    lockdep_set_class(&desc->lock, &irq_desc_lock_class);
+                    mutex_init(&desc->request_mutex);
+                    init_waitqueue_head(&desc->wait_for_threads);
+                    desc_set_defaults(irq, desc, node, affinity, owner);
+                    irqd_set(&desc->irq_data, flags);
+                    irq_resend_init(desc);
+                #ifdef CONFIG_SPARSE_IRQ
+                    kobject_init(&desc->kobj, &irq_kobj_type);
+                    init_rcu_head(&desc->rcu);
+                #endif
+
+                    return 0;
+                }
+                if (unlikely(ret)) {
+                    kfree(desc);
+                    return NULL;
+                }
+
+                return desc;
+            }
+            if (!desc)
+                goto err;
+            irq_insert_desc(start + i, desc) {
+                /* while all IRQ domains use the same global sparse_irqs infrastructure
+                * to store irq_desc structures for Linux IRQ numbers,
+                * each IRQ domain maintains its own mapping of HW IRQs to Linux IRQs,
+                * and the irq_desc structures themselves are not directly
+                * tied to HW IRQs but to Linux IRQ numbers.
+                *
+                * This tree is indexed by Linux IRQ numbers (e.g., 16, 48, 100),
+                * not HW IRQs. */
+                MA_STATE(mas, &sparse_irqs, irq, irq);
+                WARN_ON(mas_store_gfp(&mas, desc, GFP_KERNEL) != 0);
+            }
+            irq_sysfs_add(start + i, desc) {
+                if (irq_kobj_base) {
+                    /* Continue even in case of failure as this is nothing
+                    * crucial and failures in the late irq_sysfs_init()
+                    * cannot be rolled back. */
+                    if (kobject_add(&desc->kobj, irq_kobj_base, "%d", irq))
+                        pr_warn("Failed to add kobject for irq %d\n", irq);
+                    else
+                        desc->istate |= IRQS_SYSFS;
+                }
+            }
+            irq_add_debugfs_entry(start + i, desc);
+        }
+        return start;
+
+    err:
+        for (i--; i >= 0; i--)
+            free_desc(start + i);
+        return -ENOMEM;
+    }
+unlock:
+    mutex_unlock(&sparse_irq_lock);
+    return ret;
+}
+```
+
+### irq_create_mapping_affinity_locked
+
+```c
+static unsigned int irq_create_mapping_affinity_locked(struct irq_domain *domain,
+                               irq_hw_number_t hwirq,
+                               const struct irq_affinity_desc *affinity)
+{
+    struct device_node *of_node = irq_domain_get_of_node(domain);
+    int virq;
+
+    pr_debug("irq_create_mapping(0x%p, 0x%lx)\n", domain, hwirq);
+
+    /* Allocate a virtual interrupt number */
+    virq = irq_domain_alloc_descs(-1, 1, hwirq, of_node_to_nid(of_node), affinity);
+        --->
+    if (virq <= 0) {
+        pr_debug("-> virq allocation failed\n");
+        return 0;
+    }
+
+    if (irq_domain_associate_locked(domain, virq, hwirq)) {
+        irq_free_desc(virq);
+        return 0;
+    }
+
+    pr_debug("irq %lu on domain %s mapped to virtual irq %u\n",
+        hwirq, of_node_full_name(of_node), virq);
+
+    return virq;
+}
+
+static int irq_domain_associate_locked(struct irq_domain *domain, unsigned int virq,
+                       irq_hw_number_t hwirq)
+{
+    struct irq_data *irq_data = irq_get_irq_data(virq);
+    int ret;
+
+    if (WARN(hwirq >= domain->hwirq_max,
+         "error: hwirq 0x%x is too large for %s\n", (int)hwirq, domain->name))
+        return -EINVAL;
+    if (WARN(!irq_data, "error: virq%i is not allocated", virq))
+        return -EINVAL;
+    if (WARN(irq_data->domain, "error: virq%i is already associated", virq))
+        return -EINVAL;
+
+    irq_data->hwirq = hwirq;
+    irq_data->domain = domain;
+
+    if (domain->ops->map) {
+        ret = domain->ops->map(domain, virq, hwirq);
+        if (ret != 0) {
+            /* If map() returns -EPERM, this interrupt is protected
+             * by the firmware or some other service and shall not
+             * be mapped. Don't bother telling the user about it. */
+            if (ret != -EPERM) {
+                pr_info("%s didn't like hwirq-0x%lx to VIRQ%i mapping (rc=%d)\n",
+                       domain->name, hwirq, virq, ret);
+            }
+            irq_data->domain = NULL;
+            irq_data->hwirq = 0;
+            return ret;
+        }
+    }
+
+    domain->mapcount++;
+    irq_domain_set_mapping(domain, hwirq, irq_data) {
+        /* This also makes sure that all domains point to the same root when
+        * called from irq_domain_insert_irq() for each domain in a hierarchy. */
+        lockdep_assert_held(&domain->root->mutex);
+
+        if (irq_domain_is_nomap(domain))
+            return;
+
+        if (hwirq < domain->revmap_size)
+            rcu_assign_pointer(domain->revmap[hwirq], irq_data);
+        else
+            radix_tree_insert(&domain->revmap_tree, hwirq, irq_data);
+    }
+
+    irq_clear_status_flags(virq, IRQ_NOREQUEST);
+
+    return 0;
 }
 ```
 
@@ -2049,10 +2672,10 @@ void __init init_IRQ(void)
     }
     irqchip_init() {
         of_irq_init(__irqchip_of_table);
-	    acpi_probe_device_table(irqchip) {
+        acpi_probe_device_table(irqchip) {
             extern struct acpi_probe_entry ACPI_PROBE_TABLE(t), ACPI_PROBE_TABLE_END(t);
-            __acpi_probe_device_table(&ACPI_PROBE_TABLE(t)/*ap_head*/，
-                (&ACPI_PROBE_TABLE_END(t) - &ACPI_PROBE_TABLE(t))/*nr*/);	 {
+            __acpi_probe_device_table(&ACPI_PROBE_TABLE(t)/*ap_head*/,
+                (&ACPI_PROBE_TABLE_END(t) - &ACPI_PROBE_TABLE(t))/*nr*/) {
                 int count = 0;
 
                 if (acpi_disabled)
