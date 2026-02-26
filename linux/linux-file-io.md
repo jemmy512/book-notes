@@ -50,7 +50,7 @@
     * [blk_plug](#blk_plug)
     * [call graph](#call-graph-io)
 
-* [[译] Linux 异步 I/O 框架 io_uring：基本原理、程序示例与性能压测（2020）](http://arthurchiao.art/blog/intro-to-io-uring-zh/)
+* [[译] Linux 异步 I/O 框架 io_uring: 基本原理, 程序示例与性能压测(2020)](http://arthurchiao.art/blog/intro-to-io-uring-zh/)
     * [An Introduction to the io_uring Asynchronous I/O Framework, Oracle, 2020](https://medium.com/oracledevs/an-introduction-to-the-io-uring-asynchronous-i-o-framework-fad002d7dfc1)
     * [How io_uring and eBPF Will Revolutionize Programming in Linux, ScyllaDB, 2020](https://thenewstack.io/how-io_uring-and-ebpf-will-revolutionize-programming-in-linux)
 
@@ -244,7 +244,7 @@ struct ext4_inode {
 
 <img src='../images/kernel/file-layer.png' height='600'/>
 
-## init_rootfs
+## vfs_caches_init
 
 ```c
 struct file_system_type rootfs_fs_type = {
@@ -258,145 +258,283 @@ start_kernel() {
         names_cachep = kmem_cache_create_usercopy("names_cache", PATH_MAX, 0,
                 SLAB_HWCACHE_ALIGN|SLAB_PANIC, 0, PATH_MAX, NULL);
 
-        dcache_init();
-        inode_init();
-        files_init();
-        files_maxfiles_init();
+        dcache_init() {
+            /* A constructor could be added for stable state like the lists,
+            * but it is probably not worth it because of the cache nature
+            * of the dcache. */
+            __dentry_cache = KMEM_CACHE_USERCOPY(dentry,
+                SLAB_RECLAIM_ACCOUNT|SLAB_PANIC|SLAB_ACCOUNT,
+                d_shortname.string);
+            runtime_const_init(ptr, __dentry_cache);
 
-        mnt_init() {
-            int err;
+            /* Hash may have been set up in dcache_init_early */
+            if (!hashdist)
+                return;
 
-            mnt_cache = kmem_cache_create("mnt_cache", sizeof(struct mount),
-                    0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+            dentry_hashtable = alloc_large_system_hash("Dentry cache",
+                            sizeof(struct hlist_bl_head),
+                            dhash_entries,
+                            13,
+                            HASH_ZERO,
+                            &d_hash_shift,
+                            NULL,
+                            0,
+                            0);
+            d_hash_shift = 32 - d_hash_shift;
 
-            mount_hashtable = alloc_large_system_hash("Mount-cache",
-                        sizeof(struct hlist_head),
-                        mhash_entries, 19,
-                        HASH_ZERO,
-                        &m_hash_shift, &m_hash_mask, 0, 0);
-            mountpoint_hashtable = alloc_large_system_hash("Mountpoint-cache",
-                        sizeof(struct hlist_head),
-                        mphash_entries, 19,
-                        HASH_ZERO,
-                        &mp_hash_shift, &mp_hash_mask, 0, 0);
-
-            kernfs_init();
-
-            err = sysfs_init();
-            fs_kobj = kobject_create_and_add("fs", NULL);
-
-            shmem_init();
-
-            init_rootfs();
-            init_mount_tree() {
-                struct vfsmount *mnt;
-                struct mount *m;
-                struct mnt_namespace *ns;
-                struct path root;
-
-                mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", NULL) {
-                    struct fs_context *fc;
-                    struct vfsmount *mnt;
-                    int ret = 0;
-
-                    fc = fs_context_for_mount(type, flags) {
-                        fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
-                        if (!fc)
-                            return ERR_PTR(-ENOMEM);
-
-                        fc->purpose     = purpose;
-                        fc->sb_flags    = sb_flags;
-                        fc->sb_flags_mask = sb_flags_mask;
-                        fc->fs_type     = get_filesystem(fs_type);
-                        fc->cred        = get_current_cred();
-                        fc->net_ns      = get_net(current->nsproxy->net_ns);
-                        fc->log.prefix  = fs_type->name;
-
-                        init_fs_context = fc->fs_type->init_fs_context;
-                        ret = init_fs_context(fc) {
-                            rootfs_init_fs_context(struct fs_context *fc) {
-                                if (IS_ENABLED(CONFIG_TMPFS) && is_tmpfs) {
-                                    return shmem_init_fs_context(fc) {
-                                        struct shmem_options *ctx;
-
-                                        ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
-
-                                        ctx->mode = 0777 | S_ISVTX;
-                                        ctx->uid = current_fsuid();
-                                        ctx->gid = current_fsgid();
-
-                                        fc->fs_private = ctx;
-                                        fc->ops = &shmem_fs_context_ops = {
-                                            .free               = shmem_free_fc,
-                                            .get_tree           = shmem_get_tree,
-                                            .parse_monolithic   = shmem_parse_options,
-                                            .parse_param        = shmem_parse_one,
-                                            .reconfigure        = shmem_reconfigure,
-                                        };
-                                        return 0;
-                                    }
-                                }
-
-                                return ramfs_init_fs_context(fc) {
-                                    struct ramfs_fs_info *fsi;
-
-                                    fsi = kzalloc(sizeof(*fsi), GFP_KERNEL);
-                                    fsi->mount_opts.mode = RAMFS_DEFAULT_MODE;
-                                    fc->s_fs_info = fsi;
-                                    fc->ops = &ramfs_context_ops = {
-                                        .free           = ramfs_free_fc,
-                                        .parse_param    = ramfs_parse_param,
-                                        .get_tree       = ramfs_get_tree,
-                                    };
-                                }
-                            }
-                        }
-
-                    }
-                    if (name)
-                        ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
-                    if (!ret)
-                        ret = parse_monolithic_mount_data(fc, data);
-
-                    if (!ret) {
-                        mnt = fc_mount(fc) {
-                            int err = vfs_get_tree(fc) {
-                                shmem_get_tree(struct fs_context *fc);
-
-                                ramfs_get_tree();
-                            }
-                            if (!err) {
-                                up_write(&fc->root->d_sb->s_umount);
-                                return vfs_create_mount(fc);
-                            }
-                            return ERR_PTR(err);
-                        }
-                    } else {
-                        mnt = ERR_PTR(ret);
-                    }
-
-                    put_fs_context(fc);
-                    return mnt;
-                }
-                ns = alloc_mnt_ns(&init_user_ns, false);
-                m = real_mount(mnt);
-                ns->root = m;
-                ns->nr_mounts = 1;
-                mnt_add_to_ns(ns, m);
-                init_task.nsproxy->mnt_ns = ns;
-                get_mnt_ns(ns);
-
-                root.mnt = mnt;
-                root.dentry = mnt->mnt_root;
-                mnt->mnt_flags |= MNT_LOCKED;
-
-                set_fs_pwd(current->fs, &root);
-                set_fs_root(current->fs, &root);
-            }
+            runtime_const_init(shift, d_hash_shift);
+            runtime_const_init(ptr, dentry_hashtable);
         }
 
+        inode_init() {
+            /* inode slab cache */
+            inode_cachep = kmem_cache_create("inode_cache",
+                            sizeof(struct inode),
+                            0,
+                            (SLAB_RECLAIM_ACCOUNT|SLAB_PANIC|
+                            SLAB_ACCOUNT),
+                            init_once);
+
+            /* Hash may have been set up in inode_init_early */
+            if (!hashdist)
+                return;
+
+            inode_hashtable =
+                alloc_large_system_hash("Inode-cache",
+                            sizeof(struct hlist_head),
+                            ihash_entries,
+                            14,
+                            HASH_ZERO,
+                            &i_hash_shift,
+                            &i_hash_mask,
+                            0,
+                            0);
+        }
+
+        files_init() {
+            struct kmem_cache_args args = {
+                .use_freeptr_offset = true,
+                .freeptr_offset = offsetof(struct file, f_freeptr),
+            };
+
+            filp_cachep = kmem_cache_create("filp", sizeof(struct file), &args,
+                        SLAB_HWCACHE_ALIGN | SLAB_PANIC |
+                        SLAB_ACCOUNT | SLAB_TYPESAFE_BY_RCU);
+
+            args.freeptr_offset = offsetof(struct backing_file, bf_freeptr);
+            bfilp_cachep = kmem_cache_create("bfilp", sizeof(struct backing_file),
+                        &args, SLAB_HWCACHE_ALIGN | SLAB_PANIC |
+                        SLAB_ACCOUNT | SLAB_TYPESAFE_BY_RCU);
+            percpu_counter_init(&nr_files, 0, GFP_KERNEL);
+        }
+
+        files_maxfiles_init() {
+            unsigned long n;
+            unsigned long nr_pages = totalram_pages();
+            unsigned long memreserve = (nr_pages - nr_free_pages()) * 3/2;
+
+            memreserve = min(memreserve, nr_pages - 1);
+            n = ((nr_pages - memreserve) * (PAGE_SIZE / 1024)) / 10;
+
+            files_stat.max_files = max_t(unsigned long, n, NR_FILE);
+        }
+
+        mnt_init();
         bdev_cache_init();
         chrdev_init();
+    }
+}
+```
+
+### mnt_init
+
+```c
+void __init mnt_init(void) {
+    int err;
+
+    mnt_cache = kmem_cache_create("mnt_cache", sizeof(struct mount),
+            0, SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+
+    mount_hashtable = alloc_large_system_hash("Mount-cache",
+                sizeof(struct hlist_head),
+                mhash_entries, 19,
+                HASH_ZERO,
+                &m_hash_shift, &m_hash_mask, 0, 0);
+    mountpoint_hashtable = alloc_large_system_hash("Mountpoint-cache",
+                sizeof(struct hlist_head),
+                mphash_entries, 19,
+                HASH_ZERO,
+                &mp_hash_shift, &mp_hash_mask, 0, 0);
+
+    kernfs_init();
+
+    err = sysfs_init() {
+        int err;
+
+        sysfs_root = kernfs_create_root(NULL, KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK, NULL);
+        if (IS_ERR(sysfs_root))
+            return PTR_ERR(sysfs_root);
+
+        sysfs_root_kn = kernfs_root_to_node(sysfs_root) {
+            return root->kn;
+        }
+
+        err = register_filesystem(&sysfs_fs_type);
+        if (err) {
+            kernfs_destroy_root(sysfs_root);
+            return err;
+        }
+
+        return 0;
+    }
+    fs_kobj = kobject_create_and_add("fs", NULL);
+
+    shmem_init();
+        --->
+
+    init_rootfs() {
+        if (IS_ENABLED(CONFIG_TMPFS)) {
+            if (!saved_root_name[0] && !root_fs_names)
+                is_tmpfs = true;
+            else if (root_fs_names && !!strstr(root_fs_names, "tmpfs"))
+                is_tmpfs = true;
+        }
+    }
+
+    init_mount_tree() {
+        struct vfsmount *mnt;
+        struct mount *m;
+        struct path root;
+
+        mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", initramfs_options) {
+            struct fs_context *fc;
+            struct vfsmount *mnt;
+            int ret = 0;
+
+            fc = fs_context_for_mount(type, flags) {
+                fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
+                if (!fc)
+                    return ERR_PTR(-ENOMEM);
+
+                fc->purpose     = purpose;
+                fc->sb_flags    = sb_flags;
+                fc->sb_flags_mask = sb_flags_mask;
+                fc->fs_type     = get_filesystem(fs_type);
+                fc->cred        = get_current_cred();
+                fc->net_ns      = get_net(current->nsproxy->net_ns);
+                fc->log.prefix  = fs_type->name;
+
+                init_fs_context = fc->fs_type->init_fs_context;
+                ret = init_fs_context(fc) {
+                    rootfs_init_fs_context(struct fs_context *fc) {
+                        if (IS_ENABLED(CONFIG_TMPFS) && is_tmpfs) {
+                            return shmem_init_fs_context(fc) {
+                                struct shmem_options *ctx;
+
+                                ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
+
+                                ctx->mode = 0777 | S_ISVTX;
+                                ctx->uid = current_fsuid();
+                                ctx->gid = current_fsgid();
+
+                                fc->fs_private = ctx;
+                                fc->ops = &shmem_fs_context_ops = {
+                                    .free               = shmem_free_fc,
+                                    .get_tree           = shmem_get_tree,
+                                    .parse_monolithic   = shmem_parse_options,
+                                    .parse_param        = shmem_parse_one,
+                                    .reconfigure        = shmem_reconfigure,
+                                };
+                                return 0;
+                            }
+                        }
+
+                        return ramfs_init_fs_context(fc) {
+                            struct ramfs_fs_info *fsi;
+
+                            fsi = kzalloc(sizeof(*fsi), GFP_KERNEL);
+                            fsi->mount_opts.mode = RAMFS_DEFAULT_MODE;
+                            fc->s_fs_info = fsi;
+                            fc->ops = &ramfs_context_ops = {
+                                .free           = ramfs_free_fc,
+                                .parse_param    = ramfs_parse_param,
+                                .get_tree       = ramfs_get_tree,
+                            };
+                        }
+                    }
+                }
+
+            }
+            if (name)
+                ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
+            if (!ret)
+                ret = parse_monolithic_mount_data(fc, data);
+
+            if (!ret) {
+                mnt = fc_mount(fc) {
+                    int err = vfs_get_tree(fc) {
+                        shmem_get_tree(struct fs_context *fc);
+
+                        ramfs_get_tree();
+                    }
+                    if (!err) {
+                        up_write(&fc->root->d_sb->s_umount);
+                        return vfs_create_mount(fc);
+                    }
+                    return ERR_PTR(err);
+                }
+            } else {
+                mnt = ERR_PTR(ret);
+            }
+
+            put_fs_context(fc);
+            return mnt;
+        }
+
+        m = real_mount(mnt) {
+            return container_of(mnt, struct mount, mnt);
+        }
+        init_mnt_ns.root = m;
+        init_mnt_ns.nr_mounts = 1;
+
+        mnt_add_to_ns(&init_mnt_ns, m) {
+            struct rb_node **link = &ns->mounts.rb_node;
+            struct rb_node *parent = NULL;
+            bool mnt_first_node = true, mnt_last_node = true;
+
+            WARN_ON(mnt_ns_attached(mnt));
+            mnt->mnt_ns = ns;
+            while (*link) {
+                parent = *link;
+                if (mnt->mnt_id_unique < node_to_mount(parent)->mnt_id_unique) {
+                    link = &parent->rb_left;
+                    mnt_last_node = false;
+                } else {
+                    link = &parent->rb_right;
+                    mnt_first_node = false;
+                }
+            }
+
+            if (mnt_last_node)
+                ns->mnt_last_node = &mnt->mnt_node;
+            if (mnt_first_node)
+                ns->mnt_first_node = &mnt->mnt_node;
+            rb_link_node(&mnt->mnt_node, parent, link);
+            rb_insert_color(&mnt->mnt_node, &ns->mounts);
+
+            mnt_notify_add(mnt);
+        }
+
+        init_task.nsproxy->mnt_ns = &init_mnt_ns;
+        get_mnt_ns(&init_mnt_ns);
+
+        root.mnt = mnt;
+        root.dentry = mnt->mnt_root;
+
+        set_fs_pwd(current->fs, &root);
+        set_fs_root(current->fs, &root);
+
+        ns_tree_add(&init_mnt_ns);
     }
 }
 ```
@@ -6211,6 +6349,7 @@ share_extant_sb:
 ```
 
 ### device_add_disk
+
 ```c
 int device_register(struct device *dev)
 {
@@ -6226,289 +6365,326 @@ static int sd_probe(struct device *dev)
 
 /* add disk information to kernel list */
 int __must_check device_add_disk(struct device *parent, struct gendisk *disk,
-         const struct attribute_group **groups)
+                 const struct attribute_group **groups)
+{
+    return add_disk_fwnode(parent, disk, groups, NULL);
+}
+
+int __must_check add_disk_fwnode(struct device *parent, struct gendisk *disk,
+                 const struct attribute_group **groups,
+                 struct fwnode_handle *fwnode)
+{
+    struct blk_mq_tag_set *set;
+    unsigned int memflags;
+    int ret;
+
+    if (queue_is_mq(disk->queue)) {
+        set = disk->queue->tag_set;
+        memflags = memalloc_noio_save();
+        down_read(&set->update_nr_hwq_lock);
+        ret = __add_disk(parent, disk, groups, fwnode);
+        up_read(&set->update_nr_hwq_lock);
+        memalloc_noio_restore(memflags);
+    } else {
+        ret = __add_disk(parent, disk, groups, fwnode);
+    }
+
+    /* add_disk_final() needn't to read `nr_hw_queues`, so move it out
+     * of read lock `set->update_nr_hwq_lock` for avoiding unnecessary
+     * lock dependency on `disk->open_mutex` from scanning partition. */
+    if (!ret)
+        add_disk_final(disk);
+    return ret;
+}
+
+int __add_disk(struct device *parent, struct gendisk *disk,
+              const struct attribute_group **groups,
+              struct fwnode_handle *fwnode)
 
 {
-  struct device *ddev = disk_to_dev(disk);
-  int ret;
+    struct device *ddev = disk_to_dev(disk);
+    int ret;
 
-  /* Only makes sense for bio-based to set ->poll_bio */
-  if (queue_is_mq(disk->queue) && disk->fops->poll_bio)
-    return -EINVAL;
+    if (WARN_ON_ONCE(bdev_nr_sectors(disk->part0) > BLK_DEV_MAX_SECTORS))
+        return -EINVAL;
 
-  elevator_init_mq(disk->queue);
-
-  if (disk->major) {
-    if (WARN_ON(!disk->minors))
-      return -EINVAL;
-
-    if (disk->minors > DISK_MAX_PARTS) {
-      disk->minors = DISK_MAX_PARTS;
+    if (queue_is_mq(disk->queue)) {
+        /* ->submit_bio and ->poll_bio are bypassed for blk-mq drivers. */
+        if (disk->fops->submit_bio || disk->fops->poll_bio)
+            return -EINVAL;
+    } else {
+        if (!disk->fops->submit_bio)
+            return -EINVAL;
+        bdev_set_flag(disk->part0, BD_HAS_SUBMIT_BIO);
     }
-    if (disk->first_minor + disk->minors > MINORMASK + 1)
-      return -EINVAL;
-  } else {
-    if (WARN_ON(disk->minors))
-      return -EINVAL;
 
-    ret = blk_alloc_ext_minor();
-    if (ret < 0)
-      return ret;
-    disk->major = BLOCK_EXT_MAJOR;
-    disk->first_minor = ret;
-  }
+    /* If the driver provides an explicit major number it also must provide
+     * the number of minors numbers supported, and those will be used to
+     * setup the gendisk.
+     * Otherwise just allocate the device numbers for both the whole device
+     * and all partitions from the extended dev_t space. */
+    ret = -EINVAL;
+    if (disk->major) {
+        if (WARN_ON(!disk->minors))
+            goto out;
 
-  /* delay uevents, until we scanned partition table */
-  dev_set_uevent_suppress(ddev, 1);
+        if (disk->minors > DISK_MAX_PARTS) {
+            pr_err("block: can't allocate more than %d partitions\n",
+                DISK_MAX_PARTS);
+            disk->minors = DISK_MAX_PARTS;
+        }
+        if (disk->first_minor > MINORMASK ||
+            disk->minors > MINORMASK + 1 ||
+            disk->first_minor + disk->minors > MINORMASK + 1)
+            goto out;
+    } else {
+        if (WARN_ON(disk->minors))
+            goto out;
 
-  ddev->parent = parent;
-  ddev->groups = groups;
-  dev_set_name(ddev, "%s", disk->disk_name);
-  if (!(disk->flags & GENHD_FL_HIDDEN))
-    ddev->devt = MKDEV(disk->major, disk->first_minor);
-  ret = device_add(ddev);
-  if (ret)
-    goto out_free_ext_minor;
+        ret = blk_alloc_ext_minor();
+        if (ret < 0)
+            goto out;
+        disk->major = BLOCK_EXT_MAJOR;
+        disk->first_minor = ret;
+    }
 
-  ret = disk_alloc_events(disk);
-  if (ret)
-    goto out_device_del;
+    /* delay uevents, until we scanned partition table */
+    dev_set_uevent_suppress(ddev, 1);
 
-  if (!sysfs_deprecated) {
+    ddev->parent = parent;
+    ddev->groups = groups;
+    dev_set_name(ddev, "%s", disk->disk_name);
+    if (fwnode)
+        device_set_node(ddev, fwnode);
+    if (!(disk->flags & GENHD_FL_HIDDEN))
+        ddev->devt = MKDEV(disk->major, disk->first_minor);
+
+    ret = device_add(ddev);
+        --->
+    if (ret)
+        goto out_free_ext_minor;
+
+    ret = disk_alloc_events(disk);
+    if (ret)
+        goto out_device_del;
+
     ret = sysfs_create_link(block_depr, &ddev->kobj, kobject_name(&ddev->kobj));
     if (ret)
-      goto out_device_del;
-  }
+        goto out_device_del;
 
-  pm_runtime_set_memalloc_noio(ddev, true);
+    /* avoid probable deadlock caused by allocating memory with
+     * GFP_KERNEL in runtime_resume callback of its all ancestor
+     * devices */
+    pm_runtime_set_memalloc_noio(ddev, true);
 
-  ret = blk_integrity_add(disk);
-  if (ret)
-    goto out_del_block_link;
-
-  disk->part0->bd_holder_dir = kobject_create_and_add("holders", &ddev->kobj);
-  if (!disk->part0->bd_holder_dir) {
-    ret = -ENOMEM;
-    goto out_del_integrity;
-  }
-  disk->slave_dir = kobject_create_and_add("slaves", &ddev->kobj);
-  if (!disk->slave_dir) {
-    ret = -ENOMEM;
-    goto out_put_holder_dir;
-  }
-
-  ret = bd_register_pending_holders(disk);
-  if (ret < 0)
-    goto out_put_slave_dir;
-
-  ret = blk_register_queue(disk);
-  if (ret)
-    goto out_put_slave_dir;
-
-  if (!(disk->flags & GENHD_FL_HIDDEN)) {
-    ret = bdi_register(disk->bdi, "%u:%u", disk->major, disk->first_minor);
+    disk->part0->bd_holder_dir =
+        kobject_create_and_add("holders", &ddev->kobj);
+    if (!disk->part0->bd_holder_dir) {
+        ret = -ENOMEM;
+        goto out_del_block_link;
+    }
+    disk->slave_dir = kobject_create_and_add("slaves", &ddev->kobj);
+    if (!disk->slave_dir) {
+        ret = -ENOMEM;
+        goto out_put_holder_dir;
+    }
+    /* register a block layer queue with sysfs */
+    ret = blk_register_queue(disk);
+        --->
     if (ret)
-      goto out_unregister_queue;
-    bdi_set_owner(disk->bdi, ddev);
-    ret = sysfs_create_link(&ddev->kobj,
-          &disk->bdi->dev->kobj, "bdi");
-    if (ret)
-      goto out_unregister_bdi;
+        goto out_put_slave_dir;
 
-    bdev_add(disk->part0, ddev->devt);
-    if (get_capacity(disk))
-      disk_scan_partitions(disk, FMODE_READ);
-
-    /* Announce the disk and partitions after all partitions are
-     * created. (for hidden disks uevents remain suppressed forever) */
-    dev_set_uevent_suppress(ddev, 0);
-    disk_uevent(disk, KOBJ_ADD);
-  }
-
-  disk_update_readahead(disk);
-  disk_add_events(disk);
-  set_bit(GD_ADDED, &disk->state);
-  return 0;
-
-  return ret;
+    if (!(disk->flags & GENHD_FL_HIDDEN)) {
+        ret = bdi_register(disk->bdi, "%u:%u", disk->major, disk->first_minor);
+        if (ret)
+            goto out_unregister_queue;
+        bdi_set_owner(disk->bdi, ddev);
+        ret = sysfs_create_link(&ddev->kobj,
+                    &disk->bdi->dev->kobj, "bdi");
+        if (ret)
+            goto out_unregister_bdi;
+    } else {
+        /* Even if the block_device for a hidden gendisk is not
+         * registered, it needs to have a valid bd_dev so that the
+         * freeing of the dynamic major works. */
+        disk->part0->bd_dev = MKDEV(disk->major, disk->first_minor);
+    }
+    return 0;
 }
+```
 
-/**
- * device_add - add device to device hierarchy.
- * @dev: device.
- *
- * This is part 2 of device_register(), though may be called
- * separately _iff_ device_initialize() has been called separately.
- *
- * This adds @dev to the kobject hierarchy via kobject_add(), adds it
- * to the global and sibling lists for the device, then
- * adds it to the other relevant subsystems of the driver model.
- *
- * Do not call this routine or device_register() more than once for
- * any device structure.  The driver model core is not designed to work
- * with devices that get unregistered and then spring back to life.
- * (Among other things, it's very hard to guarantee that all references
- * to the previous incarnation of @dev have been dropped.)  Allocate
- * and register a fresh new struct device instead.
- *
- * NOTE: _Never_ directly free @dev after calling this function, even
- * if it returned an error! Always use put_device() to give up your
- * reference instead.
- *
- * Rule of thumb is: if device_add() succeeds, you should call
- * device_del() when you want to get rid of it. If device_add() has
- * *not* succeeded, use *only* put_device() to drop the reference
- * count. */
+#### device_add
+
+```c
 int device_add(struct device *dev)
 {
-  struct device *parent;
-  struct kobject *kobj;
-  struct class_interface *class_intf;
-  int error = -EINVAL;
-  struct kobject *glue_dir = NULL;
+    struct subsys_private *sp;
+    struct device *parent;
+    struct kobject *kobj;
+    struct class_interface *class_intf;
+    int error = -EINVAL;
+    struct kobject *glue_dir = NULL;
 
-  dev = get_device(dev);
-  if (!dev)
-    goto done;
+    dev = get_device(dev);
+    if (!dev)
+        goto done;
 
-  if (!dev->p) {
-    error = device_private_init(dev);
+    if (!dev->p) {
+        error = device_private_init(dev);
+        if (error)
+            goto done;
+    }
+
+    /* for statically allocated devices, which should all be converted
+     * some day, we need to initialize the name. We prevent reading back
+     * the name, and force the use of dev_name() */
+    if (dev->init_name) {
+        error = dev_set_name(dev, "%s", dev->init_name);
+        dev->init_name = NULL;
+    }
+
+    if (dev_name(dev))
+        error = 0;
+    /* subsystems can specify simple device enumeration */
+    else if (dev->bus && dev->bus->dev_name)
+        error = dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id);
+    else
+        error = -EINVAL;
     if (error)
-      goto done;
-  }
+        goto name_error;
 
-  /* for statically allocated devices, which should all be converted
-   * some day, we need to initialize the name. We prevent reading back
-   * the name, and force the use of dev_name() */
-  if (dev->init_name) {
-    dev_set_name(dev, "%s", dev->init_name);
-    dev->init_name = NULL;
-  }
+    pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
 
-  /* subsystems can specify simple device enumeration */
-  if (!dev_name(dev) && dev->bus && dev->bus->dev_name)
-    dev_set_name(dev, "%s%u", dev->bus->dev_name, dev->id);
+    parent = get_device(dev->parent);
+    kobj = get_device_parent(dev, parent);
+    if (IS_ERR(kobj)) {
+        error = PTR_ERR(kobj);
+        goto parent_error;
+    }
+    if (kobj)
+        dev->kobj.parent = kobj;
 
-  if (!dev_name(dev)) {
-    error = -EINVAL;
-    goto name_error;
-  }
+    /* use parent numa_node */
+    if (parent && (dev_to_node(dev) == NUMA_NO_NODE))
+        set_dev_node(dev, dev_to_node(parent));
 
-  pr_debug("device: '%s': %s\n", dev_name(dev), __func__);
+    /* first, register with generic layer. */
+    /* we require the name to be set before, and pass NULL */
+    error = kobject_add(&dev->kobj, dev->kobj.parent, NULL);
+    if (error) {
+        glue_dir = kobj;
+        goto Error;
+    }
 
-  parent = get_device(dev->parent);
-  kobj = get_device_parent(dev, parent);
-  if (IS_ERR(kobj)) {
-    error = PTR_ERR(kobj);
-    goto parent_error;
-  }
-  if (kobj)
-    dev->kobj.parent = kobj;
+    /* notify platform of device entry */
+    device_platform_notify(dev);
 
-  /* use parent numa_node */
-  if (parent && (dev_to_node(dev) == NUMA_NO_NODE))
-    set_dev_node(dev, dev_to_node(parent));
-
-  /* first, register with generic layer. */
-  /* we require the name to be set before, and pass NULL */
-  error = kobject_add(&dev->kobj, dev->kobj.parent, NULL);
-  if (error) {
-    glue_dir = get_glue_dir(dev);
-    goto Error;
-  }
-
-  /* notify platform of device entry */
-  device_platform_notify(dev);
-
-  error = device_create_file(dev, &dev_attr_uevent);
-  if (error)
-    goto attrError;
-
-  error = device_add_class_symlinks(dev);
-  if (error)
-    goto SymlinkError;
-  error = device_add_attrs(dev);
-  if (error)
-    goto AttrsError;
-  error = bus_add_device(dev);
-  if (error)
-    goto BusError;
-  error = dpm_sysfs_add(dev);
-  if (error)
-    goto DPMError;
-  device_pm_add(dev);
-
-  if (MAJOR(dev->devt)) {
-    error = device_create_file(dev, &dev_attr_dev);
+    error = device_create_file(dev, &dev_attr_uevent);
     if (error)
-      goto DevAttrError;
+        goto attrError;
 
-    error = device_create_sys_dev_entry(dev);
+    error = device_add_class_symlinks(dev);
     if (error)
-      goto SysEntryError;
+        goto SymlinkError;
+    error = device_add_attrs(dev);
+    if (error)
+        goto AttrsError;
+    error = bus_add_device(dev);
+    if (error)
+        goto BusError;
+    error = dpm_sysfs_add(dev);
+    if (error)
+        goto DPMError;
+    device_pm_add(dev);
 
-    devtmpfs_create_node(dev);
-  }
+    if (MAJOR(dev->devt)) {
+        error = device_create_file(dev, &dev_attr_dev);
+        if (error)
+            goto DevAttrError;
 
-  /* Notify clients of device addition.  This call must come
-   * after dpm_sysfs_add() and before kobject_uevent(). */
-  if (dev->bus)
-    blocking_notifier_call_chain(&dev->bus->p->bus_notifier, BUS_NOTIFY_ADD_DEVICE, dev);
+        error = device_create_sys_dev_entry(dev);
+        if (error)
+            goto SysEntryError;
 
-  kobject_uevent(&dev->kobj, KOBJ_ADD);
+        devtmpfs_create_node(dev);
+    }
 
-  /* Check if any of the other devices (consumers) have been waiting for
-   * this device (supplier) to be added so that they can create a device
-   * link to it.
-   *
-   * This needs to happen after device_pm_add() because device_link_add()
-   * requires the supplier be registered before it's called.
-   *
-   * But this also needs to happen before bus_probe_device() to make sure
-   * waiting consumers can link to it before the driver is bound to the
-   * device and the driver sync_state callback is called for this device. */
-  if (dev->fwnode && !dev->fwnode->dev) {
-    dev->fwnode->dev = dev;
-    fw_devlink_link_device(dev);
-  }
+    /* Notify clients of device addition.  This call must come
+     * after dpm_sysfs_add() and before kobject_uevent(). */
+    bus_notify(dev, BUS_NOTIFY_ADD_DEVICE);
+    kobject_uevent(&dev->kobj, KOBJ_ADD);
 
-  bus_probe_device(dev);
+    /* Check if any of the other devices (consumers) have been waiting for
+     * this device (supplier) to be added so that they can create a device
+     * link to it.
+     *
+     * This needs to happen after device_pm_add() because device_link_add()
+     * requires the supplier be registered before it's called.
+     *
+     * But this also needs to happen before bus_probe_device() to make sure
+     * waiting consumers can link to it before the driver is bound to the
+     * device and the driver sync_state callback is called for this device. */
+    if (dev->fwnode && !dev->fwnode->dev) {
+        dev->fwnode->dev = dev;
+        fw_devlink_link_device(dev);
+    }
 
-  /* If all driver registration is done and a newly added device doesn't
-   * match with any driver, don't block its consumers from probing in
-   * case the consumer device is able to operate without this supplier. */
-  if (dev->fwnode && fw_devlink_drv_reg_done && !dev->can_match)
-    fw_devlink_unblock_consumers(dev);
+    bus_probe_device(dev);
 
-  if (parent)
-    klist_add_tail(&dev->p->knode_parent,
-             &parent->p->klist_children);
+    /* If all driver registration is done and a newly added device doesn't
+     * match with any driver, don't block its consumers from probing in
+     * case the consumer device is able to operate without this supplier. */
+    if (dev->fwnode && fw_devlink_drv_reg_done && !dev->can_match)
+        fw_devlink_unblock_consumers(dev);
 
-  if (dev->class) {
-    mutex_lock(&dev->class->p->mutex);
-    /* tie the class to the device */
-    klist_add_tail(&dev->p->knode_class,
-             &dev->class->p->klist_devices);
+    if (parent)
+        klist_add_tail(&dev->p->knode_parent, &parent->p->klist_children);
 
-    /* notify any interfaces that the device is here */
-    list_for_each_entry(class_intf,
-            &dev->class->p->interfaces, node)
-      if (class_intf->add_dev)
-        class_intf->add_dev(dev, class_intf);
-    mutex_unlock(&dev->class->p->mutex);
-  }
+    sp = class_to_subsys(dev->class);
+    if (sp) {
+        mutex_lock(&sp->mutex);
+        /* tie the class to the device */
+        klist_add_tail(&dev->p->knode_class, &sp->klist_devices);
 
+        /* notify any interfaces that the device is here */
+        list_for_each_entry(class_intf, &sp->interfaces, node)
+            if (class_intf->add_dev)
+                class_intf->add_dev(dev);
+        mutex_unlock(&sp->mutex);
+        subsys_put(sp);
+    }
 done:
-  put_device(dev);
-  return error;
-}
+    put_device(dev);
+    return error;
 
-void bdev_add(struct block_device *bdev, dev_t dev)
-{
-  bdev->bd_dev = dev;
-  bdev->bd_inode->i_rdev = dev;
-  bdev->bd_inode->i_ino = dev;
-  insert_inode_hash(bdev->bd_inode);
+ SysEntryError:
+    if (MAJOR(dev->devt))
+        device_remove_file(dev, &dev_attr_dev);
+ DevAttrError:
+    device_pm_remove(dev);
+    dpm_sysfs_remove(dev);
+ DPMError:
+    device_set_driver(dev, NULL);
+    bus_remove_device(dev);
+ BusError:
+    device_remove_attrs(dev);
+ AttrsError:
+    device_remove_class_symlinks(dev);
+ SymlinkError:
+    device_remove_file(dev, &dev_attr_uevent);
+ attrError:
+    device_platform_notify_remove(dev);
+    kobject_uevent(&dev->kobj, KOBJ_REMOVE);
+    glue_dir = get_glue_dir(dev);
+    kobject_del(&dev->kobj);
+ Error:
+    cleanup_glue_dir(dev, glue_dir);
+parent_error:
+    put_device(parent);
+name_error:
+    kfree(dev->p);
+    dev->p = NULL;
+    goto done;
 }
 ```
 
@@ -6577,6 +6753,421 @@ ext4_get_tree(fc);
             ext4_fill_super();
         fc->root = dget(s->s_root);
 
+```
+
+#### blk_register_queue
+
+```c
+int blk_register_queue(struct gendisk *disk)
+{
+    struct request_queue *q = disk->queue;
+    int ret;
+
+    ret = kobject_add(&disk->queue_kobj, &disk_to_dev(disk)->kobj, "queue");
+    if (ret < 0)
+        return ret;
+
+    if (queue_is_mq(q)) {
+        ret = blk_mq_sysfs_register(disk);
+        if (ret)
+            goto out_del_queue_kobj;
+    }
+    mutex_lock(&q->sysfs_lock);
+
+    mutex_lock(&q->debugfs_mutex);
+    q->debugfs_dir = debugfs_create_dir(disk->disk_name, blk_debugfs_root);
+    if (queue_is_mq(q))
+        blk_mq_debugfs_register(q);
+    mutex_unlock(&q->debugfs_mutex);
+
+    ret = disk_register_independent_access_ranges(disk);
+    if (ret)
+        goto out_debugfs_remove;
+
+    ret = blk_crypto_sysfs_register(disk);
+    if (ret)
+        goto out_unregister_ia_ranges;
+
+    if (queue_is_mq(q)) {
+        elevator_set_default(q) {
+            struct elv_change_ctx ctx = {
+                .name = "mq-deadline",
+                .no_uevent = true,
+            };
+            int err;
+
+            /* now we allow to switch elevator */
+            blk_queue_flag_clear(QUEUE_FLAG_NO_ELV_SWITCH, q);
+
+            if (q->tag_set->flags & BLK_MQ_F_NO_SCHED_BY_DEFAULT)
+                return;
+
+            /* For single queue devices, default to using mq-deadline. If we
+            * have multiple queues or mq-deadline is not available, default
+            * to "none". */
+            ctx.type = elevator_find_get(ctx.name);
+            if (!ctx.type)
+                return;
+
+            if ((q->nr_hw_queues == 1 || blk_mq_is_shared_tags(q->tag_set->flags))) {
+                err = elevator_change(q, &ctx);
+                if (err < 0)
+                    pr_warn("\"%s\" elevator initialization, failed %d, falling back to \"none\"\n",
+                            ctx.name, err);
+            }
+            elevator_put(ctx.type);
+        }
+    }
+
+    blk_queue_flag_set(QUEUE_FLAG_REGISTERED, q);
+    wbt_init_enable_default(disk);
+
+    /* Now everything is ready and send out KOBJ_ADD uevent */
+    kobject_uevent(&disk->queue_kobj, KOBJ_ADD);
+    if (q->elevator)
+        kobject_uevent(&q->elevator->kobj, KOBJ_ADD);
+    mutex_unlock(&q->sysfs_lock);
+
+    /* SCSI probing may synchronously create and destroy a lot of
+     * request_queues for non-existent devices.  Shutting down a fully
+     * functional queue takes measureable wallclock time as RCU grace
+     * periods are involved.  To avoid excessive latency in these
+     * cases, a request_queue starts out in a degraded mode which is
+     * faster to shut down and is made fully functional here as
+     * request_queues for non-existent devices never get registered. */
+    blk_queue_flag_set(QUEUE_FLAG_INIT_DONE, q);
+    percpu_ref_switch_to_percpu(&q->q_usage_counter);
+
+    return ret;
+
+out_unregister_ia_ranges:
+    disk_unregister_independent_access_ranges(disk);
+out_debugfs_remove:
+    blk_debugfs_remove(disk);
+    mutex_unlock(&q->sysfs_lock);
+    if (queue_is_mq(q))
+        blk_mq_sysfs_unregister(disk);
+out_del_queue_kobj:
+    kobject_del(&disk->queue_kobj);
+    return ret;
+}
+
+int elevator_change(struct request_queue *q, struct elv_change_ctx *ctx)
+{
+    unsigned int memflags;
+    struct blk_mq_tag_set *set = q->tag_set;
+    int ret = 0;
+
+    lockdep_assert_held(&set->update_nr_hwq_lock);
+
+    if (strncmp(ctx->name, "none", 4)) {
+        ret = blk_mq_alloc_sched_res(q, ctx->type, &ctx->res, set->nr_hw_queues) {
+            struct blk_mq_tag_set *set = q->tag_set;
+
+            res->et = blk_mq_alloc_sched_tags(set, nr_hw_queues,
+                    blk_mq_default_nr_requests(set));
+            if (!res->et)
+                return -ENOMEM;
+
+            res->data = blk_mq_alloc_sched_data(q, type);
+            if (IS_ERR(res->data)) {
+                blk_mq_free_sched_tags(res->et, set);
+                return -ENOMEM;
+            }
+
+            return 0;
+        }
+        if (ret)
+            return ret;
+    }
+
+    memflags = blk_mq_freeze_queue(q);
+    /* May be called before adding disk, when there isn't any FS I/O,
+     * so freezing queue plus canceling dispatch work is enough to
+     * drain any dispatch activities originated from passthrough
+     * requests, then no need to quiesce queue which may add long boot
+     * latency, especially when lots of disks are involved.
+     *
+     * Disk isn't added yet, so verifying queue lock only manually. */
+    blk_mq_cancel_work_sync(q);
+    mutex_lock(&q->elevator_lock);
+    if (!(q->elevator && elevator_match(q->elevator->type, ctx->name))) {
+        ret = elevator_switch(q, ctx) {
+            struct elevator_type *new_e = NULL;
+            int ret = 0;
+
+            WARN_ON_ONCE(q->mq_freeze_depth == 0);
+            lockdep_assert_held(&q->elevator_lock);
+
+            if (strncmp(ctx->name, "none", 4)) {
+                new_e = elevator_find_get(ctx->name);
+                if (!new_e)
+                    return -EINVAL;
+            }
+
+            blk_mq_quiesce_queue(q);
+
+            if (q->elevator) {
+                ctx->old = q->elevator;
+                elevator_exit(q);
+            }
+
+            if (new_e) {
+                ret = blk_mq_init_sched(q, new_e, &ctx->res) {
+                    unsigned int flags = q->tag_set->flags;
+                    struct elevator_tags *et = res->et;
+                    struct blk_mq_hw_ctx *hctx;
+                    struct elevator_queue *eq;
+                    unsigned long i;
+                    int ret;
+
+                    eq = elevator_alloc(q, e, res);
+                    if (!eq)
+                        return -ENOMEM;
+
+                    q->nr_requests = et->nr_requests;
+
+                    if (blk_mq_is_shared_tags(flags)) {
+                        /* Shared tags are stored at index 0 in @et->tags. */
+                        q->sched_shared_tags = et->tags[0];
+                        blk_mq_tag_update_sched_shared_tags(q, et->nr_requests);
+                    }
+
+                    queue_for_each_hw_ctx(q, hctx, i) {
+                        if (blk_mq_is_shared_tags(flags))
+                            hctx->sched_tags = q->sched_shared_tags;
+                        else
+                            hctx->sched_tags = et->tags[i];
+                    }
+
+                    ret = e->ops.init_sched(q, eq);
+                    if (ret)
+                        goto out;
+
+                    queue_for_each_hw_ctx(q, hctx, i) {
+                        if (e->ops.init_hctx) {
+                            ret = e->ops.init_hctx(hctx, i);
+                            if (ret) {
+                                blk_mq_exit_sched(q, eq);
+                                kobject_put(&eq->kobj);
+                                return ret;
+                            }
+                        }
+                    }
+                    return 0;
+                }
+                if (ret)
+                    goto out_unfreeze;
+                ctx->new = q->elevator;
+            } else {
+                blk_queue_flag_clear(QUEUE_FLAG_SQ_SCHED, q);
+                q->elevator = NULL;
+                q->nr_requests = q->tag_set->queue_depth;
+            }
+            blk_add_trace_msg(q, "elv switch: %s", ctx->name);
+
+        out_unfreeze:
+            blk_mq_unquiesce_queue(q);
+
+            if (ret) {
+                pr_warn("elv: switch to \"%s\" failed, falling back to \"none\"\n",
+                    new_e->elevator_name);
+            }
+
+            if (new_e)
+                elevator_put(new_e);
+            return ret;
+        }
+    }
+    mutex_unlock(&q->elevator_lock);
+    blk_mq_unfreeze_queue(q, memflags);
+    if (!ret)
+        ret = elevator_change_done(q, ctx);
+
+    /* Free sched resource if it's allocated but we couldn't switch elevator. */
+    if (!ctx->new)
+        blk_mq_free_sched_res(&ctx->res, ctx->type, set);
+
+    return ret;
+}
+
+```
+
+#### bus_add_device
+
+```c
+int bus_add_device(struct device *dev)
+{
+    struct subsys_private *sp = bus_to_subsys(dev->bus);
+    int error;
+
+    if (!sp) {
+        /* This is a normal operation for many devices that do not
+         * have a bus assigned to them, just say that all went
+         * well. */
+        return 0;
+    }
+
+    /* Reference in sp is now incremented and will be dropped when
+     * the device is removed from the bus */
+
+    pr_debug("bus: '%s': add device %s\n", sp->bus->name, dev_name(dev));
+
+    error = device_add_groups(dev, sp->bus->dev_groups) {
+        return sysfs_create_groups(&dev->kobj, groups) {
+            return internal_create_groups(kobj, 0, groups) {
+                int error = 0;
+                int i;
+
+                if (!groups)
+                    return 0;
+
+                for (i = 0; groups[i]; i++) {
+                    error = internal_create_group(kobj, update, groups[i]) {
+                        struct kernfs_node *kn;
+                        kuid_t uid;
+                        kgid_t gid;
+                        int error;
+
+                        if (WARN_ON(!kobj || (!update && !kobj->sd)))
+                            return -EINVAL;
+
+                        /* Updates may happen before the object has been instantiated */
+                        if (unlikely(update && !kobj->sd))
+                            return -EINVAL;
+
+                        if (!grp->attrs && !grp->bin_attrs) {
+                            pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
+                                kobj->name, grp->name ?: "");
+                            return 0;
+                        }
+
+                        kobject_get_ownership(kobj, &uid, &gid);
+                        if (grp->name) {
+                            umode_t mode = __first_visible(grp, kobj);
+
+                            if (mode & SYSFS_GROUP_INVISIBLE)
+                                mode = 0;
+                            else
+                                mode = S_IRWXU | S_IRUGO | S_IXUGO;
+
+                            if (update) {
+                                kn = kernfs_find_and_get(kobj->sd, grp->name);
+                                if (!kn) {
+                                    pr_debug("attr grp %s/%s not created yet\n",
+                                        kobj->name, grp->name);
+                                    /* may have been invisible prior to this update */
+                                    update = 0;
+                                } else if (!mode) {
+                                    sysfs_remove_group(kobj, grp);
+                                    kernfs_put(kn);
+                                    return 0;
+                                }
+                            }
+
+                            if (!update) {
+                                if (!mode)
+                                    return 0;
+                                kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode, uid, gid, kobj, NULL);
+                                    --->
+                                if (IS_ERR(kn)) {
+                                    if (PTR_ERR(kn) == -EEXIST)
+                                        sysfs_warn_dup(kobj->sd, grp->name);
+                                    return PTR_ERR(kn);
+                                }
+                            }
+                        } else {
+                            kn = kobj->sd;
+                        }
+
+                        kernfs_get(kn);
+                        error = create_files(kn, kobj, uid, gid, grp, update);
+                        if (error) {
+                            if (grp->name)
+                                kernfs_remove(kn);
+                        }
+                        kernfs_put(kn);
+
+                        if (grp->name && update)
+                            kernfs_put(kn);
+
+                        return error;
+                    }
+                    if (error) {
+                        while (--i >= 0)
+                            sysfs_remove_group(kobj, groups[i]);
+                        break;
+                    }
+                }
+                return error;
+            }
+        }
+    }
+    if (error)
+        goto out_put;
+
+    error = sysfs_create_link(&sp->devices_kset->kobj, &dev->kobj, dev_name(dev));
+    if (error)
+        goto out_groups;
+
+    error = sysfs_create_link(&dev->kobj, &sp->subsys.kobj, "subsystem");
+    if (error)
+        goto out_subsys;
+
+    klist_add_tail(&dev->p->knode_bus, &sp->klist_devices);
+    return 0;
+}
+```
+
+#### bdi_register
+
+```c
+int bdi_register(struct backing_dev_info *bdi, const char *fmt, ...)
+{
+    va_list args;
+    int ret;
+
+    va_start(args, fmt);
+    ret = bdi_register_va(bdi, fmt, args) {
+        struct device *dev;
+        struct rb_node *parent, **p;
+
+        if (bdi->dev)    /* The driver needs to use separate queues per device */
+            return 0;
+
+        vsnprintf(bdi->dev_name, sizeof(bdi->dev_name), fmt, args);
+        dev = device_create(&bdi_class, NULL, MKDEV(0, 0), bdi, bdi->dev_name);
+        if (IS_ERR(dev))
+            return PTR_ERR(dev);
+
+        cgwb_bdi_register(bdi) {
+            spin_lock_irq(&cgwb_lock);
+            list_add_tail_rcu(&bdi->wb.bdi_node, &bdi->wb_list);
+            spin_unlock_irq(&cgwb_lock);
+        }
+        bdi->dev = dev;
+
+        bdi_debug_register(bdi, dev_name(dev));
+        set_bit(WB_registered, &bdi->wb.state);
+
+        spin_lock_bh(&bdi_lock);
+
+        bdi->id = ++bdi_id_cursor;
+
+        p = bdi_lookup_rb_node(bdi->id, &parent);
+        rb_link_node(&bdi->rb_node, parent, p);
+        rb_insert_color(&bdi->rb_node, &bdi_tree);
+
+        list_add_tail_rcu(&bdi->bdi_list, &bdi_list);
+
+        spin_unlock_bh(&bdi_lock);
+
+        trace_writeback_bdi_register(bdi);
+        return 0;
+    }
+    va_end(args);
+    return ret;
+}
 ```
 
 ## direct io
@@ -8472,8 +9063,7 @@ __submit_bio(bio) {
         blk_mq_bio_to_request(rq, bio, nr_segs);
 
         hctx = rq->mq_hctx;
-        if ((rq->rq_flags & RQF_USE_SCHED) ||
-            (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
+        if ((rq->rq_flags & RQF_USE_SCHED) || (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
             blk_mq_insert_request(rq, 0);
             blk_mq_run_hw_queue(hctx, true);
         } else {
@@ -8486,6 +9076,16 @@ __submit_bio(bio) {
 ```
 
 ```c
+/* hardware dispatch queue */
+struct blk_mq_hw_ctx {
+
+}
+
+/* per-CPU software queue */
+struct blk_mq_ctx {
+
+}
+
 struct request_queue {
     /* Together with queue_head for cacheline sharing */
     struct list_head        queue_head;
@@ -8893,8 +9493,7 @@ new_request:
     }
 
     hctx = rq->mq_hctx;
-    if ((rq->rq_flags & RQF_USE_SCHED) ||
-        (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
+    if ((rq->rq_flags & RQF_USE_SCHED) || (hctx->dispatch_busy && (q->nr_hw_queues == 1 || !is_sync))) {
         blk_mq_insert_request(rq, 0);
         blk_mq_run_hw_queue(hctx, true);
             --->
@@ -9222,9 +9821,109 @@ static struct request *cfq_find_rq_fmerge(
 }
 ```
 
-### blk_mq_run_work_fn
+### blk_mq_insert_request
 
 ```c
+void blk_mq_insert_request(struct request *rq, blk_insert_t flags)
+{
+    struct request_queue *q = rq->q;
+    struct blk_mq_ctx *ctx = rq->mq_ctx;
+    struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+
+    if (blk_rq_is_passthrough(rq)) {
+        /* Passthrough request have to be added to hctx->dispatch
+         * directly.  The device may be in a situation where it can't
+         * handle FS request, and always returns BLK_STS_RESOURCE for
+         * them, which gets them added to hctx->dispatch.
+         *
+         * If a passthrough request is required to unblock the queues,
+         * and it is added to the scheduler queue, there is no chance to
+         * dispatch it given we prioritize requests in hctx->dispatch. */
+        blk_mq_request_bypass_insert(rq, flags);
+    } else if (req_op(rq) == REQ_OP_FLUSH) {
+        /* Firstly normal IO request is inserted to scheduler queue or
+         * sw queue, meantime we add flush request to dispatch queue(
+         * hctx->dispatch) directly and there is at most one in-flight
+         * flush request for each hw queue, so it doesn't matter to add
+         * flush request to tail or front of the dispatch queue.
+         *
+         * Secondly in case of NCQ, flush request belongs to non-NCQ
+         * command, and queueing it will fail when there is any
+         * in-flight normal IO request(NCQ command). When adding flush
+         * rq to the front of hctx->dispatch, it is easier to introduce
+         * extra time to flush rq's latency because of S_SCHED_RESTART
+         * compared with adding to the tail of dispatch queue, then
+         * chance of flush merge is increased, and less flush requests
+         * will be issued to controller. It is observed that ~10% time
+         * is saved in blktests block/004 on disk attached to AHCI/NCQ
+         * drive when adding flush rq to the front of hctx->dispatch.
+         *
+         * Simply queue flush rq to the front of hctx->dispatch so that
+         * intensive flush workloads can benefit in case of NCQ HW. */
+        blk_mq_request_bypass_insert(rq, BLK_MQ_INSERT_AT_HEAD);
+    } else if (q->elevator) {
+        LIST_HEAD(list);
+
+        WARN_ON_ONCE(rq->tag != BLK_MQ_NO_TAG);
+
+        list_add(&rq->queuelist, &list);
+        q->elevator->type->ops.insert_requests(hctx, &list, flags);
+    } else {
+        trace_block_rq_insert(rq);
+
+        spin_lock(&ctx->lock);
+        if (flags & BLK_MQ_INSERT_AT_HEAD)
+            list_add(&rq->queuelist, &ctx->rq_lists[hctx->type]);
+        else
+            list_add_tail(&rq->queuelist, &ctx->rq_lists[hctx->type]);
+        blk_mq_hctx_mark_pending(hctx, ctx);
+        spin_unlock(&ctx->lock);
+    }
+}
+```
+
+### blk_mq_run_hw_queue
+
+```c
+void blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async)
+{
+    bool need_run;
+
+    /* We can't run the queue inline with interrupts disabled. */
+    WARN_ON_ONCE(!async && in_interrupt());
+
+    might_sleep_if(!async && hctx->flags & BLK_MQ_F_BLOCKING);
+
+    need_run = blk_mq_hw_queue_need_run(hctx);
+    if (!need_run) {
+        unsigned long flags;
+
+        /* Synchronize with blk_mq_unquiesce_queue(), because we check
+         * if hw queue is quiesced locklessly above, we need the use
+         * ->queue_lock to make sure we see the up-to-date status to
+         * not miss rerunning the hw queue. */
+        spin_lock_irqsave(&hctx->queue->queue_lock, flags);
+        need_run = blk_mq_hw_queue_need_run(hctx);
+        spin_unlock_irqrestore(&hctx->queue->queue_lock, flags);
+
+        if (!need_run)
+            return;
+    }
+
+    if (async || !cpumask_test_cpu(raw_smp_processor_id(), hctx->cpumask)) {
+        blk_mq_delay_run_hw_queue(hctx, 0) {
+            if (unlikely(blk_mq_hctx_stopped(hctx)))
+                return;
+            kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work, msecs_to_jiffies(msecs)) {
+                return mod_delayed_work_on(cpu, kblockd_workqueue, dwork, delay);
+            }
+        }
+        return;
+    }
+
+    blk_mq_run_dispatch_ops(hctx->queue, blk_mq_sched_dispatch_requests(hctx));
+}
+
 static struct blk_mq_hw_ctx *
 blk_mq_alloc_hctx(struct request_queue *q, struct blk_mq_tag_set *set, int node)
 {
@@ -9236,8 +9935,374 @@ static void blk_mq_run_work_fn(struct work_struct *work)
     struct blk_mq_hw_ctx *hctx =
         container_of(work, struct blk_mq_hw_ctx, run_work.work);
 
-    blk_mq_run_dispatch_ops(hctx->queue,
-                blk_mq_sched_dispatch_requests(hctx));
+    blk_mq_run_dispatch_ops(hctx->queue, blk_mq_sched_dispatch_requests(hctx));
+}
+```
+
+```c
+void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
+{
+    struct request_queue *q = hctx->queue;
+
+    /* RCU or SRCU read lock is needed before checking quiesced flag */
+    if (unlikely(blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(q)))
+        return;
+
+    /* A return of -EAGAIN is an indication that hctx->dispatch is not
+     * empty and we must run again in order to avoid starving flushes. */
+    if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN) {
+        if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN)
+            blk_mq_run_hw_queue(hctx, true);
+    }
+}
+
+int __blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
+{
+    bool need_dispatch = false;
+    LIST_HEAD(rq_list);
+
+    /* If we have previous entries on our dispatch list, grab them first for
+     * more fair dispatch. */
+    if (!list_empty_careful(&hctx->dispatch)) {
+        spin_lock(&hctx->lock);
+        if (!list_empty(&hctx->dispatch))
+            list_splice_init(&hctx->dispatch, &rq_list);
+        spin_unlock(&hctx->lock);
+    }
+
+    /* Only ask the scheduler for requests, if we didn't have residual
+     * requests from the dispatch list. This is to avoid the case where
+     * we only ever dispatch a fraction of the requests available because
+     * of low device queue depth. Once we pull requests out of the IO
+     * scheduler, we can no longer merge or sort them. So it's best to
+     * leave them there for as long as we can. Mark the hw queue as
+     * needing a restart in that case.
+     *
+     * We want to dispatch from the scheduler if there was nothing
+     * on the dispatch list or we were able to dispatch from the
+     * dispatch list. */
+    if (!list_empty(&rq_list)) {
+        blk_mq_sched_mark_restart_hctx(hctx);
+        if (!blk_mq_dispatch_rq_list(hctx, &rq_list, true))
+            return 0;
+        need_dispatch = true;
+    } else {
+        need_dispatch = hctx->dispatch_busy;
+    }
+
+    if (hctx->queue->elevator) {
+        return blk_mq_do_dispatch_sched(hctx);
+    }
+
+    /* dequeue request one by one from sw queue if queue is busy */
+    if (need_dispatch)
+        return blk_mq_do_dispatch_ctx(hctx);
+
+    blk_mq_flush_busy_ctxs(hctx, &rq_list);
+    blk_mq_dispatch_rq_list(hctx, &rq_list, true);
+    return 0;
+}
+```
+
+
+#### blk_mq_dispatch_rq_list
+
+```c
+bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
+                 bool get_budget)
+{
+    enum prep_dispatch prep;
+    struct request_queue *q = hctx->queue;
+    struct request *rq;
+    int queued;
+    blk_status_t ret = BLK_STS_OK;
+    bool needs_resource = false;
+
+    if (list_empty(list))
+        return false;
+
+    /* Now process all the entries, sending them to the driver. */
+    queued = 0;
+    do {
+        struct blk_mq_queue_data bd;
+
+        rq = list_first_entry(list, struct request, queuelist);
+
+        WARN_ON_ONCE(hctx != rq->mq_hctx);
+        prep = blk_mq_prep_dispatch_rq(rq, get_budget) {
+            struct blk_mq_hw_ctx *hctx = rq->mq_hctx;
+            int budget_token = -1;
+
+            if (need_budget) {
+                budget_token = blk_mq_get_dispatch_budget(rq->q);
+                if (budget_token < 0) {
+                    blk_mq_put_driver_tag(rq);
+                    return PREP_DISPATCH_NO_BUDGET;
+                }
+                blk_mq_set_rq_budget_token(rq, budget_token);
+            }
+
+            if (!blk_mq_get_driver_tag(rq)) {
+                /* The initial allocation attempt failed, so we need to
+                * rerun the hardware queue when a tag is freed. The
+                * waitqueue takes care of that. If the queue is run
+                * before we add this entry back on the dispatch list,
+                * we'll re-run it below. */
+                if (!blk_mq_mark_tag_wait(hctx, rq)) {
+                    /* All budgets not got from this function will be put
+                    * together during handling partial dispatch */
+                    if (need_budget)
+                        blk_mq_put_dispatch_budget(rq->q, budget_token);
+                    return PREP_DISPATCH_NO_TAG;
+                }
+            }
+
+            return PREP_DISPATCH_OK;
+        }
+        if (prep != PREP_DISPATCH_OK)
+            break;
+
+        list_del_init(&rq->queuelist);
+
+        bd.rq = rq;
+        bd.last = list_empty(list);
+
+        ret = q->mq_ops->queue_rq(hctx, &bd);
+        switch (ret) {
+        case BLK_STS_OK:
+            queued++;
+            break;
+        case BLK_STS_RESOURCE:
+            needs_resource = true;
+            fallthrough;
+        case BLK_STS_DEV_RESOURCE:
+            blk_mq_handle_dev_resource(rq, list);
+            goto out;
+        default:
+            blk_mq_end_request(rq, ret);
+        }
+    } while (!list_empty(list));
+
+out:
+    /* If we didn't flush the entire list, we could have told the driver
+     * there was more coming, but that turned out to be a lie. */
+    if (!list_empty(list) || ret != BLK_STS_OK) {
+        blk_mq_commit_rqs(hctx, queued, false) {
+            if (hctx->queue->mq_ops->commit_rqs && queued) {
+                trace_block_unplug(hctx->queue, queued, !from_schedule);
+                hctx->queue->mq_ops->commit_rqs(hctx);
+            }
+        }
+    }
+
+    /* Any items that need requeuing? Stuff them into hctx->dispatch,
+     * that is where we will continue on next queue run. */
+    if (!list_empty(list)) {
+        bool needs_restart;
+        /* For non-shared tags, the RESTART check will suffice */
+        bool no_tag = prep == PREP_DISPATCH_NO_TAG &&
+            ((hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED) ||
+            blk_mq_is_shared_tags(hctx->flags));
+
+        /* If the caller allocated budgets, free the budgets of the
+         * requests that have not yet been passed to the block driver. */
+        if (!get_budget)
+            blk_mq_release_budgets(q, list);
+
+        spin_lock(&hctx->lock);
+        list_splice_tail_init(list, &hctx->dispatch);
+        spin_unlock(&hctx->lock);
+
+        /* Order adding requests to hctx->dispatch and checking
+         * SCHED_RESTART flag. The pair of this smp_mb() is the one
+         * in blk_mq_sched_restart(). Avoid restart code path to
+         * miss the new added requests to hctx->dispatch, meantime
+         * SCHED_RESTART is observed here. */
+        smp_mb();
+
+        /* If SCHED_RESTART was set by the caller of this function and
+         * it is no longer set that means that it was cleared by another
+         * thread and hence that a queue rerun is needed.
+         *
+         * If 'no_tag' is set, that means that we failed getting
+         * a driver tag with an I/O scheduler attached. If our dispatch
+         * waitqueue is no longer active, ensure that we run the queue
+         * AFTER adding our entries back to the list.
+         *
+         * If no I/O scheduler has been configured it is possible that
+         * the hardware queue got stopped and restarted before requests
+         * were pushed back onto the dispatch list. Rerun the queue to
+         * avoid starvation. Notes:
+         * - blk_mq_run_hw_queue() checks whether or not a queue has
+         *   been stopped before rerunning a queue.
+         * - Some but not all block drivers stop a queue before
+         *   returning BLK_STS_RESOURCE. Two exceptions are scsi-mq
+         *   and dm-rq.
+         *
+         * If driver returns BLK_STS_RESOURCE and SCHED_RESTART
+         * bit is set, run queue after a delay to avoid IO stalls
+         * that could otherwise occur if the queue is idle.  We'll do
+         * similar if we couldn't get budget or couldn't lock a zone
+         * and SCHED_RESTART is set. */
+        needs_restart = blk_mq_sched_needs_restart(hctx);
+        if (prep == PREP_DISPATCH_NO_BUDGET)
+            needs_resource = true;
+
+        if (!needs_restart || (no_tag && list_empty_careful(&hctx->dispatch_wait.entry)))
+            blk_mq_run_hw_queue(hctx, true);
+        else if (needs_resource)
+            blk_mq_delay_run_hw_queue(hctx, BLK_MQ_RESOURCE_DELAY);
+
+        blk_mq_update_dispatch_busy(hctx, true);
+        return false;
+    }
+
+    blk_mq_update_dispatch_busy(hctx, false);
+    return true;
+}
+```
+
+#### blk_mq_do_dispatch_sched
+
+```c
+static int blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
+{
+    unsigned long end = jiffies + HZ;
+    int ret;
+
+    do {
+        ret = __blk_mq_do_dispatch_sched(hctx);
+        if (ret != 1)
+            break;
+        if (need_resched() || time_is_before_jiffies(end)) {
+            blk_mq_delay_run_hw_queue(hctx, 0);
+            break;
+        }
+    } while (1);
+
+    return ret;
+}
+
+int __blk_mq_do_dispatch_sched(struct blk_mq_hw_ctx *hctx)
+{
+    struct request_queue *q = hctx->queue;
+    struct elevator_queue *e = q->elevator;
+    bool multi_hctxs = false, run_queue = false;
+    bool dispatched = false, busy = false;
+    unsigned int max_dispatch;
+    LIST_HEAD(rq_list);
+    int count = 0;
+
+    if (hctx->dispatch_busy)
+        max_dispatch = 1;
+    else
+        max_dispatch = hctx->queue->nr_requests;
+
+    do {
+        struct request *rq;
+        int budget_token;
+
+        if (e->type->ops.has_work && !e->type->ops.has_work(hctx))
+            break;
+
+        if (!list_empty_careful(&hctx->dispatch)) {
+            busy = true;
+            break;
+        }
+
+        budget_token = blk_mq_get_dispatch_budget(q);
+        if (budget_token < 0)
+            break;
+
+        rq = e->type->ops.dispatch_request(hctx);
+        if (!rq) {
+            blk_mq_put_dispatch_budget(q, budget_token);
+            /* We're releasing without dispatching. Holding the
+             * budget could have blocked any "hctx"s with the
+             * same queue and if we didn't dispatch then there's
+             * no guarantee anyone will kick the queue.  Kick it
+             * ourselves. */
+            run_queue = true;
+            break;
+        }
+
+        blk_mq_set_rq_budget_token(rq, budget_token);
+
+        /* Now this rq owns the budget which has to be released
+         * if this rq won't be queued to driver via .queue_rq()
+         * in blk_mq_dispatch_rq_list(). */
+        list_add_tail(&rq->queuelist, &rq_list);
+        count++;
+        if (rq->mq_hctx != hctx)
+            multi_hctxs = true;
+
+        /* If we cannot get tag for the request, stop dequeueing
+         * requests from the IO scheduler. We are unlikely to be able
+         * to submit them anyway and it creates false impression for
+         * scheduling heuristics that the device can take more IO. */
+        if (!blk_mq_get_driver_tag(rq))
+            break;
+    } while (count < max_dispatch);
+
+    if (!count) {
+        if (run_queue) {
+            blk_mq_delay_run_hw_queues(q, BLK_MQ_BUDGET_DELAY) {
+                struct blk_mq_hw_ctx *hctx, *sq_hctx;
+                unsigned long i;
+
+                sq_hctx = NULL;
+                if (blk_queue_sq_sched(q)) /* test_bit(QUEUE_FLAG_SQ_SCHED, &(q)->queue_flags) */
+                    sq_hctx = blk_mq_get_sq_hctx(q);
+
+                queue_for_each_hw_ctx(q, hctx, i) {
+                    if (blk_mq_hctx_stopped(hctx))
+                        continue;
+                    /* If there is already a run_work pending, leave the
+                    * pending delay untouched. Otherwise, a hctx can stall
+                    * if another hctx is re-delaying the other's work
+                    * before the work executes. */
+                    if (delayed_work_pending(&hctx->run_work))
+                        continue;
+                    /* Dispatch from this hctx either if there's no hctx preferred
+                    * by IO scheduler or if it has requests that bypass the
+                    * scheduler. */
+                    if (!sq_hctx || sq_hctx == hctx || !list_empty_careful(&hctx->dispatch))
+                        blk_mq_delay_run_hw_queue(hctx, msecs);
+                }
+            }
+        }
+    } else if (multi_hctxs) {
+        /* Requests from different hctx may be dequeued from some
+         * schedulers, such as bfq and deadline.
+         *
+         * Sort the requests in the list according to their hctx,
+         * dispatch batching requests from same hctx at a time. */
+        list_sort(NULL, &rq_list, sched_rq_cmp);
+        do {
+            dispatched |= blk_mq_dispatch_hctx_list(&rq_list) {
+                struct blk_mq_hw_ctx *hctx = list_first_entry(rq_list, struct request, queuelist)->mq_hctx;
+                struct request *rq;
+                LIST_HEAD(hctx_list);
+
+                list_for_each_entry(rq, rq_list, queuelist) {
+                    if (rq->mq_hctx != hctx) {
+                        list_cut_before(&hctx_list, rq_list, &rq->queuelist);
+                        goto dispatch;
+                    }
+                }
+                list_splice_tail_init(rq_list, &hctx_list);
+
+            dispatch:
+                return blk_mq_dispatch_rq_list(hctx, &hctx_list, false);
+            }
+        } while (!list_empty(&rq_list));
+    } else {
+        dispatched = blk_mq_dispatch_rq_list(hctx, &rq_list, false);
+    }
+
+    if (busy)
+        return -EAGAIN;
+    return !!dispatched;
 }
 ```
 
@@ -9265,6 +10330,73 @@ struct request_queue *blk_mq_alloc_queue(struct blk_mq_tag_set *set,
         return ERR_PTR(ret);
     }
     return q;
+}
+```
+
+### blk_mq_try_issue_directly
+
+```c
+void blk_mq_try_issue_directly(struct blk_mq_hw_ctx *hctx,
+        struct request *rq)
+{
+    blk_status_t ret;
+
+    if (blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(rq->q)) {
+        blk_mq_insert_request(rq, 0);
+        blk_mq_run_hw_queue(hctx, false);
+        return;
+    }
+
+    if ((rq->rq_flags & RQF_USE_SCHED) || !blk_mq_get_budget_and_tag(rq)) {
+        blk_mq_insert_request(rq, 0);
+        blk_mq_run_hw_queue(hctx, rq->cmd_flags & REQ_NOWAIT);
+        return;
+    }
+
+    ret = __blk_mq_issue_directly(hctx, rq, true);
+    switch (ret) {
+    case BLK_STS_OK:
+        break;
+    case BLK_STS_RESOURCE:
+    case BLK_STS_DEV_RESOURCE:
+        blk_mq_request_bypass_insert(rq, 0);
+        blk_mq_run_hw_queue(hctx, false);
+        break;
+    default:
+        blk_mq_end_request(rq, ret);
+        break;
+    }
+}
+
+blk_status_t __blk_mq_issue_directly(struct blk_mq_hw_ctx *hctx,
+                        struct request *rq, bool last)
+{
+    struct request_queue *q = rq->q;
+    struct blk_mq_queue_data bd = {
+        .rq = rq,
+        .last = last,
+    };
+    blk_status_t ret;
+
+    /* For OK queue, we are done. For error, caller may kill it.
+     * Any other error (busy), just add it to our list as we
+     * previously would have done. */
+    ret = q->mq_ops->queue_rq(hctx, &bd);
+    switch (ret) {
+    case BLK_STS_OK:
+        blk_mq_update_dispatch_busy(hctx, false);
+        break;
+    case BLK_STS_RESOURCE:
+    case BLK_STS_DEV_RESOURCE:
+        blk_mq_update_dispatch_busy(hctx, true);
+        __blk_mq_requeue_request(rq);
+        break;
+    default:
+        blk_mq_update_dispatch_busy(hctx, false);
+        break;
+    }
+
+    return ret;
 }
 ```
 
@@ -9649,248 +10781,6 @@ void blk_mq_sched_insert_requests(struct blk_mq_hw_ctx *hctx,
 
  out:
   percpu_ref_put(&q->q_usage_counter);
-}
-
-/* Start to run a hardware queue. */
-void blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async)
-{
-  bool need_run;
-
-  __blk_mq_run_dispatch_ops(
-        hctx->queue,
-        false,
-    need_run = !blk_queue_quiesced(hctx->queue) && blk_mq_hctx_has_pending(hctx)
-    );
-
-  if (need_run)
-    __blk_mq_delay_run_hw_queue(hctx, async, 0);
-}
-
-static void __blk_mq_delay_run_hw_queue(struct blk_mq_hw_ctx *hctx, bool async,
-          unsigned long msecs)
-{
-  if (unlikely(blk_mq_hctx_stopped(hctx)))
-    return;
-
-  if (!async && !(hctx->flags & BLK_MQ_F_BLOCKING)) {
-    if (cpumask_test_cpu(raw_smp_processor_id(), hctx->cpumask)) {
-      __blk_mq_run_hw_queue(hctx);
-      return;
-    }
-  }
-
-  kblockd_mod_delayed_work_on(blk_mq_hctx_next_cpu(hctx), &hctx->run_work,
-            msecs_to_jiffies(msecs));
-}
-
-void __blk_mq_run_hw_queue(struct blk_mq_hw_ctx *hctx)
-{
-  /* We can't run the queue inline with ints disabled. Ensure that
-   * we catch bad users of this early. */
-  WARN_ON_ONCE(in_interrupt());
-
-  blk_mq_run_dispatch_ops(hctx->queue,
-      blk_mq_sched_dispatch_requests(hctx));
-}
-
-void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
-{
-  struct request_queue *q = hctx->queue;
-
-  /* RCU or SRCU read lock is needed before checking quiesced flag */
-  if (unlikely(blk_mq_hctx_stopped(hctx) || blk_queue_quiesced(q)))
-    return;
-
-  hctx->run++;
-
-  if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN) {
-    if (__blk_mq_sched_dispatch_requests(hctx) == -EAGAIN)
-      blk_mq_run_hw_queue(hctx, true);
-  }
-}
-
-int __blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
-{
-  struct request_queue *q = hctx->queue;
-  const bool has_sched = q->elevator;
-  int ret = 0;
-  LIST_HEAD(rq_list);
-
-  if (!list_empty_careful(&hctx->dispatch)) {
-    spin_lock(&hctx->lock);
-    if (!list_empty(&hctx->dispatch))
-      list_splice_init(&hctx->dispatch, &rq_list);
-    spin_unlock(&hctx->lock);
-  }
-
-  /* Only ask the scheduler for requests, if we didn't have residual
-   * requests from the dispatch list. This is to avoid the case where
-   * we only ever dispatch a fraction of the requests available because
-   * of low device queue depth. Once we pull requests out of the IO
-   * scheduler, we can no longer merge or sort them. So it's best to
-   * leave them there for as long as we can. Mark the hw queue as
-   * needing a restart in that case.
-   *
-   * We want to dispatch from the scheduler if there was nothing
-   * on the dispatch list or we were able to dispatch from the
-   * dispatch list. */
-  if (!list_empty(&rq_list)) {
-    blk_mq_sched_mark_restart_hctx(hctx);
-    if (blk_mq_dispatch_rq_list(hctx, &rq_list, 0)) {
-      if (has_sched)
-        ret = blk_mq_do_dispatch_sched(hctx);
-      else
-        ret = blk_mq_do_dispatch_ctx(hctx);
-    }
-  } else if (has_sched) {
-    ret = blk_mq_do_dispatch_sched(hctx);
-  } else if (hctx->dispatch_busy) {
-    /* dequeue request one by one from sw queue if queue is busy */
-    ret = blk_mq_do_dispatch_ctx(hctx);
-  } else {
-    blk_mq_flush_busy_ctxs(hctx, &rq_list);
-    blk_mq_dispatch_rq_list(hctx, &rq_list, 0);
-  }
-
-  return ret;
-}
-
-bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *hctx, struct list_head *list,
-           unsigned int nr_budgets)
-{
-  enum prep_dispatch prep;
-  struct request_queue *q = hctx->queue;
-  struct request *rq, *nxt;
-  int errors, queued;
-  blk_status_t ret = BLK_STS_OK;
-  LIST_HEAD(zone_list);
-  bool needs_resource = false;
-
-  if (list_empty(list))
-    return false;
-
-  /* Now process all the entries, sending them to the driver. */
-  errors = queued = 0;
-  do {
-    struct blk_mq_queue_data bd;
-
-    rq = list_first_entry(list, struct request, queuelist);
-
-    WARN_ON_ONCE(hctx != rq->mq_hctx);
-    prep = blk_mq_prep_dispatch_rq(rq, !nr_budgets);
-    if (prep != PREP_DISPATCH_OK)
-      break;
-
-    list_del_init(&rq->queuelist);
-
-    bd.rq = rq;
-
-    /* Flag last if we have no more requests, or if we have more
-     * but can't assign a driver tag to it. */
-    if (list_empty(list))
-      bd.last = true;
-    else {
-      nxt = list_first_entry(list, struct request, queuelist);
-      bd.last = !blk_mq_get_driver_tag(nxt);
-    }
-
-    /* once the request is queued to lld, no need to cover the
-     * budget any more */
-    if (nr_budgets)
-      nr_budgets--;
-    ret = q->mq_ops->queue_rq(hctx, &bd);
-    switch (ret) {
-    case BLK_STS_OK:
-      queued++;
-      break;
-    case BLK_STS_RESOURCE:
-      needs_resource = true;
-      fallthrough;
-    case BLK_STS_DEV_RESOURCE:
-      blk_mq_handle_dev_resource(rq, list);
-      goto out;
-    case BLK_STS_ZONE_RESOURCE:
-      /* Move the request to zone_list and keep going through
-       * the dispatch list to find more requests the drive can
-       * accept. */
-      blk_mq_handle_zone_resource(rq, &zone_list);
-      needs_resource = true;
-      break;
-    default:
-      errors++;
-      blk_mq_end_request(rq, ret);
-    }
-  } while (!list_empty(list));
-out:
-  if (!list_empty(&zone_list))
-    list_splice_tail_init(&zone_list, list);
-
-  /* If we didn't flush the entire list, we could have told the driver
-   * there was more coming, but that turned out to be a lie. */
-  if ((!list_empty(list) || errors || needs_resource ||
-       ret == BLK_STS_DEV_RESOURCE) && q->mq_ops->commit_rqs && queued)
-    q->mq_ops->commit_rqs(hctx);
-  /* Any items that need requeuing? Stuff them into hctx->dispatch,
-   * that is where we will continue on next queue run. */
-  if (!list_empty(list)) {
-    bool needs_restart;
-    /* For non-shared tags, the RESTART check will suffice */
-    bool no_tag = prep == PREP_DISPATCH_NO_TAG &&
-      (hctx->flags & BLK_MQ_F_TAG_QUEUE_SHARED);
-
-    if (nr_budgets)
-      blk_mq_release_budgets(q, list);
-
-    spin_lock(&hctx->lock);
-    list_splice_tail_init(list, &hctx->dispatch);
-    spin_unlock(&hctx->lock);
-
-    /* Order adding requests to hctx->dispatch and checking
-     * SCHED_RESTART flag. The pair of this smp_mb() is the one
-     * in blk_mq_sched_restart(). Avoid restart code path to
-     * miss the new added requests to hctx->dispatch, meantime
-     * SCHED_RESTART is observed here. */
-    smp_mb();
-
-    /* If SCHED_RESTART was set by the caller of this function and
-     * it is no longer set that means that it was cleared by another
-     * thread and hence that a queue rerun is needed.
-     *
-     * If 'no_tag' is set, that means that we failed getting
-     * a driver tag with an I/O scheduler attached. If our dispatch
-     * waitqueue is no longer active, ensure that we run the queue
-     * AFTER adding our entries back to the list.
-     *
-     * If no I/O scheduler has been configured it is possible that
-     * the hardware queue got stopped and restarted before requests
-     * were pushed back onto the dispatch list. Rerun the queue to
-     * avoid starvation. Notes:
-     * - blk_mq_run_hw_queue() checks whether or not a queue has
-     *   been stopped before rerunning a queue.
-     * - Some but not all block drivers stop a queue before
-     *   returning BLK_STS_RESOURCE. Two exceptions are scsi-mq
-     *   and dm-rq.
-     *
-     * If driver returns BLK_STS_RESOURCE and SCHED_RESTART
-     * bit is set, run queue after a delay to avoid IO stalls
-     * that could otherwise occur if the queue is idle.  We'll do
-     * similar if we couldn't get budget or couldn't lock a zone
-     * and SCHED_RESTART is set. */
-    needs_restart = blk_mq_sched_needs_restart(hctx);
-    if (prep == PREP_DISPATCH_NO_BUDGET)
-      needs_resource = true;
-    if (!needs_restart ||
-        (no_tag && list_empty_careful(&hctx->dispatch_wait.entry)))
-      blk_mq_run_hw_queue(hctx, true);
-    else if (needs_restart && needs_resource)
-      blk_mq_delay_run_hw_queue(hctx, BLK_MQ_RESOURCE_DELAY);
-
-    blk_mq_update_dispatch_busy(hctx, true);
-    return false;
-  } else
-    blk_mq_update_dispatch_busy(hctx, false);
-
-  return (queued + errors) != 0;
 }
 
 static const struct blk_mq_ops scsi_mq_ops = {
@@ -11231,57 +12121,768 @@ int do_syslog(int type, char __user *buf, int len, int source)
 ```c
 static int __init populate_rootfs(void)
 {
-	initramfs_cookie = async_schedule_domain(do_populate_rootfs, NULL,
-						 &initramfs_domain);
-	usermodehelper_enable();
-	if (!initramfs_async)
-		wait_for_initramfs();
-	return 0;
+    initramfs_cookie = async_schedule_domain(do_populate_rootfs, NULL,
+                         &initramfs_domain);
+    usermodehelper_enable();
+    if (!initramfs_async)
+        wait_for_initramfs();
+    return 0;
 }
 rootfs_initcall(populate_rootfs);
 
 void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
-	/* Load the built in initramfs */
-	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
-	if (err)
-		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
+    /* Load the built in initramfs */
+    char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
+    if (err)
+        panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
 
-	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
-		goto done;
+    if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
+        goto done;
 
-	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
-		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
-	else
-		printk(KERN_INFO "Unpacking initramfs...\n");
+    if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
+        printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
+    else
+        printk(KERN_INFO "Unpacking initramfs...\n");
 
-	err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start);
-	if (err) {
+    err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start);
+    if (err) {
 #ifdef CONFIG_BLK_DEV_RAM
-		populate_initrd_image(err);
+        populate_initrd_image(err);
 #else
-		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
+        printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
 #endif
-	}
+    }
 
 done:
-	security_initramfs_populated();
+    security_initramfs_populated();
 
-	/*
-	 * If the initrd region is overlapped with crashkernel reserved region,
-	 * free only memory that is not part of crashkernel region.
-	 */
-	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
-		free_initrd_mem(initrd_start, initrd_end);
-	} else if (do_retain_initrd && initrd_start) {
-		bin_attr_initrd.size = initrd_end - initrd_start;
-		bin_attr_initrd.private = (void *)initrd_start;
-		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
-			pr_err("Failed to create initrd sysfs file");
-	}
-	initrd_start = 0;
-	initrd_end = 0;
+    /* If the initrd region is overlapped with crashkernel reserved region,
+     * free only memory that is not part of crashkernel region. */
+    if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
+        free_initrd_mem(initrd_start, initrd_end);
+    } else if (do_retain_initrd && initrd_start) {
+        bin_attr_initrd.size = initrd_end - initrd_start;
+        bin_attr_initrd.private = (void *)initrd_start;
+        if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
+            pr_err("Failed to create initrd sysfs file");
+    }
+    initrd_start = 0;
+    initrd_end = 0;
 
-	init_flush_fput();
+    init_flush_fput();
+}
+```
+
+## kernfs
+
+```c
+static struct kernfs_root *sysfs_root;
+struct kernfs_node *sysfs_root_kn;
+
+struct kernfs_root {
+    /* published fields */
+    struct kernfs_node      *kn;
+    unsigned int            flags;    /* KERNFS_ROOT_* flags */
+
+    /* private fields, do not use outside kernfs proper */
+    struct idr              ino_idr;
+    spinlock_t              kernfs_idr_lock;    /* root->ino_idr */
+    u32                     last_id_lowbits;
+    u32                     id_highbits;
+    struct kernfs_syscall_ops *syscall_ops;
+
+    /* list of kernfs_super_info of this root, protected by kernfs_rwsem */
+    struct list_head        supers;
+
+    wait_queue_head_t       deactivate_waitq;
+    struct rw_semaphore     kernfs_rwsem;
+    struct rw_semaphore     kernfs_iattr_rwsem;
+    struct rw_semaphore     kernfs_supers_rwsem;
+
+    /* kn->parent and kn->name */
+    rwlock_t                kernfs_rename_lock;
+
+    struct rcu_head         rcu;
+};
+
+struct kernfs_node {
+    atomic_t        count;
+    atomic_t        active;
+
+    struct kernfs_node    __rcu *__parent;
+    const char        __rcu *name;
+
+    struct rb_node          rb;
+
+    const void              *ns;    /* namespace tag */
+    unsigned int            hash;    /* ns + name hash */
+    unsigned short          flags;
+    umode_t                 mode;
+
+    union {
+        struct kernfs_elem_dir          dir;
+        struct kernfs_elem_symlink      symlink;
+        struct kernfs_elem_attr         attr;
+    };
+
+    /* 64bit unique ID.  On 64bit ino setups, id is the ino.  On 32bit,
+     * the low 32bits are ino and upper generation. */
+    u64                     id;
+
+    void                    *priv;
+    struct kernfs_iattrs    *iattr;
+
+    struct rcu_head         rcu;
+};
+
+/* type-specific structures for kernfs_node union members */
+struct kernfs_elem_dir {
+    unsigned long           subdirs;
+    /* children rbtree starts here and goes through kn->rb */
+    struct rb_root          children;
+
+    /* The kernfs hierarchy this directory belongs to.  This fits
+     * better directly in kernfs_node but is here to save space. */
+    struct kernfs_root      *root;
+    /* Monotonic revision counter, used to identify if a directory
+     * node has changed during negative dentry revalidation. */
+    unsigned long           rev;
+};
+
+struct kernfs_elem_symlink {
+    struct kernfs_node    *target_kn;
+};
+
+struct kernfs_elem_attr {
+    const struct kernfs_ops         *ops;
+    struct kernfs_open_node __rcu   *open;
+    loff_t                          size;
+    struct kernfs_node              *notify_next;    /* for kernfs_notify() */
+};
+
+struct kernfs_open_node {
+    struct rcu_head         rcu_head;
+    atomic_t                event;
+    wait_queue_head_t       poll;
+    struct list_head        files; /* goes through kernfs_open_file.list */
+    unsigned int            nr_mmapped;
+    unsigned int            nr_to_release;
+};
+```
+
+```c
+int __init sysfs_init(void)
+{
+    int err;
+
+    sysfs_root = kernfs_create_root(NULL, KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK, NULL);
+    if (IS_ERR(sysfs_root))
+        return PTR_ERR(sysfs_root);
+
+    sysfs_root_kn = kernfs_root_to_node(sysfs_root);
+
+    err = register_filesystem(&sysfs_fs_type);
+    if (err) {
+        kernfs_destroy_root(sysfs_root);
+        return err;
+    }
+
+    return 0;
+}
+```
+### kernfs_create_root
+
+```c
+struct kernfs_root *kernfs_create_root(struct kernfs_syscall_ops *scops,
+                       unsigned int flags, void *priv)
+{
+    struct kernfs_root *root;
+    struct kernfs_node *kn;
+
+    root = kzalloc(sizeof(*root), GFP_KERNEL);
+    if (!root)
+        return ERR_PTR(-ENOMEM);
+
+    idr_init(&root->ino_idr);
+    spin_lock_init(&root->kernfs_idr_lock);
+    init_rwsem(&root->kernfs_rwsem);
+    init_rwsem(&root->kernfs_iattr_rwsem);
+    init_rwsem(&root->kernfs_supers_rwsem);
+    INIT_LIST_HEAD(&root->supers);
+    rwlock_init(&root->kernfs_rename_lock);
+
+    /* On 64bit ino setups, id is ino.  On 32bit, low 32bits are ino.
+     * High bits generation.  The starting value for both ino and
+     * genenration is 1.  Initialize upper 32bit allocation
+     * accordingly. */
+    if (sizeof(ino_t) >= sizeof(u64))
+        root->id_highbits = 0;
+    else
+        root->id_highbits = 1;
+
+    kn = __kernfs_new_node(root, NULL, "", S_IFDIR | S_IRUGO | S_IXUGO,
+                   GLOBAL_ROOT_UID, GLOBAL_ROOT_GID,
+                   KERNFS_DIR);
+    if (!kn) {
+        idr_destroy(&root->ino_idr);
+        kfree(root);
+        return ERR_PTR(-ENOMEM);
+    }
+
+    kn->priv = priv;
+    kn->dir.root = root;
+
+    root->syscall_ops = scops;
+    root->flags = flags;
+    root->kn = kn;
+    init_waitqueue_head(&root->deactivate_waitq);
+
+    if (!(root->flags & KERNFS_ROOT_CREATE_DEACTIVATED))
+        kernfs_activate(kn);
+
+    return root;
+}
+```
+
+### kernfs_create_dir_ns
+
+```c
+struct kernfs_node *kernfs_create_dir_ns(struct kernfs_node *parent,
+    const char *name, umode_t mode,
+    kuid_t uid, kgid_t gid,
+    void *priv, const void *ns)
+{
+    struct kernfs_node *kn;
+    int rc;
+
+    /* allocate */
+    kn = kernfs_new_node(parent, name, mode | S_IFDIR, uid, gid, KERNFS_DIR) {
+        struct kernfs_node *kn;
+
+        if (parent->mode & S_ISGID) {
+            /* this code block imitates inode_init_owner() for
+            * kernfs */
+
+            if (parent->iattr)
+                gid = parent->iattr->ia_gid;
+
+            if (flags & KERNFS_DIR)
+                mode |= S_ISGID;
+        }
+
+        kn = __kernfs_new_node(kernfs_root(parent), parent, name, mode, uid, gid, flags) {
+            struct kernfs_node *kn;
+            u32 id_highbits;
+            int ret;
+
+            name = kstrdup_const(name, GFP_KERNEL);
+            if (!name)
+                return NULL;
+
+            kn = kmem_cache_zalloc(kernfs_node_cache, GFP_KERNEL);
+            if (!kn)
+                goto err_out1;
+
+            idr_preload(GFP_KERNEL);
+            spin_lock(&root->kernfs_idr_lock);
+            ret = idr_alloc_cyclic(&root->ino_idr, kn, 1, 0, GFP_ATOMIC);
+            if (ret >= 0 && ret < root->last_id_lowbits)
+                root->id_highbits++;
+            id_highbits = root->id_highbits;
+            root->last_id_lowbits = ret;
+            spin_unlock(&root->kernfs_idr_lock);
+            idr_preload_end();
+            if (ret < 0)
+                goto err_out2;
+
+            kn->id = (u64)id_highbits << 32 | ret;
+
+            atomic_set(&kn->count, 1);
+            atomic_set(&kn->active, KN_DEACTIVATED_BIAS);
+            RB_CLEAR_NODE(&kn->rb);
+
+            rcu_assign_pointer(kn->name, name);
+            kn->mode = mode;
+            kn->flags = flags;
+
+            if (!uid_eq(uid, GLOBAL_ROOT_UID) || !gid_eq(gid, GLOBAL_ROOT_GID)) {
+                struct iattr iattr = {
+                    .ia_valid = ATTR_UID | ATTR_GID,
+                    .ia_uid = uid,
+                    .ia_gid = gid,
+                };
+
+                ret = __kernfs_setattr(kn, &iattr);
+                if (ret < 0)
+                    goto err_out3;
+            }
+
+            if (parent) {
+                ret = security_kernfs_init_security(parent, kn);
+                if (ret)
+                    goto err_out4;
+            }
+
+            return kn;
+        }
+        if (kn) {
+            kernfs_get(parent);
+            rcu_assign_pointer(kn->__parent, parent);
+        }
+        return kn;
+    }
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    kn->dir.root = parent->dir.root;
+    kn->ns = ns;
+    kn->priv = priv;
+
+    /* link in */
+    rc = kernfs_add_one(kn);
+    if (!rc)
+        return kn;
+
+    kernfs_put(kn);
+    return ERR_PTR(rc);
+}
+```
+
+#### kernfs_add_one
+
+```c
+int kernfs_add_one(struct kernfs_node *kn)
+{
+    struct kernfs_root *root = kernfs_root(kn);
+    struct kernfs_iattrs *ps_iattr;
+    struct kernfs_node *parent;
+    bool has_ns;
+    int ret;
+
+    down_write(&root->kernfs_rwsem);
+    parent = kernfs_parent(kn);
+
+    ret = -EINVAL;
+    has_ns = kernfs_ns_enabled(parent);
+    if (WARN(has_ns != (bool)kn->ns, KERN_WARNING "kernfs: ns %s in '%s' for '%s'\n",
+         has_ns ? "required" : "invalid",
+         kernfs_rcu_name(parent), kernfs_rcu_name(kn)))
+        goto out_unlock;
+
+    if (kernfs_type(parent) != KERNFS_DIR)
+        goto out_unlock;
+
+    ret = -ENOENT;
+    if (parent->flags & (KERNFS_REMOVING | KERNFS_EMPTY_DIR))
+        goto out_unlock;
+
+    kn->hash = kernfs_name_hash(kernfs_rcu_name(kn), kn->ns);
+
+    ret = kernfs_link_sibling(kn) {
+        struct rb_node *parent = NULL;
+        struct kernfs_node *kn_parent;
+        struct rb_node **node;
+
+        kn_parent = kernfs_parent(kn);
+        node = &kn_parent->dir.children.rb_node;
+
+        while (*node) {
+            struct kernfs_node *pos;
+            int result;
+
+            pos = rb_to_kn(*node);
+            parent = *node;
+            result = kernfs_sd_compare(kn, pos);
+            if (result < 0)
+                node = &pos->rb.rb_left;
+            else if (result > 0)
+                node = &pos->rb.rb_right;
+            else
+                return -EEXIST;
+        }
+
+        /* add new node and rebalance the tree */
+        rb_link_node(&kn->rb, parent, node);
+        rb_insert_color(&kn->rb, &kn_parent->dir.children);
+
+        /* successfully added, account subdir number */
+        down_write(&kernfs_root(kn)->kernfs_iattr_rwsem);
+        if (kernfs_type(kn) == KERNFS_DIR)
+            kn_parent->dir.subdirs++;
+        kernfs_inc_rev(kn_parent);
+        up_write(&kernfs_root(kn)->kernfs_iattr_rwsem);
+
+        return 0;
+    }
+    if (ret)
+        goto out_unlock;
+
+    /* Update timestamps on the parent */
+    down_write(&root->kernfs_iattr_rwsem);
+
+    ps_iattr = parent->iattr;
+    if (ps_iattr) {
+        ktime_get_real_ts64(&ps_iattr->ia_ctime);
+        ps_iattr->ia_mtime = ps_iattr->ia_ctime;
+    }
+
+    up_write(&root->kernfs_iattr_rwsem);
+    up_write(&root->kernfs_rwsem);
+
+    /* Activate the new node unless CREATE_DEACTIVATED is requested.
+     * If not activated here, the kernfs user is responsible for
+     * activating the node with kernfs_activate().  A node which hasn't
+     * been activated is not visible to userland and its removal won't
+     * trigger deactivation. */
+    if (!(kernfs_root(kn)->flags & KERNFS_ROOT_CREATE_DEACTIVATED))
+        kernfs_activate(kn);
+    return 0;
+
+out_unlock:
+    up_write(&root->kernfs_rwsem);
+    return ret;
+}
+```
+
+### kernfs_create_file
+
+```c
+struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
+                     const char *name,
+                     umode_t mode, kuid_t uid, kgid_t gid,
+                     loff_t size,
+                     const struct kernfs_ops *ops,
+                     void *priv, const void *ns,
+                     struct lock_class_key *key)
+{
+    struct kernfs_node *kn;
+    unsigned flags;
+    int rc;
+
+    flags = KERNFS_FILE;
+
+    kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG, uid, gid, flags);
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    kn->attr.ops = ops;
+    kn->attr.size = size;
+    kn->ns = ns;
+    kn->priv = priv;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    if (key) {
+        lockdep_init_map(&kn->dep_map, "kn->active", key, 0);
+        kn->flags |= KERNFS_LOCKDEP;
+    }
+#endif
+
+    /* kn->attr.ops is accessible only while holding active ref.  We
+     * need to know whether some ops are implemented outside active
+     * ref.  Cache their existence in flags. */
+    if (ops->seq_show)
+        kn->flags |= KERNFS_HAS_SEQ_SHOW;
+    if (ops->mmap)
+        kn->flags |= KERNFS_HAS_MMAP;
+    if (ops->release)
+        kn->flags |= KERNFS_HAS_RELEASE;
+
+    rc = kernfs_add_one(kn);
+    if (rc) {
+        kernfs_put(kn);
+        return ERR_PTR(rc);
+    }
+    return kn;
+}
+```
+
+### kernfs_create_link
+
+### kernfs_mount
+
+### kernfs_find_and_get_ns
+
+### kernfs_activate
+
+```c
+void kernfs_activate(struct kernfs_node *kn)
+{
+    struct kernfs_node *pos;
+    struct kernfs_root *root = kernfs_root(kn);
+
+    down_write(&root->kernfs_rwsem);
+
+    pos = NULL;
+    while ((pos = kernfs_next_descendant_post(pos, kn)))
+        kernfs_activate_one(pos);
+
+    up_write(&root->kernfs_rwsem);
+}
+
+static void kernfs_activate_one(struct kernfs_node *kn)
+{
+    lockdep_assert_held_write(&kernfs_root(kn)->kernfs_rwsem);
+
+    kn->flags |= KERNFS_ACTIVATED;
+
+    if (kernfs_active(kn) || (kn->flags & (KERNFS_HIDDEN | KERNFS_REMOVING)))
+        return;
+
+    WARN_ON_ONCE(rcu_access_pointer(kn->__parent) && RB_EMPTY_NODE(&kn->rb));
+    WARN_ON_ONCE(atomic_read(&kn->active) != KN_DEACTIVATED_BIAS);
+
+    atomic_sub(KN_DEACTIVATED_BIAS, &kn->active);
+}
+```
+
+### kernfs_notify
+
+### kernfs_remove
+
+### kernfs_file_fops
+
+```c
+const struct file_operations kernfs_file_fops = {
+    .read_iter      = kernfs_fop_read_iter,
+    .write_iter     = kernfs_fop_write_iter,
+    .llseek         = kernfs_fop_llseek,
+    .mmap           = kernfs_fop_mmap,
+    .open           = kernfs_fop_open,
+    .release        = kernfs_fop_release,
+    .poll           = kernfs_fop_poll,
+    .fsync          = noop_fsync,
+    .splice_read    = copy_splice_read,
+    .splice_write   = iter_file_splice_write,
+};
+
+struct kernfs_open_file {
+    /* published fields */
+    struct kernfs_node      *kn;
+    struct file             *file;
+    struct seq_file         *seq_file;
+    void                    *priv;
+
+    /* private fields, do not use outside kernfs proper */
+    struct mutex            mutex;
+    struct mutex            prealloc_mutex;
+    int                     event;
+    struct list_head        list;
+    char                    *prealloc_buf;
+
+    size_t                  atomic_write_len;
+    bool                    mmapped:1;
+    bool                    released:1;
+    const struct vm_operations_struct *vm_ops;
+};
+```
+
+#### kernfs_fop_open
+
+```c
+int kernfs_fop_open(struct inode *inode, struct file *file)
+{
+    struct kernfs_node *kn = inode->i_private;
+    struct kernfs_root *root = kernfs_root(kn);
+    const struct kernfs_ops *ops;
+    struct kernfs_open_file *of;
+    bool has_read, has_write, has_mmap;
+    int error = -EACCES;
+
+    if (!kernfs_get_active(kn))
+        return -ENODEV;
+
+    ops = kernfs_ops(kn);
+
+    has_read = ops->seq_show || ops->read || ops->mmap;
+    has_write = ops->write || ops->mmap;
+    has_mmap = ops->mmap;
+
+    /* see the flag definition for details */
+    if (root->flags & KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK) {
+        if ((file->f_mode & FMODE_WRITE) &&
+            (!(inode->i_mode & S_IWUGO) || !has_write))
+            goto err_out;
+
+        if ((file->f_mode & FMODE_READ) &&
+            (!(inode->i_mode & S_IRUGO) || !has_read))
+            goto err_out;
+    }
+
+    /* allocate a kernfs_open_file for the file */
+    error = -ENOMEM;
+    of = kzalloc(sizeof(struct kernfs_open_file), GFP_KERNEL);
+    if (!of)
+        goto err_out;
+
+    /* The following is done to give a different lockdep key to
+     * @of->mutex for files which implement mmap.  This is a rather
+     * crude way to avoid false positive lockdep warning around
+     * mm->mmap_lock - mmap nests @of->mutex under mm->mmap_lock and
+     * reading /sys/block/sda/trace/act_mask grabs sr_mutex, under
+     * which mm->mmap_lock nests, while holding @of->mutex.  As each
+     * open file has a separate mutex, it's okay as long as those don't
+     * happen on the same file.  At this point, we can't easily give
+     * each file a separate locking class.  Let's differentiate on
+     * whether the file has mmap or not for now.
+     *
+     * For similar reasons, writable and readonly files are given different
+     * lockdep key, because the writable file /sys/power/resume may call vfs
+     * lookup helpers for arbitrary paths and readonly files can be read by
+     * overlayfs from vfs helpers when sysfs is a lower layer of overalyfs.
+     *
+     * All three cases look the same.  They're supposed to
+     * look that way and give @of->mutex different static lockdep keys. */
+    if (has_mmap)
+        mutex_init(&of->mutex);
+    else if (file->f_mode & FMODE_WRITE)
+        mutex_init(&of->mutex);
+    else
+        mutex_init(&of->mutex);
+
+    of->kn = kn;
+    of->file = file;
+
+    /* Write path needs to atomic_write_len outside active reference.
+     * Cache it in open_file.  See kernfs_fop_write_iter() for details. */
+    of->atomic_write_len = ops->atomic_write_len;
+
+    error = -EINVAL;
+    /* ->seq_show is incompatible with ->prealloc,
+     * as seq_read does its own allocation.
+     * ->read must be used instead. */
+    if (ops->prealloc && ops->seq_show)
+        goto err_free;
+    if (ops->prealloc) {
+        int len = of->atomic_write_len ?: PAGE_SIZE;
+        of->prealloc_buf = kmalloc(len + 1, GFP_KERNEL);
+        error = -ENOMEM;
+        if (!of->prealloc_buf)
+            goto err_free;
+        mutex_init(&of->prealloc_mutex);
+    }
+
+    /* Always instantiate seq_file even if read access doesn't use
+     * seq_file or is not requested.  This unifies private data access
+     * and readable regular files are the vast majority anyway. */
+    if (ops->seq_show)
+        error = seq_open(file, &kernfs_seq_ops);
+    else
+        error = seq_open(file, NULL);
+    if (error)
+        goto err_free;
+
+    of->seq_file = file->private_data;
+    of->seq_file->private = of;
+
+    /* seq_file clears PWRITE unconditionally, restore it if WRITE */
+    if (file->f_mode & FMODE_WRITE)
+        file->f_mode |= FMODE_PWRITE;
+
+    /* make sure we have open node struct */
+    error = kernfs_get_open_node(kn, of) {
+        struct kernfs_open_node *on;
+        struct mutex *mutex;
+
+        mutex = kernfs_open_file_mutex_lock(kn);
+        on = kernfs_deref_open_node_locked(kn);
+
+        if (!on) {
+            /* not there, initialize a new one */
+            on = kzalloc(sizeof(*on), GFP_KERNEL);
+            if (!on) {
+                mutex_unlock(mutex);
+                return -ENOMEM;
+            }
+            atomic_set(&on->event, 1);
+            init_waitqueue_head(&on->poll);
+            INIT_LIST_HEAD(&on->files);
+            rcu_assign_pointer(kn->attr.open, on);
+        }
+
+        list_add_tail(&of->list, &on->files);
+        if (kn->flags & KERNFS_HAS_RELEASE)
+            on->nr_to_release++;
+
+        mutex_unlock(mutex);
+        return 0;
+    }
+    if (error)
+        goto err_seq_release;
+
+    if (ops->open) {
+        /* nobody has access to @of yet, skip @of->mutex */
+        error = ops->open(of);
+        if (error)
+            goto err_put_node;
+    }
+
+    /* open succeeded, put active references */
+    kernfs_put_active(kn);
+    return 0;
+}
+```
+
+#### kernfs_fop_read_iter
+
+```c
+static ssize_t kernfs_fop_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    if (kernfs_of(iocb->ki_filp)->kn->flags & KERNFS_HAS_SEQ_SHOW)
+        return seq_read_iter(iocb, iter);
+    return kernfs_file_read_iter(iocb, iter);
+}
+
+ssize_t kernfs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    struct kernfs_open_file *of = kernfs_of(iocb->ki_filp);
+    ssize_t len = min_t(size_t, iov_iter_count(iter), PAGE_SIZE);
+    const struct kernfs_ops *ops;
+    char *buf;
+
+    buf = of->prealloc_buf;
+    if (buf)
+        mutex_lock(&of->prealloc_mutex);
+    else
+        buf = kmalloc(len, GFP_KERNEL);
+    if (!buf)
+        return -ENOMEM;
+
+    /* @of->mutex nests outside active ref and is used both to ensure that
+     * the ops aren't called concurrently for the same open file. */
+    mutex_lock(&of->mutex);
+    if (!kernfs_get_active_of(of)) {
+        len = -ENODEV;
+        mutex_unlock(&of->mutex);
+        goto out_free;
+    }
+
+    of->event = atomic_read(&of_on(of)->event);
+
+    ops = kernfs_ops(of->kn);
+    if (ops->read)
+        len = ops->read(of, buf, len, iocb->ki_pos);
+    else
+        len = -EINVAL;
+
+    kernfs_put_active_of(of);
+    mutex_unlock(&of->mutex);
+
+    if (len < 0)
+        goto out_free;
+
+    if (copy_to_iter(buf, len, iter) != len) {
+        len = -EFAULT;
+        goto out_free;
+    }
+
+    iocb->ki_pos += len;
+
+ out_free:
+    if (buf == of->prealloc_buf)
+        mutex_unlock(&of->prealloc_mutex);
+    else
+        kfree(buf);
+    return len;
 }
 ```
