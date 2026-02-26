@@ -2178,29 +2178,115 @@ watermark | free area
 ```c
 #define alloc_pages(...)    alloc_hooks(alloc_pages_noprof(__VA_ARGS__))
 
-static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order)
+static struct mempolicy default_policy = {
+    .refcnt = ATOMIC_INIT(1), /* never free it */
+    .mode   = MPOL_LOCAL,
+};
+
+struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
 {
-    return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
-        if (nid == NUMA_NO_NODE)
-            nid = numa_mem_id();
+    struct page *page = alloc_frozen_pages_noprof(gfp, order) {
+        struct mempolicy *pol = &default_policy;
 
-        return __alloc_pages_node_noprof(nid, gfp_mask, order) {
-            VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
-            warn_if_node_offline(nid, gfp_mask);
+        /* No reference counting needed for current->mempolicy
+        * nor system default_policy */
+        if (!in_interrupt() && !(gfp & __GFP_THISNODE))
+            pol = get_task_policy(current);
 
-            return __alloc_pages_noprof(gfp_mask, order, nid, NULL) {
-                struct page *page;
+        return alloc_pages_mpol(gfp, order, pol, NO_INTERLEAVE_INDEX, numa_node_id()) {
+            nodemask_t *nodemask;
+            struct page *page;
 
-                page = __alloc_frozen_pages_noprof(gfp, order, preferred_nid, nodemask);
-                if (page) {
-                    set_page_refcounted(page) {
-                        set_page_count(page, 1);
-                    }
+            nodemask = policy_nodemask(gfp, pol, ilx, &nid) {
+                nodemask_t *nodemask = NULL;
+
+                switch (pol->mode) {
+                case MPOL_PREFERRED:
+                    /* Override input node id */
+                    *nid = first_node(pol->nodes);
+                    break;
+                case MPOL_PREFERRED_MANY:
+                    nodemask = &pol->nodes;
+                    if (pol->home_node != NUMA_NO_NODE)
+                        *nid = pol->home_node;
+                    break;
+                case MPOL_BIND:
+                    /* Restrict to nodemask (but not on lower zones) */
+                    if (apply_policy_zone(pol, gfp_zone(gfp)) &&
+                        cpuset_nodemask_valid_mems_allowed(&pol->nodes))
+                        nodemask = &pol->nodes;
+                    if (pol->home_node != NUMA_NO_NODE)
+                        *nid = pol->home_node;
+                    /* __GFP_THISNODE shouldn't even be used with the bind policy
+                    * because we might easily break the expectation to stay on the
+                    * requested node and not break the policy. */
+                    WARN_ON_ONCE(gfp & __GFP_THISNODE);
+                    break;
+                case MPOL_INTERLEAVE:
+                    /* Override input node id */
+                    *nid = (ilx == NO_INTERLEAVE_INDEX) ?
+                        interleave_nodes(pol) : interleave_nid(pol, ilx);
+                    break;
+                case MPOL_WEIGHTED_INTERLEAVE:
+                    *nid = (ilx == NO_INTERLEAVE_INDEX) ?
+                        weighted_interleave_nodes(pol) :
+                        weighted_interleave_nid(pol, ilx);
+                    break;
                 }
-                return page;
+
+                return nodemask;
             }
+
+            if (pol->mode == MPOL_PREFERRED_MANY)
+                return alloc_pages_preferred_many(gfp, order, nid, nodemask);
+
+            if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
+                /* filter "hugepage" allocation, unless from alloc_pages() */
+                order == HPAGE_PMD_ORDER && ilx != NO_INTERLEAVE_INDEX) {
+                /* For hugepage allocation and non-interleave policy which
+                * allows the current node (or other explicitly preferred
+                * node) we only try to allocate from the current/preferred
+                * node and don't fall back to other nodes, as the cost of
+                * remote accesses would likely offset THP benefits.
+                *
+                * If the policy is interleave or does not allow the current
+                * node in its nodemask, we allocate the standard way. */
+                if (pol->mode != MPOL_INTERLEAVE &&
+                    pol->mode != MPOL_WEIGHTED_INTERLEAVE &&
+                    (!nodemask || node_isset(nid, *nodemask))) {
+                    /* First, try to allocate THP only on local node, but
+                    * don't reclaim unnecessarily, just compact. */
+                    page = __alloc_frozen_pages_noprof(
+                        gfp | __GFP_THISNODE | __GFP_NORETRY, order,
+                        nid, NULL);
+                    if (page || !(gfp & __GFP_DIRECT_RECLAIM))
+                        return page;
+                    /* If hugepage allocations are configured to always
+                    * synchronous compact or the vma has been madvised
+                    * to prefer hugepage backing, retry allowing remote
+                    * memory with both reclaim and compact as well. */
+                }
+            }
+
+            page = __alloc_frozen_pages_noprof(gfp, order, nid, nodemask);
+
+            if (unlikely(pol->mode == MPOL_INTERLEAVE || pol->mode == MPOL_WEIGHTED_INTERLEAVE) && page) {
+                /* skip NUMA_INTERLEAVE_HIT update if numa stats is disabled */
+                if (static_branch_likely(&vm_numa_stat_key) &&
+                    page_to_nid(page) == nid) {
+                    preempt_disable();
+                    __count_numa_event(page_zone(page), NUMA_INTERLEAVE_HIT);
+                    preempt_enable();
+                }
+            }
+
+            return page;
         }
     }
+
+    if (page)
+        set_page_refcounted(page);
+    return page;
 }
 
 struct page *__alloc_frozen_pages_noprof(gfp_t gfp, unsigned int order,
@@ -3710,10 +3796,8 @@ nopage:
             struct page *page;
 
             page = get_page_from_freelist(gfp_mask, order, alloc_flags|ALLOC_CPUSET, ac);
-            /*
-            * fallback to ignore cpuset restriction if our nodes
-            * are depleted
-            */
+            /* fallback to ignore cpuset restriction if our nodes
+            * are depleted */
             if (!page)
                 page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
             return page;
