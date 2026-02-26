@@ -28,6 +28,9 @@
 
 
 # init
+
+## tick_setup_device
+
 ```c
 start_kernel(void)
     tick_init() {
@@ -158,194 +161,172 @@ start_kernel(void)
         late_time_init();
 ```
 
+## arch_timer_register
+
+```c
+TIMER_OF_DECLARE(armv7_arch_timer, "arm,armv7-timer", arch_timer_of_init);
+TIMER_OF_DECLARE(armv8_arch_timer, "arm,armv8-timer", arch_timer_of_init);
+
+int __init arch_timer_register(void)
+{
+    int err;
+    int ppi;
+
+    arch_timer_evt = alloc_percpu(struct clock_event_device);
+    if (!arch_timer_evt) {
+        err = -ENOMEM;
+        goto out;
+    }
+
+    ppi = arch_timer_ppi[arch_timer_uses_ppi];
+    switch (arch_timer_uses_ppi) {
+    case ARCH_TIMER_VIRT_PPI:
+        err = request_percpu_irq(ppi, arch_timer_handler_virt, "arch_timer", arch_timer_evt);
+        break;
+    case ARCH_TIMER_PHYS_SECURE_PPI:
+    case ARCH_TIMER_PHYS_NONSECURE_PPI:
+        err = request_percpu_irq(ppi, arch_timer_handler_phys, "arch_timer", arch_timer_evt);
+        if (!err && arch_timer_has_nonsecure_ppi()) {
+            ppi = arch_timer_ppi[ARCH_TIMER_PHYS_NONSECURE_PPI];
+            err = request_percpu_irq(ppi, arch_timer_handler_phys, "arch_timer", arch_timer_evt);
+            if (err)
+                free_percpu_irq(arch_timer_ppi[ARCH_TIMER_PHYS_SECURE_PPI], arch_timer_evt);
+        }
+        break;
+    case ARCH_TIMER_HYP_PPI:
+        err = request_percpu_irq(ppi, arch_timer_handler_phys, "arch_timer", arch_timer_evt);
+        break;
+    default:
+        BUG();
+    }
+
+    if (err) {
+        pr_err("can't register interrupt %d (%d)\n", ppi, err);
+        goto out_free;
+    }
+
+    err = arch_timer_cpu_pm_init();
+    if (err)
+        goto out_unreg_notify;
+
+    /* Register and immediately configure the timer on the boot CPU */
+    err = cpuhp_setup_state(CPUHP_AP_ARM_ARCH_TIMER_STARTING,
+                "clockevents/arm/arch_timer:starting",
+                arch_timer_starting_cpu, arch_timer_dying_cpu);
+    if (err)
+        goto out_unreg_cpupm;
+    return 0;
+}
+```
+
+## handle_percpu_devid_irq
+
+```c
+/* set at gic_irq_domain_alloc:
+ * irq_desc->handle_irq = handle_percpu_devid_irq */
+void handle_percpu_devid_irq(struct irq_desc *desc)
+{
+    struct irq_chip *chip = irq_desc_get_chip(desc);
+    unsigned int irq = irq_desc_get_irq(desc);
+    unsigned int cpu = smp_processor_id();
+    struct irqaction *action;
+    irqreturn_t res;
+
+    /* PER CPU interrupts are not serialized. Do not touch
+     * desc->tot_count. */
+    __kstat_incr_irqs_this_cpu(desc);
+
+    if (chip->irq_ack)
+        chip->irq_ack(&desc->irq_data);
+
+    for (action = desc->action; action; action = action->next)
+        if (cpumask_test_cpu(cpu, action->affinity))
+            break;
+
+    if (likely(action)) {
+        trace_irq_handler_entry(irq, action);
+        /* arch_timer_handler_phys/virt */
+        res = action->handler(irq, raw_cpu_ptr(action->percpu_dev_id));
+        trace_irq_handler_exit(irq, action, res);
+    } else {
+        bool enabled = cpumask_test_cpu(cpu, desc->percpu_enabled);
+
+        if (enabled)
+            irq_percpu_disable(desc, cpu);
+
+        pr_err_once("Spurious%s percpu IRQ%u on CPU%u\n",
+                enabled ? " and unmasked" : "", irq, cpu);
+    }
+
+    if (chip->irq_eoi)
+        chip->irq_eoi(&desc->irq_data);
+}
+
+static irqreturn_t arch_timer_handler_phys(int irq, void *dev_id)
+{
+    struct clock_event_device *evt = dev_id;
+
+    return timer_handler(ARCH_TIMER_PHYS_ACCESS, evt);
+}
+
+static irqreturn_t arch_timer_handler_virt(int irq, void *dev_id)
+{
+    struct clock_event_device *evt = dev_id;
+
+    return timer_handler(ARCH_TIMER_VIRT_ACCESS, evt) {
+        unsigned long ctrl;
+
+        ctrl = arch_timer_reg_read_cp15(access, ARCH_TIMER_REG_CTRL);
+        if (ctrl & ARCH_TIMER_CTRL_IT_STAT) {
+            ctrl |= ARCH_TIMER_CTRL_IT_MASK;
+            arch_timer_reg_write_cp15(access, ARCH_TIMER_REG_CTRL, ctrl);
+            evt->event_handler(evt) {
+                = tick_handle_periodic,
+                = tick_handle_periodic_broadcast
+            }
+            return IRQ_HANDLED;
+        }
+
+        return IRQ_NONE;
+    }
+}
+```
+
+## tick_handle_periodic
+
 ```c
 tick_handle_periodic() {
     tick_periodic() {
-        do_timer() {
-            jiffies_64 += ticks;
-            calc_global_load() {
-                unsigned long sample_window;
-                long active, delta;
-
-                sample_window = READ_ONCE(calc_load_update);
-                if (time_before(jiffies, sample_window + 10))
-                    return;
-
-                delta = calc_load_nohz_read() {
-                    int idx = calc_load_read_idx();
-                    long delta = 0;
-
-                    if (atomic_long_read(&calc_load_nohz[idx]))
-                        delta = atomic_long_xchg(&calc_load_nohz[idx], 0);
-
-                    return delta;
-                }
-                if (delta)
-                    atomic_long_add(delta, &calc_load_tasks);
-
-                active = atomic_long_read(&calc_load_tasks);
-                active = active > 0 ? active * FIXED_1 : 0;
-
-                #define FSHIFT      11          /* nr of bits of precision */
-                #define FIXED_1     (1<<FSHIFT) /* 1.0 as fixed-point */
-                #define LOAD_FREQ   (5*HZ+1)    /* 5 sec intervals */
-                #define EXP_1       1884        /* 1/exp(5sec/1min) as fixed-point */
-                #define EXP_5       2014        /* 1/exp(5sec/5min) */
-                #define EXP_15      2037        /* 1/exp(5sec/15min) */
-
-                /* a1 = a0 * e + a * (1 - e) */
-                avenrun[0] = calc_load(avenrun[0], EXP_1, active);
-                avenrun[1] = calc_load(avenrun[1], EXP_5, active);
-                avenrun[2] = calc_load(avenrun[2], EXP_15, active) {
-                    unsigned long newload;
-
-                    newload = load * exp + active * (FIXED_1 - exp);
-                    if (active >= load)
-                        newload += FIXED_1-1;
-
-                    return newload / FIXED_1;
-                }
-
-                WRITE_ONCE(calc_load_update, sample_window + LOAD_FREQ);
-
-                calc_global_nohz() {
-                    unsigned long sample_window;
-                    long delta, active, n;
-
-                    sample_window = READ_ONCE(calc_load_update);
-                    if (!time_before(jiffies, sample_window + 10)) {
-                        delta = jiffies - sample_window - 10;
-                        n = 1 + (delta / LOAD_FREQ);
-
-                        active = atomic_long_read(&calc_load_tasks);
-                        active = active > 0 ? active * FIXED_1 : 0;
-
-                        avenrun[0] = calc_load_n(avenrun[0], EXP_1, active, n);
-                        avenrun[1] = calc_load_n(avenrun[1], EXP_5, active, n);
-                        avenrun[2] = calc_load_n(avenrun[2], EXP_15, active, n);
-
-                        WRITE_ONCE(calc_load_update, sample_window + n * LOAD_FREQ);
-                    }
-
-                    smp_wmb();
-                    calc_load_idx++;
-                }
-            }
-        }
+        do_timer(1);
+            --->
 
         update_wall_time();
             timekeeping_advance();
 
-        update_process_times() {
-            run_local_timers() {
-                hrtimer_run_queues() {
-                    tick_check_oneshot_change() {
-                        hrtimer_switch_to_hres() {
-                            tick_setup_sched_timer() { /* hrtimer tick emulation */
-                                hrtimer_setup(&ts->sched_timer, tick_nohz_handler) =  {
-                                    tick_sched_do_timer() {
-                                        tick_do_update_jiffies64(now) {
-                                            do_timer();
-                                            update_wall_time();
-                                        }
-                                    }
-                                    tick_sched_handle() {
-                                        update_process_times();
-                                    }
-                                    hrtimer_forward(timer, now, TICK_NSEC);
-                                }
-                            }
-                        }
-                    }
-                    if (!ktime_before(now, cpu_base->softirq_expires_next)) {
-                        raise_timer_softirq(HRTIMER_SOFTIRQ) {
-                            hrtimer_run_softirq() {
-                                __hrtimer_run_queues();
-                            }
-                        }
-                    }
-                    __hrtimer_run_queues() {
-                        __run_hrtimer();
-                    }
-                }
+        update_process_times();
+    }
 
-                raise_softirq(TIMER_SOFTIRQ) {
-                    run_timer_softirq() {
-                        __run_timers() {
-                            if (!time_after_eq(jiffies, base->clk))
-                                return;
-                            while (time_after_eq(jiffies, base->clk)) {
-                                levels = collect_expired_timers(base, heads);
-                                base->clk++;
+    if (IS_ENABLED(CONFIG_TICK_ONESHOT) && dev->event_handler != tick_handle_periodic)
+        return;
 
-                                while (levels--) {
-                                    expire_timers(base, heads + levels) {
-                                        base->running_timer = timer;
-                                        detach_timer(timer, true);
+    if (!clockevent_state_oneshot(dev))
+        return;
+    for (;;) {
+        /* Setup the next period for devices, which do not have
+         * periodic mode: */
+        next = ktime_add_ns(next, TICK_NSEC);
 
-                                        fn = timer->function;
-
-                                        if (timer->flags & TIMER_IRQSAFE) {
-                                            raw_spin_unlock(&base->lock);
-                                            call_timer_fn(timer, fn) {
-                                                fn(timer);
-                                            }
-                                            raw_spin_lock(&base->lock);
-                                        } else {
-                                            raw_spin_unlock_irq(&base->lock);
-                                            call_timer_fn(timer, fn);
-                                            raw_spin_lock_irq(&base->lock);
-                                        }
-                                    }
-                                }
-                            }
-                            base->running_timer = NULL;
-                            raw_spin_unlock_irq(&base->lock);
-                        }
-                    }
-                }
-            }
-
-            sched_tick() {
-                curr->sched_class->task_tick(rq, curr, 0);
-            }
-
-            run_posix_cpu_timers() {
-                ret = posix_cpu_timers_work_scheduled(tsk) {
-
-                }
-                if (ret)
-                    return;
-                ret = fastpath_timer_check(tsk) {
-
-                }
-                if (!ret)
-                    return;
-
-                __run_posix_cpu_timers(tsk) {
-                    handle_posix_cpu_timers(tsk) {
-                        check_thread_timers(tsk, &firing) {
-                            ret = check_rlimit(rttime, hard, SIGKILL, true, true) {
-                                if (time < limit)
-		                            return false;
-                                send_signal_locked(signo, SEND_SIG_PRIV, current, PIDTYPE_TGID);
-                            }
-                            if (hard != RLIM_INFINITY && ret) {
-                                return;
-                            }
-
-                            if (check_rlimit(rttime, soft, SIGXCPU, true, false)) {
-                                soft += USEC_PER_SEC;
-                                tsk->signal->rlim[RLIMIT_RTTIME].rlim_cur = soft;
-                            }
-                        }
-                        check_process_timers(tsk, &firing) {
-
-                        }
-                    }
-                }
-            }
-        }
+        if (!clockevents_program_event(dev, next, false))
+            return;
+        /* Have to be careful here. If we're in oneshot mode,
+         * before we call tick_periodic() in a loop, we need
+         * to be sure we're using a real hardware clocksource.
+         * Otherwise we could get trapped in an infinite
+         * loop, as the tick_periodic() increments jiffies,
+         * which then will increment time, possibly causing
+         * the loop to trigger again and again. */
+        if (timekeeping_valid_for_hres())
+            tick_periodic(cpu);
     }
 }
 
@@ -422,6 +403,178 @@ posix_timer_fn();
                     signal_wake_up_state();
                         wake_up_state();
                             try_to_wake_up();
+```
+
+### do_timer
+
+```c
+do_timer() {
+    jiffies_64 += ticks;
+    calc_global_load() {
+        unsigned long sample_window;
+        long active, delta;
+
+        sample_window = READ_ONCE(calc_load_update);
+        if (time_before(jiffies, sample_window + 10))
+            return;
+
+        delta = calc_load_nohz_read() {
+            int idx = calc_load_read_idx();
+            long delta = 0;
+
+            if (atomic_long_read(&calc_load_nohz[idx]))
+                delta = atomic_long_xchg(&calc_load_nohz[idx], 0);
+
+            return delta;
+        }
+        if (delta)
+            atomic_long_add(delta, &calc_load_tasks);
+
+        active = atomic_long_read(&calc_load_tasks);
+        active = active > 0 ? active * FIXED_1 : 0;
+
+        #define FSHIFT      11          /* nr of bits of precision */
+        #define FIXED_1     (1<<FSHIFT) /* 1.0 as fixed-point */
+        #define LOAD_FREQ   (5*HZ+1)    /* 5 sec intervals */
+        #define EXP_1       1884        /* 1/exp(5sec/1min) as fixed-point */
+        #define EXP_5       2014        /* 1/exp(5sec/5min) */
+        #define EXP_15      2037        /* 1/exp(5sec/15min) */
+
+        /* a1 = a0 * e + a * (1 - e) */
+        avenrun[0] = calc_load(avenrun[0], EXP_1, active);
+        avenrun[1] = calc_load(avenrun[1], EXP_5, active);
+        avenrun[2] = calc_load(avenrun[2], EXP_15, active) {
+            unsigned long newload;
+
+            newload = load * exp + active * (FIXED_1 - exp);
+            if (active >= load)
+                newload += FIXED_1-1;
+
+            return newload / FIXED_1;
+        }
+
+        WRITE_ONCE(calc_load_update, sample_window + LOAD_FREQ);
+
+        calc_global_nohz() {
+            unsigned long sample_window;
+            long delta, active, n;
+
+            sample_window = READ_ONCE(calc_load_update);
+            if (!time_before(jiffies, sample_window + 10)) {
+                delta = jiffies - sample_window - 10;
+                n = 1 + (delta / LOAD_FREQ);
+
+                active = atomic_long_read(&calc_load_tasks);
+                active = active > 0 ? active * FIXED_1 : 0;
+
+                avenrun[0] = calc_load_n(avenrun[0], EXP_1, active, n);
+                avenrun[1] = calc_load_n(avenrun[1], EXP_5, active, n);
+                avenrun[2] = calc_load_n(avenrun[2], EXP_15, active, n);
+
+                WRITE_ONCE(calc_load_update, sample_window + n * LOAD_FREQ);
+            }
+
+            smp_wmb();
+            calc_load_idx++;
+        }
+    }
+}
+```
+
+### update_process_times
+
+```c
+update_process_times() {
+    account_process_tick(p, user_tick);
+
+    run_local_timers() {
+        hrtimer_run_queues();
+
+        raise_softirq(TIMER_SOFTIRQ) {
+            run_timer_softirq() {
+                __run_timers() {
+                    if (!time_after_eq(jiffies, base->clk))
+                        return;
+                    while (time_after_eq(jiffies, base->clk)) {
+                        levels = collect_expired_timers(base, heads);
+                        base->clk++;
+
+                        while (levels--) {
+                            expire_timers(base, heads + levels) {
+                                base->running_timer = timer;
+                                detach_timer(timer, true);
+
+                                fn = timer->function;
+
+                                if (timer->flags & TIMER_IRQSAFE) {
+                                    raw_spin_unlock(&base->lock);
+                                    call_timer_fn(timer, fn) {
+                                        fn(timer);
+                                    }
+                                    raw_spin_lock(&base->lock);
+                                } else {
+                                    raw_spin_unlock_irq(&base->lock);
+                                    call_timer_fn(timer, fn);
+                                    raw_spin_lock_irq(&base->lock);
+                                }
+                            }
+                        }
+                    }
+                    base->running_timer = NULL;
+                    raw_spin_unlock_irq(&base->lock);
+                }
+            }
+        }
+    }
+
+    rcu_sched_clock_irq(user_tick);
+        --->
+
+#ifdef CONFIG_IRQ_WORK
+    if (in_hardirq())
+        irq_work_tick();
+#endif
+
+    sched_tick() {
+        curr->sched_class->task_tick(rq, curr, 0);
+    }
+
+    run_posix_cpu_timers() {
+        ret = posix_cpu_timers_work_scheduled(tsk) {
+
+        }
+        if (ret)
+            return;
+        ret = fastpath_timer_check(tsk) {
+
+        }
+        if (!ret)
+            return;
+
+        __run_posix_cpu_timers(tsk) {
+            handle_posix_cpu_timers(tsk) {
+                check_thread_timers(tsk, &firing) {
+                    ret = check_rlimit(rttime, hard, SIGKILL, true, true) {
+                        if (time < limit)
+                            return false;
+                        send_signal_locked(signo, SEND_SIG_PRIV, current, PIDTYPE_TGID);
+                    }
+                    if (hard != RLIM_INFINITY && ret) {
+                        return;
+                    }
+
+                    if (check_rlimit(rttime, soft, SIGXCPU, true, false)) {
+                        soft += USEC_PER_SEC;
+                        tsk->signal->rlim[RLIMIT_RTTIME].rlim_cur = soft;
+                    }
+                }
+                check_process_timers(tsk, &firing) {
+
+                }
+            }
+        }
+    }
+}
 ```
 
 # hrtimer_run_queues
@@ -1435,7 +1588,7 @@ void add_timer(struct timer_list *timer)
         } else {
             internal_add_timer(base, timer) {
                 idx = calc_wheel_index(timer->expires, base->clk, &bucket_expiry);
-	            enqueue_timer(base, timer, idx, bucket_expiry);
+                enqueue_timer(base, timer, idx, bucket_expiry);
             }
         }
 
@@ -1511,7 +1664,7 @@ void run_local_timers(void)
 
 void run_timer_softirq(struct softirq_action *h)
 {
-	run_timer_base(BASE_LOCAL) {
+    run_timer_base(BASE_LOCAL) {
         struct timer_base *base = this_cpu_ptr(&timer_bases[index]);
         __run_timer_base(base) {
             if (time_before(jiffies, base->next_expiry))
@@ -1631,12 +1784,12 @@ void run_timer_softirq(struct softirq_action *h)
         }
     }
 
-	if (IS_ENABLED(CONFIG_NO_HZ_COMMON)) {
-		run_timer_base(BASE_GLOBAL);
-		run_timer_base(BASE_DEF);
+    if (IS_ENABLED(CONFIG_NO_HZ_COMMON)) {
+        run_timer_base(BASE_GLOBAL);
+        run_timer_base(BASE_DEF);
 
-		if (is_timers_nohz_active())
-			tmigr_handle_remote();
-	}
+        if (is_timers_nohz_active())
+            tmigr_handle_remote();
+    }
 }
 ```
