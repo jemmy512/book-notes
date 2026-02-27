@@ -1972,117 +1972,7 @@ int cgroup_get_tree(struct fs_context *fc)
         else
             ctx->kfc.magic = CGROUP_SUPER_MAGIC;
 
-        ret = kernfs_get_tree(fc) {
-            struct kernfs_fs_context *kfc = fc->fs_private;
-            struct super_block *sb;
-            struct kernfs_super_info *info;
-            int error;
-
-            info = kzalloc(sizeof(*info), GFP_KERNEL);
-
-            info->root = kfc->root;
-            info->ns = kfc->ns_tag;
-            INIT_LIST_HEAD(&info->node);
-
-            fc->s_fs_info = info;
-            sb = sget_fc(fc, kernfs_test_super, kernfs_set_super);
-
-            if (!sb->s_root) {
-                struct kernfs_super_info *info = kernfs_info(sb) {
-                    return sb->s_fs_info;
-                }
-                struct kernfs_root *root = kfc->root;
-
-                kfc->new_sb_created = true;
-
-                error = kernfs_fill_super(sb, kfc) {
-                    struct kernfs_super_info *info = kernfs_info(sb);
-                    struct kernfs_root *kf_root = kfc->root;
-                    struct inode *inode;
-                    struct dentry *root;
-
-                    info->sb = sb;
-                    /* Userspace would break if executables or devices appear on sysfs */
-                    sb->s_iflags |= SB_I_NOEXEC | SB_I_NODEV;
-                    sb->s_blocksize = PAGE_SIZE;
-                    sb->s_blocksize_bits = PAGE_SHIFT;
-                    sb->s_magic = kfc->magic;
-                    sb->s_op = &kernfs_sops;
-                    sb->s_xattr = kernfs_xattr_handlers;
-                    if (info->root->flags & KERNFS_ROOT_SUPPORT_EXPORTOP)
-                        sb->s_export_op = &kernfs_export_ops;
-                    sb->s_time_gran = 1;
-
-                    /* sysfs dentries and inodes don't require IO to create */
-                    sb->s_shrink->seeks = 0;
-
-                    /* get root inode, initialize and unlock it */
-                    inode = kernfs_get_inode(sb, info->root->kn) {
-                        inode = iget_locked(sb, kernfs_ino(kn)) {
-                            struct hlist_head *head = inode_hashtable + hash(sb, ino);
-                            struct inode *inode;
-                        again:
-                            inode = find_inode_fast(sb, head, ino) ?: alloc_inode(sb);
-                            return inode;
-                        }
-                        if (inode && (inode->i_state & I_NEW)) {
-                            kernfs_init_inode(kn, inode) {
-                                kernfs_get(kn);
-                                inode->i_private = kn;
-                                inode->i_mapping->a_ops = &ram_aops;
-                                inode->i_op = &kernfs_iops;
-                                inode->i_generation = kernfs_gen(kn);
-
-                                /* initialize inode according to type */
-                                switch (kernfs_type(kn)) {
-                                case KERNFS_DIR:
-                                    inode->i_op = &kernfs_dir_iops;
-                                    inode->i_fop = &kernfs_dir_fops;
-                                    if (kn->flags & KERNFS_EMPTY_DIR)
-                                        make_empty_dir_inode(inode);
-                                    break;
-                                case KERNFS_FILE:
-                                    inode->i_size = kn->attr.size;
-                                    inode->i_fop = &kernfs_file_fops;
-                                    break;
-                                case KERNFS_LINK:
-                                    inode->i_op = &kernfs_symlink_iops;
-                                    break;
-                                }
-                            }
-                        }
-
-                        return inode;
-                    }
-
-                    /* instantiate and link root dentry */
-                    root = d_make_root(inode) {
-                        struct dentry *res = NULL;
-                        if (root_inode) {
-                            res = d_alloc_anon(root_inode->i_sb);
-                            if (res)
-                                d_instantiate(res, root_inode);
-                            else
-                                iput(root_inode);
-                        }
-                        return res;
-                    }
-                    sb->s_root = root;
-                    sb->s_d_op = &kernfs_dops;
-                    return 0;
-                }
-                sb->s_flags |= SB_ACTIVE;
-
-                uuid_t uuid;
-                uuid_gen(&uuid);
-                super_set_uuid(sb, uuid.b, sizeof(uuid));
-
-                list_add(&info->node, &info->root->supers);
-            }
-
-            fc->root = dget(sb->s_root);
-            return 0;
-        }
+        ret = kernfs_get_tree(fc);
 
         if (!ret && ctx->ns != &init_cgroup_ns) {
             struct dentry *nsdentry;
@@ -2115,10 +2005,10 @@ int cgroup_get_tree(struct fs_context *fc)
 
 ```c
 static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
-    .show_options        = cgroup_show_options,
-    .mkdir            = cgroup_mkdir,
-    .rmdir            = cgroup_rmdir,
-    .show_path        = cgroup_show_path,
+    .show_options       = cgroup_show_options,
+    .mkdir              = cgroup_mkdir,
+    .rmdir              = cgroup_rmdir,
+    .show_path          = cgroup_show_path,
 };
 ```
 

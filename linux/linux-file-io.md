@@ -368,25 +368,7 @@ void __init mnt_init(void) {
 
     kernfs_init();
 
-    err = sysfs_init() {
-        int err;
-
-        sysfs_root = kernfs_create_root(NULL, KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK, NULL);
-        if (IS_ERR(sysfs_root))
-            return PTR_ERR(sysfs_root);
-
-        sysfs_root_kn = kernfs_root_to_node(sysfs_root) {
-            return root->kn;
-        }
-
-        err = register_filesystem(&sysfs_fs_type);
-        if (err) {
-            kernfs_destroy_root(sysfs_root);
-            return err;
-        }
-
-        return 0;
-    }
+    err = sysfs_init();
     fs_kobj = kobject_create_and_add("fs", NULL);
 
     shmem_init();
@@ -406,90 +388,7 @@ void __init mnt_init(void) {
         struct mount *m;
         struct path root;
 
-        mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", initramfs_options) {
-            struct fs_context *fc;
-            struct vfsmount *mnt;
-            int ret = 0;
-
-            fc = fs_context_for_mount(type, flags) {
-                fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
-                if (!fc)
-                    return ERR_PTR(-ENOMEM);
-
-                fc->purpose     = purpose;
-                fc->sb_flags    = sb_flags;
-                fc->sb_flags_mask = sb_flags_mask;
-                fc->fs_type     = get_filesystem(fs_type);
-                fc->cred        = get_current_cred();
-                fc->net_ns      = get_net(current->nsproxy->net_ns);
-                fc->log.prefix  = fs_type->name;
-
-                init_fs_context = fc->fs_type->init_fs_context;
-                ret = init_fs_context(fc) {
-                    rootfs_init_fs_context(struct fs_context *fc) {
-                        if (IS_ENABLED(CONFIG_TMPFS) && is_tmpfs) {
-                            return shmem_init_fs_context(fc) {
-                                struct shmem_options *ctx;
-
-                                ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
-
-                                ctx->mode = 0777 | S_ISVTX;
-                                ctx->uid = current_fsuid();
-                                ctx->gid = current_fsgid();
-
-                                fc->fs_private = ctx;
-                                fc->ops = &shmem_fs_context_ops = {
-                                    .free               = shmem_free_fc,
-                                    .get_tree           = shmem_get_tree,
-                                    .parse_monolithic   = shmem_parse_options,
-                                    .parse_param        = shmem_parse_one,
-                                    .reconfigure        = shmem_reconfigure,
-                                };
-                                return 0;
-                            }
-                        }
-
-                        return ramfs_init_fs_context(fc) {
-                            struct ramfs_fs_info *fsi;
-
-                            fsi = kzalloc(sizeof(*fsi), GFP_KERNEL);
-                            fsi->mount_opts.mode = RAMFS_DEFAULT_MODE;
-                            fc->s_fs_info = fsi;
-                            fc->ops = &ramfs_context_ops = {
-                                .free           = ramfs_free_fc,
-                                .parse_param    = ramfs_parse_param,
-                                .get_tree       = ramfs_get_tree,
-                            };
-                        }
-                    }
-                }
-
-            }
-            if (name)
-                ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
-            if (!ret)
-                ret = parse_monolithic_mount_data(fc, data);
-
-            if (!ret) {
-                mnt = fc_mount(fc) {
-                    int err = vfs_get_tree(fc) {
-                        shmem_get_tree(struct fs_context *fc);
-
-                        ramfs_get_tree();
-                    }
-                    if (!err) {
-                        up_write(&fc->root->d_sb->s_umount);
-                        return vfs_create_mount(fc);
-                    }
-                    return ERR_PTR(err);
-                }
-            } else {
-                mnt = ERR_PTR(ret);
-            }
-
-            put_fs_context(fc);
-            return mnt;
-        }
+        mnt = vfs_kern_mount(&rootfs_fs_type, 0, "rootfs", initramfs_options);
 
         m = real_mount(mnt) {
             return container_of(mnt, struct mount, mnt);
@@ -636,7 +535,7 @@ mount(dev_name, dir_name, type, flags, data) {
 ```
 
 ```c
-YSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
+SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
     char __user *, type, unsigned long, flags, void __user *, data)
 {
     int ret;
@@ -782,121 +681,61 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         subtype = strchr(fstype, '.');
         if (subtype) {
             subtype++;
-        }
-        if (!*subtype) {
-            put_filesystem(type);
-            return -EINVAL;
+            if (!*subtype) {
+                put_filesystem(type);
+                return -EINVAL;
+            }
         }
     }
 
     fc = fs_context_for_mount(type, sb_flags) {
-        fc = kzalloc(sizeof(struct fs_context));
-        fc->purpose     = purpose;
-        fc->sb_flags    = sb_flags;
-        fc->sb_flags_mask = sb_flags_mask;
-        fc->fs_type     = get_filesystem(fs_type);
-        fc->cred        = get_current_cred();
-        fc->net_ns      = get_net(current->nsproxy->net_ns);
-        fc->log.prefix  = fs_type->name;
+        return alloc_fs_context(fs_type, NULL, sb_flags, 0, FS_CONTEXT_FOR_MOUNT) {
+            int (*init_fs_context)(struct fs_context *);
+            struct fs_context *fc;
+            int ret = -ENOMEM;
 
-        mutex_init(&fc->uapi_mutex);
+            fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
+            if (!fc)
+                return ERR_PTR(-ENOMEM);
 
-        switch (purpose) {
-        case FS_CONTEXT_FOR_MOUNT:
-            fc->user_ns = get_user_ns(fc->cred->user_ns);
-            break;
-        case FS_CONTEXT_FOR_SUBMOUNT:
-            fc->user_ns = get_user_ns(reference->d_sb->s_user_ns);
-        }
+            fc->purpose         = purpose;
+            fc->sb_flags        = sb_flags;
+            fc->sb_flags_mask   = sb_flags_mask;
+            fc->fs_type         = get_filesystem(fs_type);
+            fc->cred            = get_current_cred();
+            fc->net_ns          = get_net(current->nsproxy->net_ns);
+            fc->log.prefix       = fs_type->name;
 
-        init_fs_context = fc->fs_type->init_fs_context;
-        if (!init_fs_context)
-            init_fs_context = legacy_init_fs_context;
-        ret = init_fs_context(fc) {
-            legacy_init_fs_context() {
-                fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
-                fc->ops = &legacy_fs_context_ops {
-                    .free               = legacy_fs_context_free,
-                    .dup                = legacy_fs_context_dup,
-                    .parse_param        = legacy_parse_param,
-                    .parse_monolithic   = legacy_parse_monolithic,
-                    .get_tree           = legacy_get_tree,
-                    .reconfigure        = legacy_reconfigure,
-                };
+            mutex_init(&fc->uapi_mutex);
+
+            switch (purpose) {
+            case FS_CONTEXT_FOR_MOUNT:
+                fc->user_ns = get_user_ns(fc->cred->user_ns);
+                break;
+            case FS_CONTEXT_FOR_SUBMOUNT:
+                fc->user_ns = get_user_ns(reference->d_sb->s_user_ns);
+                break;
+            case FS_CONTEXT_FOR_RECONFIGURE:
+                atomic_inc(&reference->d_sb->s_active);
+                fc->user_ns = get_user_ns(reference->d_sb->s_user_ns);
+                fc->root = dget(reference);
+                break;
             }
 
-            ext4_init_fs_context(struct fs_context *fc) {
-                struct ext4_fs_context *ctx;
+            /* TODO: Make all filesystems support this unconditionally */
+            init_fs_context = fc->fs_type->init_fs_context;
+            if (!init_fs_context)
+                init_fs_context = legacy_init_fs_context;
 
-                ctx = kzalloc(sizeof(struct ext4_fs_context), GFP_KERNEL);
-                if (!ctx)
-                    return -ENOMEM;
-
-                fc->fs_private = ctx;
-                fc->ops = &ext4_context_ops = {
-                    .parse_param    = ext4_parse_param,
-                    .get_tree       = ext4_get_tree,
-                    .reconfigure    = ext4_reconfigure,
-                    .free           = ext4_fc_free,
-                };
+            ret = init_fs_context(fc) {
+                = sysfs_init_fs_context() { }
+                = shmem_init_fs_context() { }
+                = rootfs_init_fs_context() { }
             }
-
-            shmem_init_fs_context(struct fs_context *fc) {
-                struct shmem_options *ctx;
-
-                ctx = kzalloc(sizeof(struct shmem_options), GFP_KERNEL);
-                if (!ctx)
-                    return -ENOMEM;
-
-                ctx->mode = 0777 | S_ISVTX;
-                ctx->uid = current_fsuid();
-                ctx->gid = current_fsgid();
-
-                fc->fs_private = ctx;
-                fc->ops = &shmem_fs_context_ops = {
-                    .free               = shmem_free_fc,
-                    .get_tree           = shmem_get_tree,
-                    .parse_monolithic   = shmem_parse_options,
-                    .parse_param        = shmem_parse_one,
-                    .reconfigure        = shmem_reconfigure,
-                };
-            }
-        }
-
-        ret = legacy_init_fs_context() {
-            fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
-            if (!fc->fs_private)
-                return -ENOMEM;
-            fc->ops = &legacy_fs_context_ops {
-                .free               = legacy_fs_context_free,
-                .dup                = legacy_fs_context_dup,
-                .parse_param        = legacy_parse_param,
-                .parse_monolithic   = legacy_parse_monolithic,
-                .get_tree           = legacy_get_tree() {
-                    struct legacy_fs_context *ctx = fc->fs_private;
-                    struct super_block *sb;
-                    struct dentry *root;
-
-                    root = fc->fs_type->mount(fc->fs_type, fc->sb_flags,
-                        fc->source, ctx->legacy_data) {
-
-                        public_dev_mount() {
-
-                        }
-                    }
-
-                    if (IS_ERR(root))
-                        return PTR_ERR(root);
-
-                    sb = root->d_sb;
-                    BUG_ON(!sb);
-
-                    fc->root = root;
-                    return 0;
-                },
-                .reconfigure        = legacy_reconfigure,
-            }
-            return 0;
+            if (ret < 0)
+                goto err_fc;
+            fc->need_free = true;
+            return fc;
         }
     }
 
@@ -908,32 +747,6 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         err = parse_monolithic_mount_data(fc, data);
     if (!err && !mount_capable(fc))
         err = -EPERM;
-
-    if (!err) {
-        /* Get the mountable root */
-        err = vfs_get_tree(fc) {
-            struct super_block *sb;
-            int error;
-            /* Get the mountable root in fc->root */
-            error = fc->ops->get_tree(fc) {
-                ext4_get_tree() {
-                    get_tree_bdev(fc, ext4_fill_super) {
-                        fc->root = dget(s->s_root);
-                    }
-                }
-
-                shmem_get_tree() {
-                    get_tree_nodev(fc, shmem_fill_super) {
-                        vfs_get_super(fc, NULL, fill_super) {
-                            fc->root = dget(sb->s_root);
-                        }
-                    }
-                }
-            }
-            sb = fc->root->d_sb;
-            sb->s_flags |= SB_BORN;
-        }
-    }
     if (!err)
         err = do_new_mount_fc(fc, path, mnt_flags);
 
@@ -946,65 +759,88 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
 static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
          unsigned int mnt_flags)
 {
-    struct vfsmount *mnt;
-    struct mountpoint *mp;
-    struct super_block *sb = fc->root->d_sb;
+    struct super_block *sb;
+    struct vfsmount *mnt __free(mntput) = fc_mount(fc) {
+        int err = vfs_get_tree(fc);
+        if (!err) {
+            up_write(&fc->root->d_sb->s_umount);
+            return vfs_create_mount(fc) {
+                struct mount *mnt;
+
+                if (!fc->root)
+                    return ERR_PTR(-EINVAL);
+
+                mnt = alloc_vfsmnt(fc->source);
+                if (!mnt)
+                    return ERR_PTR(-ENOMEM);
+
+                if (fc->sb_flags & SB_KERNMOUNT)
+                    mnt->mnt.mnt_flags = MNT_INTERNAL;
+
+                setup_mnt(mnt, fc->root) {
+                    struct super_block *s = root->d_sb;
+
+                    atomic_inc(&s->s_active);
+                    m->mnt.mnt_sb = s;
+                    m->mnt.mnt_root = dget(root);
+                    m->mnt_mountpoint = m->mnt.mnt_root;
+                    m->mnt_parent = m;
+
+                    guard(mount_locked_reader)();
+                    mnt_add_instance(m, s);
+                }
+
+                return &mnt->mnt;
+            }
+        }
+        return ERR_PTR(err);
+    }
     int error;
 
-    mnt = vfs_create_mount(fc) {
-        struct mount *mnt;
-        struct user_namespace *fs_userns;
+    if (IS_ERR(mnt))
+        return PTR_ERR(mnt);
 
-        if (!fc->root)
-            return ERR_PTR(-EINVAL);
+    sb = fc->root->d_sb;
+    error = security_sb_kern_mount(sb);
+    if (unlikely(error))
+        return error;
 
-        mnt = alloc_vfsmnt(fc->source ?: "none");
-        if (!mnt)
-            return ERR_PTR(-ENOMEM);
-
-        if (fc->sb_flags & SB_KERNMOUNT)
-            mnt->mnt.mnt_flags = MNT_INTERNAL;
-
-        atomic_inc(&fc->root->d_sb->s_active);
-        mnt->mnt.mnt_sb    = fc->root->d_sb;
-        mnt->mnt.mnt_root  = dget(fc->root);
-        mnt->mnt_mountpoint  = mnt->mnt.mnt_root;
-        mnt->mnt_parent    = mnt;
-
-        fs_userns = mnt->mnt.mnt_sb->s_user_ns;
-        if (!initial_idmapping(fs_userns))
-            mnt->mnt.mnt_userns = get_user_ns(fs_userns);
-
-        lock_mount_hash();
-        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
-        unlock_mount_hash();
-        return &mnt->mnt;
+    if (unlikely(mount_too_revealing(sb, &mnt_flags))) {
+        errorfcp(fc, "VFS", "Mount too revealing");
+        return -EPERM;
     }
 
     mnt_warn_timestamp_expiry(mountpoint, mnt);
 
-    mp = lock_mount(mountpoint);
-    if (IS_ERR(mp)) {
-        mntput(mnt);
-        return PTR_ERR(mp);
-    }
+    LOCK_MOUNT(mp, mountpoint);
+    error = do_add_mount(real_mount(mnt)/*newmnt*/, mp/*pinned_mountpoint*/, mnt_flags) {
+        struct mount *parent = mp->parent;
 
-    /* add a mount into a namespace's mount tree */
-    error = do_add_mount(real_mount(mnt)/*newmnt*/, mp, mountpoint/*path*/, mnt_flags) {
-        struct mount *parent = real_mount(path->mnt);
+        if (IS_ERR(parent))
+            return PTR_ERR(parent);
 
         mnt_flags &= ~MNT_INTERNAL_FLAGS;
 
+        if (unlikely(!check_mnt(parent))) {
+            /* that's acceptable only for automounts done in private ns */
+            if (!(mnt_flags & MNT_SHRINKABLE))
+                return -EINVAL;
+            /* ... and for those we'd better have mountpoint still alive */
+            if (!parent->mnt_ns)
+                return -EINVAL;
+        }
+
         /* Refuse the same filesystem on the same mount point */
-        if (path->mnt->mnt_sb == newmnt->mnt.mnt_sb
-            && path->mnt->mnt_root == path->dentry)
+        if (parent->mnt.mnt_sb == newmnt->mnt.mnt_sb &&
+            parent->mnt.mnt_root == mp->mp->m_dentry)
             return -EBUSY;
 
         if (d_is_symlink(newmnt->mnt.mnt_root))
             return -EINVAL;
 
         newmnt->mnt.mnt_flags = mnt_flags;
-        return graft_tree(newmnt/*mnt*/, parent/*p*/, mp) {
+
+        return graft_tree(newmnt/*mnt*/, mp) {
             if (mnt->mnt.mnt_sb->s_flags & SB_NOUSER)
                 return -EINVAL;
 
@@ -1024,69 +860,8 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 
                 /* Preallocate a mountpoint in case the new mounts need
                  * to be tucked under other mounts. */
-                smp = get_mountpoint(source_mnt->mnt.mnt_root) {
-                    struct mountpoint *mp, *new = NULL;
-                    int ret;
-
-                    if (d_mountpoint(dentry) { return dentry->d_flags & DCACHE_MOUNTED; }) {
-                        /* might be worth a WARN_ON() */
-                        if (d_unlinked(dentry))
-                            return ERR_PTR(-ENOENT);
-                mountpoint:
-                        read_seqlock_excl(&mount_lock);
-                        mp = lookup_mountpoint(dentry) {
-                            struct hlist_head *chain = mp_hash(dentry) {
-                                unsigned long tmp = ((unsigned long)dentry / L1_CACHE_BYTES);
-                                tmp = tmp + (tmp >> mp_hash_shift);
-                                return &mountpoint_hashtable[tmp & mp_hash_mask];
-                            }
-                            struct mountpoint *mp;
-
-                            hlist_for_each_entry(mp, chain, m_hash) {
-                                if (mp->m_dentry == dentry) {
-                                    mp->m_count++;
-                                    return mp;
-                                }
-                            }
-                            return NULL;
-                        }
-                        read_sequnlock_excl(&mount_lock);
-                        if (mp)
-                            goto done;
-                    }
-
-                    if (!new)
-                        new = kmalloc(sizeof(struct mountpoint), GFP_KERNEL);
-                    if (!new)
-                        return ERR_PTR(-ENOMEM);
-
-
-                    /* Exactly one processes may set d_mounted */
-                    ret = d_set_mounted(dentry);
-
-                    /* Someone else set d_mounted? */
-                    if (ret == -EBUSY)
-                        goto mountpoint;
-
-                    /* The dentry is not available as a mountpoint? */
-                    mp = ERR_PTR(ret);
-                    if (ret)
-                        goto done;
-
-                    /* Add the new mountpoint to the hash table */
-                    read_seqlock_excl(&mount_lock);
-                    new->m_dentry = dget(dentry);
-                    new->m_count = 1;
-                    hlist_add_head(&new->m_hash, mp_hash(dentry));
-                    INIT_HLIST_HEAD(&new->m_list);
-                    read_sequnlock_excl(&mount_lock);
-
-                    mp = new;
-                    new = NULL;
-                done:
-                    kfree(new);
-                    return mp;
-                }
+                smp = get_mountpoint(source_mnt->mnt.mnt_root);
+                    --->
                 if (IS_ERR(smp))
                     return PTR_ERR(smp);
 
@@ -1148,54 +923,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
                         child_mnt->mnt_mp = mp;
                         hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
                     }
-                    commit_tree(source_mnt/*mnt*/) {
-                        struct mount *parent = mnt->mnt_parent;
-                        struct mount *m;
-                        LIST_HEAD(head);
-                        struct mnt_namespace *n = parent->mnt_ns;
-
-                        list_add_tail(&head, &mnt->mnt_list);
-                        while (!list_empty(&head)) {
-                            m = list_first_entry(&head, typeof(*m), mnt_list);
-                            list_del(&m->mnt_list);
-
-                            mnt_add_to_ns(n, m) {
-                                struct rb_node **link = &ns->mounts.rb_node;
-                                struct rb_node *parent = NULL;
-
-                                mnt->mnt_ns = ns;
-                                while (*link) {
-                                    parent = *link;
-                                    if (mnt->mnt_id_unique < node_to_mount(parent)->mnt_id_unique)
-                                        link = &parent->rb_left;
-                                    else
-                                        link = &parent->rb_right;
-                                }
-                                rb_link_node(&mnt->mnt_node, parent, link);
-                                rb_insert_color(&mnt->mnt_node, &ns->mounts);
-                                mnt->mnt.mnt_flags |= MNT_ONRB;
-                            }
-                        }
-                        n->nr_mounts += n->pending_mounts;
-                        n->pending_mounts = 0;
-
-                        __attach_mnt(mnt, parent) {
-                            hlist_add_head_rcu(
-                                &mnt->mnt_hash,
-                                m_hash(&parent->mnt, mnt->mnt_mountpoint/*dentry*/) {
-                                    unsigned long tmp = ((unsigned long)mnt / L1_CACHE_BYTES);
-                                    tmp += ((unsigned long)dentry / L1_CACHE_BYTES);
-                                    tmp = tmp + (tmp >> m_hash_shift);
-                                    return &mount_hashtable[tmp & m_hash_mask];
-                                }
-                            );
-                            list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
-                        }
-                        touch_mnt_namespace(n) {
-                            ns->event = ++event;
-                            wake_up_interruptible(&ns->poll);
-                        }
-                    }
+                    commit_tree(source_mnt/*mnt*/);
                 }
 
                 hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
@@ -1219,6 +947,145 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
     }
 
     return error;
+}
+```
+
+#### get_mountpoint
+
+```c
+static struct hlist_head *mount_hashtable __ro_after_init;
+static struct hlist_head *mountpoint_hashtable __ro_after_init;
+static struct kmem_cache *mnt_cache __ro_after_init;
+
+static int get_mountpoint(struct dentry *dentry, struct pinned_mountpoint *m) {
+    struct mountpoint *mp, *new = NULL;
+    int ret;
+
+    if (d_mountpoint(dentry) { return dentry->d_flags & DCACHE_MOUNTED; }) {
+        /* might be worth a WARN_ON() */
+        if (d_unlinked(dentry))
+            return ERR_PTR(-ENOENT);
+mountpoint:
+        read_seqlock_excl(&mount_lock);
+        mp = lookup_mountpoint(dentry) {
+            struct hlist_head *chain = mp_hash(dentry) {
+                unsigned long tmp = ((unsigned long)dentry / L1_CACHE_BYTES);
+                tmp = tmp + (tmp >> mp_hash_shift);
+                return &mountpoint_hashtable[tmp & mp_hash_mask];
+            }
+            struct mountpoint *mp;
+
+            hlist_for_each_entry(mp, chain, m_hash) {
+                if (mp->m_dentry == dentry) {
+                    hlist_add_head(&m->node, &mp->m_list);
+                    m->mp = mp;
+                    return true;
+                }
+            }
+            return NULL;
+        }
+        read_sequnlock_excl(&mount_lock);
+        if (mp)
+            goto done;
+    }
+
+    if (!new)
+        new = kmalloc(sizeof(struct mountpoint), GFP_KERNEL);
+    if (!new)
+        return ERR_PTR(-ENOMEM);
+
+
+    /* Exactly one processes may set d_mounted */
+    ret = d_set_mounted(dentry);
+
+    /* Someone else set d_mounted? */
+    if (ret == -EBUSY)
+        goto mountpoint;
+
+    /* The dentry is not available as a mountpoint? */
+    mp = ERR_PTR(ret);
+    if (ret)
+        goto done;
+
+    /* Add the new mountpoint to the hash table */
+    read_seqlock_excl(&mount_lock);
+    new->m_dentry = dget(dentry);
+    new->m_count = 1;
+    hlist_add_head(&new->m_hash, mp_hash(dentry));
+    INIT_HLIST_HEAD(&new->m_list);
+    read_sequnlock_excl(&mount_lock);
+
+    mp = new;
+    new = NULL;
+done:
+    kfree(new);
+    return mp;
+}
+```
+
+#### commit_tree
+
+```c
+static void commit_tree(struct mount *mnt) {
+    struct mnt_namespace *n = mnt->mnt_parent->mnt_ns;
+
+    if (!mnt_ns_attached(mnt)) {
+        for (struct mount *m = mnt; m; m = next_mnt(m, mnt))
+            mnt_add_to_ns(n, m);
+        n->nr_mounts += n->pending_mounts;
+        n->pending_mounts = 0;
+    }
+
+    make_visible(mnt) {
+        struct mount *parent = mnt->mnt_parent;
+        if (unlikely(mnt->mnt_mountpoint == parent->mnt.mnt_root))
+            parent->overmount = mnt;
+        hlist_add_head_rcu(&mnt->mnt_hash,
+                m_hash(&parent->mnt, mnt->mnt_mountpoint));
+        list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
+    }
+
+    touch_mnt_namespace(n) {
+        if (ns) {
+            ns->event = ++event;
+            wake_up_interruptible(&ns->poll);
+        }
+    }
+}
+
+void mnt_add_to_ns(struct mnt_namespace *ns, struct mount *mnt)
+{
+    struct rb_node **link = &ns->mounts.rb_node;
+    struct rb_node *parent = NULL;
+    bool mnt_first_node = true, mnt_last_node = true;
+
+    WARN_ON(mnt_ns_attached(mnt));
+    mnt->mnt_ns = ns;
+    while (*link) {
+        parent = *link;
+        if (mnt->mnt_id_unique < node_to_mount(parent)->mnt_id_unique) {
+            link = &parent->rb_left;
+            mnt_last_node = false;
+        } else {
+            link = &parent->rb_right;
+            mnt_first_node = false;
+        }
+    }
+
+    if (mnt_last_node)
+        ns->mnt_last_node = &mnt->mnt_node;
+    if (mnt_first_node)
+        ns->mnt_first_node = &mnt->mnt_node;
+    rb_link_node(&mnt->mnt_node, parent, link);
+    rb_insert_color(&mnt->mnt_node, &ns->mounts);
+
+    mnt_notify_add(mnt) {
+        /* Optimize the case where there are no watches */
+        if ((m->mnt_ns && m->mnt_ns->n_fsnotify_marks) || (m->prev_ns && m->prev_ns->n_fsnotify_marks))
+            list_add_tail(&m->to_notify, &notify_list);
+        else
+            m->prev_ns = m->mnt_ns;
+    }
 }
 ```
 
@@ -6039,7 +5906,7 @@ static const struct fs_context_operations ext4_context_ops = {
 
 static int ext4_get_tree(struct fs_context *fc)
 {
-  return get_tree_bdev(fc, ext4_fill_super);
+    return get_tree_bdev(fc, ext4_fill_super);
 }
 
 /* Get a superblock based on a single block device */
@@ -6047,97 +5914,101 @@ int get_tree_bdev(
   struct fs_context *fc,
   int (*fill_super)(struct super_block *, struct fs_context *))
 {
-  struct block_device *bdev;
-  struct super_block *s;
-  fmode_t mode = FMODE_READ | FMODE_EXCL;
-  int error = 0;
+    struct block_device *bdev;
+    struct super_block *s;
+    fmode_t mode = FMODE_READ | FMODE_EXCL;
+    int error = 0;
 
-  if (!(fc->sb_flags & SB_RDONLY))
-    mode |= FMODE_WRITE;
+    if (!(fc->sb_flags & SB_RDONLY))
+        mode |= FMODE_WRITE;
 
-  if (!fc->source)
-    return invalf(fc, "No source specified");
+    if (!fc->source)
+        return invalf(fc, "No source specified");
 
-  bdev = blkdev_get_by_path(fc->source, mode, fc->fs_type);
-  if (IS_ERR(bdev)) {
-    errorf(fc, "%s: Can't open blockdev", fc->source);
-    return PTR_ERR(bdev);
-  }
+    bdev = blkdev_get_by_path(fc->source, mode, fc->fs_type);
+    if (IS_ERR(bdev)) {
+        errorf(fc, "%s: Can't open blockdev", fc->source);
+        return PTR_ERR(bdev);
+    }
 
-  /* Once the superblock is inserted into the list by sget_fc(), s_umount
-   * will protect the lockfs code from trying to start a snapshot while
-   * we are mounting */
-  mutex_lock(&bdev->bd_fsfreeze_mutex);
-  if (bdev->bd_fsfreeze_count > 0) {
+    /* Once the superblock is inserted into the list by sget_fc(), s_umount
+    * will protect the lockfs code from trying to start a snapshot while
+    * we are mounting */
+    mutex_lock(&bdev->bd_fsfreeze_mutex);
+    if (bdev->bd_fsfreeze_count > 0) {
+        mutex_unlock(&bdev->bd_fsfreeze_mutex);
+        warnf(fc, "%pg: Can't mount, blockdev is frozen", bdev);
+        blkdev_put(bdev, mode);
+        return -EBUSY;
+    }
+
+    fc->sb_flags |= SB_NOSEC;
+    fc->sget_key = bdev;
+    s = sget_fc(fc, test_bdev_super_fc, set_bdev_super_fc);
     mutex_unlock(&bdev->bd_fsfreeze_mutex);
-    warnf(fc, "%pg: Can't mount, blockdev is frozen", bdev);
-    blkdev_put(bdev, mode);
-    return -EBUSY;
-  }
-
-  fc->sb_flags |= SB_NOSEC;
-  fc->sget_key = bdev;
-  s = sget_fc(fc, test_bdev_super_fc, set_bdev_super_fc);
-  mutex_unlock(&bdev->bd_fsfreeze_mutex);
-  if (IS_ERR(s)) {
-    blkdev_put(bdev, mode);
-    return PTR_ERR(s);
-  }
-
-  if (s->s_root) {
-    /* Don't summarily change the RO/RW state. */
-    if ((fc->sb_flags ^ s->s_flags) & SB_RDONLY) {
-      warnf(fc, "%pg: Can't mount, would change RO state", bdev);
-      deactivate_locked_super(s);
-      blkdev_put(bdev, mode);
-      return -EBUSY;
+    if (IS_ERR(s)) {
+        blkdev_put(bdev, mode);
+        return PTR_ERR(s);
     }
 
-    /* s_umount nests inside open_mutex during
-     * __invalidate_device().  blkdev_put() acquires
-     * open_mutex and can't be called under s_umount.  Drop
-     * s_umount temporarily.  This is safe as we're
-     * holding an active reference. */
-    up_write(&s->s_umount);
-    blkdev_put(bdev, mode);
-    down_write(&s->s_umount);
-  } else {
-    s->s_mode = mode;
-    snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
-    shrinker_debugfs_rename(&s->s_shrink, "sb-%s:%s", fc->fs_type->name, s->s_id);
-    sb_set_blocksize(s, block_size(bdev));
-    error = fill_super(s, fc);
-    if (error) {
-      deactivate_locked_super(s);
-      return error;
+    if (s->s_root) {
+        /* Don't summarily change the RO/RW state. */
+        if ((fc->sb_flags ^ s->s_flags) & SB_RDONLY) {
+            warnf(fc, "%pg: Can't mount, would change RO state", bdev);
+            deactivate_locked_super(s);
+            blkdev_put(bdev, mode);
+            return -EBUSY;
+        }
+
+        /* s_umount nests inside open_mutex during
+        * __invalidate_device().  blkdev_put() acquires
+        * open_mutex and can't be called under s_umount.  Drop
+        * s_umount temporarily.  This is safe as we're
+        * holding an active reference. */
+        up_write(&s->s_umount);
+        blkdev_put(bdev, mode);
+        down_write(&s->s_umount);
+    } else {
+        s->s_mode = mode;
+        snprintf(s->s_id, sizeof(s->s_id), "%pg", bdev);
+        shrinker_debugfs_rename(&s->s_shrink, "sb-%s:%s", fc->fs_type->name, s->s_id);
+        sb_set_blocksize(s, block_size(bdev));
+        error = fill_super(s, fc);
+        if (error) {
+            deactivate_locked_super(s);
+            return error;
+        }
+
+        s->s_flags |= SB_ACTIVE;
+        bdev->bd_super = s;
     }
 
-    s->s_flags |= SB_ACTIVE;
-    bdev->bd_super = s;
-  }
-
-  BUG_ON(fc->root);
-  fc->root = dget(s->s_root);
-  return 0;
+    BUG_ON(fc->root);
+    fc->root = dget(s->s_root);
+    return 0;
 }
+```
 
+##### blkdev_get_by_path
+
+```c
 struct block_device *blkdev_get_by_path(const char *path, fmode_t mode, void *holder)
 {
-  struct block_device *bdev;
-  dev_t dev;
-  int error;
+    struct block_device *bdev;
+    dev_t dev;
+    int error;
 
-  error = lookup_bdev(path, &dev);
-  if (error)
-    return ERR_PTR(error);
+    error = lookup_bdev(path, &dev);
+    if (error)
+        return ERR_PTR(error);
 
-  bdev = blkdev_get_by_dev(dev, mode, holder);
-  if (!IS_ERR(bdev) && (mode & FMODE_WRITE) && bdev_read_only(bdev)) {
-    blkdev_put(bdev, mode);
-    return ERR_PTR(-EACCES);
-  }
+    bdev = blkdev_get_by_dev(dev, mode, holder);
+    if (!IS_ERR(bdev) && (mode & FMODE_WRITE) && bdev_read_only(bdev)) {
+        blkdev_put(bdev, mode);
+        return ERR_PTR(-EACCES);
+    }
 
-  return bdev;
+    return bdev;
 }
 
 /* Look up a struct block_device by name. */
@@ -6289,62 +6160,71 @@ int blkdev_get_whole(struct block_device *bdev, fmode_t mode)
   atomic_inc(&bdev->bd_openers);
   return 0;
 }
+```
 
+##### sget_fc
+
+```c
 /* Find or create a superblock */
 struct super_block *sget_fc(struct fs_context *fc,
     int (*test)(struct super_block *, struct fs_context *),
     int (*set)(struct super_block *, struct fs_context *))
 {
-  struct super_block *s = NULL;
-  struct super_block *old;
-  struct user_namespace *user_ns = fc->global ? &init_user_ns : fc->user_ns;
-  int err;
+    struct super_block *s = NULL;
+    struct super_block *old;
+    struct user_namespace *user_ns = fc->global ? &init_user_ns : fc->user_ns;
+    int err;
+
+    if (user_ns != &init_user_ns && !(fc->fs_type->fs_flags & FS_USERNS_MOUNT)) {
+        errorfc(fc, "VFS: Mounting from non-initial user namespace is not allowed");
+        return ERR_PTR(-EPERM);
+    }
 
 retry:
-  spin_lock(&sb_lock);
-  if (test) {
-    hlist_for_each_entry(old, &fc->fs_type->fs_supers, s_instances) {
-      if (test(old, fc))
-        goto share_extant_sb;
+    spin_lock(&sb_lock);
+    if (test) {
+        hlist_for_each_entry(old, &fc->fs_type->fs_supers, s_instances) {
+            if (test(old, fc))
+                goto share_extant_sb;
+        }
     }
-  }
-  if (!s) {
-    spin_unlock(&sb_lock);
-    s = alloc_super(fc->fs_type, fc->sb_flags, user_ns);
-    if (!s)
-      return ERR_PTR(-ENOMEM);
-    goto retry;
-  }
+    if (!s) {
+        spin_unlock(&sb_lock);
+        s = alloc_super(fc->fs_type, fc->sb_flags, user_ns);
+        if (!s)
+        return ERR_PTR(-ENOMEM);
+        goto retry;
+    }
 
-  s->s_fs_info = fc->s_fs_info;
-  err = set(s, fc);
-  if (err) {
-    s->s_fs_info = NULL;
+    s->s_fs_info = fc->s_fs_info;
+    err = set(s, fc);
+    if (err) {
+        s->s_fs_info = NULL;
+        spin_unlock(&sb_lock);
+        destroy_unused_super(s);
+        return ERR_PTR(err);
+    }
+    fc->s_fs_info = NULL;
+    s->s_type = fc->fs_type;
+    s->s_iflags |= fc->s_iflags;
+    strlcpy(s->s_id, s->s_type->name, sizeof(s->s_id));
+    list_add_tail(&s->s_list, &super_blocks); /* add to global super block */
+    hlist_add_head(&s->s_instances, &s->s_type->fs_supers);
     spin_unlock(&sb_lock);
-    destroy_unused_super(s);
-    return ERR_PTR(err);
-  }
-  fc->s_fs_info = NULL;
-  s->s_type = fc->fs_type;
-  s->s_iflags |= fc->s_iflags;
-  strlcpy(s->s_id, s->s_type->name, sizeof(s->s_id));
-  list_add_tail(&s->s_list, &super_blocks); /* add to global super block */
-  hlist_add_head(&s->s_instances, &s->s_type->fs_supers);
-  spin_unlock(&sb_lock);
-  get_filesystem(s->s_type);
-  register_shrinker_prepared(&s->s_shrink);
-  return s;
+    get_filesystem(s->s_type);
+    shrinker_register(s->s_shrink);
+    return s;
 
 share_extant_sb:
-  if (user_ns != old->s_user_ns) {
-    spin_unlock(&sb_lock);
+    if (user_ns != old->s_user_ns) {
+        spin_unlock(&sb_lock);
+        destroy_unused_super(s);
+        return ERR_PTR(-EBUSY);
+    }
+    if (!grab_super(old))
+        goto retry;
     destroy_unused_super(s);
-    return ERR_PTR(-EBUSY);
-  }
-  if (!grab_super(old))
-    goto retry;
-  destroy_unused_super(s);
-  return old;
+    return old;
 }
 ```
 
@@ -10831,6 +10711,72 @@ MADV_DONTNEED | Data will not be needed again (no need to cache).
 
 # FS
 
+## core
+
+### iget_locked
+
+```cstruct inode *iget_locked(struct super_block *sb, unsigned long ino)
+{
+    struct hlist_head *head = inode_hashtable + hash(sb, ino);
+    struct inode *inode;
+    bool isnew;
+
+    might_sleep();
+
+again:
+    inode = find_inode_fast(sb, head, ino, false, &isnew);
+    if (inode) {
+        if (IS_ERR(inode))
+            return NULL;
+        if (unlikely(isnew))
+            wait_on_new_inode(inode);
+        if (unlikely(inode_unhashed(inode))) {
+            iput(inode);
+            goto again;
+        }
+        return inode;
+    }
+
+    inode = alloc_inode(sb);
+    if (inode) {
+        struct inode *old;
+
+        spin_lock(&inode_hash_lock);
+        /* We released the lock, so.. */
+        old = find_inode_fast(sb, head, ino, true, &isnew);
+        if (!old) {
+            inode->i_ino = ino;
+            spin_lock(&inode->i_lock);
+            inode_state_assign(inode, I_NEW);
+            hlist_add_head_rcu(&inode->i_hash, head);
+            spin_unlock(&inode->i_lock);
+            spin_unlock(&inode_hash_lock);
+            inode_sb_list_add(inode);
+
+            /* Return the locked inode with I_NEW set, the
+             * caller is responsible for filling in the contents */
+            return inode;
+        }
+
+        /* Uhhuh, somebody else created the same inode under
+         * us. Use the old inode instead of the one we just
+         * allocated. */
+        spin_unlock(&inode_hash_lock);
+        destroy_inode(inode);
+        if (IS_ERR(old))
+            return NULL;
+        inode = old;
+        if (unlikely(isnew))
+            wait_on_new_inode(inode);
+        if (unlikely(inode_unhashed(inode))) {
+            iput(inode);
+            goto again;
+        }
+    }
+    return inode;
+}
+```
+
 ## overlay
 
 ```c
@@ -12174,6 +12120,756 @@ done:
 }
 ```
 
+
+## kobject
+
+```c
+/* /sys/fs */
+struct kobject *fs_kobj __ro_after_init;
+EXPORT_SYMBOL_GPL(fs_kobj);
+
+/* /sys/kernel/sched_ext interface */
+static struct kset *scx_kset;
+
+struct kset {
+    struct list_head        list;
+    spinlock_t              list_lock;
+    struct kobject          kobj;
+    const struct kset_uevent_ops *uevent_ops;
+};
+
+struct kobject {
+    const char              *name;
+    struct list_head        entry;
+    struct kobject          *parent;
+    struct kset             *kset;
+    const struct kobj_type  *ktype;
+    struct kernfs_node      *sd; /* sysfs directory entry */
+    struct kref             kref;
+
+    unsigned int state_initialized:1;
+    unsigned int state_in_sysfs:1;
+    unsigned int state_add_uevent_sent:1;
+    unsigned int state_remove_uevent_sent:1;
+    unsigned int uevent_suppress:1;
+
+#ifdef CONFIG_DEBUG_KOBJECT_RELEASE
+    struct delayed_work    release;
+#endif
+};
+
+struct kobj_type {
+    void (*release)(struct kobject *kobj);
+    const struct sysfs_ops *sysfs_ops;
+    const struct attribute_group **default_groups;
+    const struct kobj_ns_type_operations *(*child_ns_type)(const struct kobject *kobj);
+    const void *(*namespace)(const struct kobject *kobj);
+    void (*get_ownership)(const struct kobject *kobj, kuid_t *uid, kgid_t *gid);
+};
+```
+
+### kobject_init_and_add
+
+```sh
+object_init_and_add(kobj, ktype, ...)
+       |
+       ▼
+sysfs_create_file(kobj, attr)
+       |
+       ▼
+kernfs_create_file(parent_kn, name, &sysfs_file_kfops_ro, ...)
+       |
+       ▼
+kernfs allocates kernfs_node, hooks it into the filesystem tree
+```
+
+```c
+int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
+             struct kobject *parent, const char *fmt, ...)
+{
+    va_list args;
+    int retval;
+
+    kobject_init(kobj, ktype);
+
+    va_start(args, fmt);
+    retval = kobject_add_varg(kobj, parent, fmt, args);
+    va_end(args);
+
+    return retval;
+}
+
+void kobject_init(struct kobject *kobj, const struct kobj_type *ktype)
+{
+    char *err_str;
+
+    if (!kobj) {
+        err_str = "invalid kobject pointer!";
+        goto error;
+    }
+    if (!ktype) {
+        err_str = "must have a ktype to be initialized properly!\n";
+        goto error;
+    }
+    if (kobj->state_initialized) {
+        /* do not error out as sometimes we can recover */
+        pr_err("kobject (%p): tried to init an initialized object, something is seriously wrong.\n",
+               kobj);
+        dump_stack_lvl(KERN_ERR);
+    }
+
+    kobject_init_internal(kobj) {
+        if (!kobj)
+            return;
+        kref_init(&kobj->kref);
+        INIT_LIST_HEAD(&kobj->entry);
+        kobj->state_in_sysfs = 0;
+        kobj->state_add_uevent_sent = 0;
+        kobj->state_remove_uevent_sent = 0;
+        kobj->state_initialized = 1;
+    }
+    kobj->ktype = ktype;
+    return;
+
+error:
+    pr_err("kobject (%p): %s\n", kobj, err_str);
+    dump_stack_lvl(KERN_ERR);
+}
+EXPORT_SYMBOL(kobject_init);
+```
+
+```c
+int kobject_add(struct kobject *kobj, struct kobject *parent,
+        const char *fmt, ...)
+{
+    va_list args;
+    int retval;
+
+    if (!kobj)
+        return -EINVAL;
+
+    if (!kobj->state_initialized) {
+        pr_err("kobject '%s' (%p): tried to add an uninitialized object, something is seriously wrong.\n",
+               kobject_name(kobj), kobj);
+        dump_stack_lvl(KERN_ERR);
+        return -EINVAL;
+    }
+    va_start(args, fmt);
+    retval = kobject_add_varg(kobj, parent, fmt, args);
+    va_end(args);
+
+    return retval;
+}
+
+static __printf(3, 0) int kobject_add_varg(
+    struct kobject *kobj,
+    struct kobject *parent,
+    const char *fmt, va_list vargs)
+{
+    int retval;
+
+    retval = kobject_set_name_vargs(kobj, fmt, vargs);
+    if (retval) {
+        pr_err("can not set name properly!\n");
+        return retval;
+    }
+    kobj->parent = parent;
+    return kobject_add_internal(kobj) {
+        int error = 0;
+        struct kobject *parent;
+
+        if (!kobj)
+            return -ENOENT;
+
+        if (!kobj->name || !kobj->name[0]) {
+            WARN(1,
+                "kobject: (%p): attempted to be registered with empty name!\n",
+                kobj);
+            return -EINVAL;
+        }
+
+        parent = kobject_get(kobj->parent);
+
+        /* join kset if set, use it as parent if we do not already have one */
+        if (kobj->kset) {
+            if (!parent)
+                parent = kobject_get(&kobj->kset->kobj);
+            kobj_kset_join(kobj) {
+                if (!kobj->kset)
+                    return;
+
+                kset_get(kobj->kset);
+                spin_lock(&kobj->kset->list_lock);
+                list_add_tail(&kobj->entry, &kobj->kset->list);
+                spin_unlock(&kobj->kset->list_lock);
+            }
+            kobj->parent = parent;
+        }
+
+        pr_debug("'%s' (%p): %s: parent: '%s', set: '%s'\n",
+            kobject_name(kobj), kobj, __func__,
+            parent ? kobject_name(parent) : "<NULL>",
+            kobj->kset ? kobject_name(&kobj->kset->kobj) : "<NULL>");
+
+        error = create_dir(kobj);
+        if (error) {
+            kobj_kset_leave(kobj);
+            kobject_put(parent);
+            kobj->parent = NULL;
+
+            /* be noisy on error issues */
+            if (error == -EEXIST)
+                pr_err("%s failed for %s with -EEXIST, don't try to register things with the same name in the same directory.\n",
+                    __func__, kobject_name(kobj));
+            else
+                pr_err("%s failed for %s (error: %d parent: %s)\n",
+                    __func__, kobject_name(kobj), error,
+                    parent ? kobject_name(parent) : "'none'");
+        } else
+            kobj->state_in_sysfs = 1;
+
+        return error;
+    }
+}
+
+int create_dir(struct kobject *kobj)
+{
+    const struct kobj_type *ktype = get_ktype(kobj);
+    const struct kobj_ns_type_operations *ops;
+    int error;
+
+    error = sysfs_create_dir_ns(kobj, kobject_namespace(kobj));
+    if (error)
+        return error;
+
+    if (ktype) {
+        error = sysfs_create_groups(kobj, ktype->default_groups);
+        if (error) {
+            sysfs_remove_dir(kobj);
+            return error;
+        }
+    }
+
+    /* @kobj->sd may be deleted by an ancestor going away.  Hold an
+     * extra reference so that it stays until @kobj is gone. */
+    sysfs_get(kobj->sd);
+
+    /* If @kobj has ns_ops, its children need to be filtered based on
+     * their namespace tags.  Enable namespace support on @kobj->sd. */
+    ops = kobj_child_ns_ops(kobj) {
+        const struct kobj_ns_type_operations *ops = NULL;
+
+        if (parent && parent->ktype && parent->ktype->child_ns_type)
+            ops = parent->ktype->child_ns_type(parent);
+
+        return ops;
+    }
+    if (ops) {
+        BUG_ON(!kobj_ns_type_is_valid(ops->type));
+        BUG_ON(!kobj_ns_type_registered(ops->type));
+
+        sysfs_enable_ns(kobj->sd);
+    }
+
+    return 0;
+}
+```
+
+### kobject_create_and_add
+
+```c
+struct kobject *kobject_create_and_add(const char *name, struct kobject *parent)
+{
+    struct kobject *kobj;
+    int retval;
+
+    kobj = kobject_create();
+    if (!kobj)
+        return NULL;
+
+    retval = kobject_add(kobj, parent, "%s", name);
+    if (retval) {
+        pr_warn("%s: kobject_add error: %d\n", __func__, retval);
+        kobject_put(kobj);
+        kobj = NULL;
+    }
+    return kobj;
+}
+```
+
+### kobject_move
+
+```c
+int kobject_move(struct kobject *kobj, struct kobject *new_parent)
+{
+    int error;
+    struct kobject *old_parent;
+    const char *devpath = NULL;
+    char *devpath_string = NULL;
+    char *envp[2];
+
+    kobj = kobject_get(kobj);
+    if (!kobj)
+        return -EINVAL;
+    new_parent = kobject_get(new_parent);
+    if (!new_parent) {
+        if (kobj->kset)
+            new_parent = kobject_get(&kobj->kset->kobj);
+    }
+
+    /* old object path */
+    devpath = kobject_get_path(kobj, GFP_KERNEL);
+    if (!devpath) {
+        error = -ENOMEM;
+        goto out;
+    }
+    devpath_string = kmalloc(strlen(devpath) + 15, GFP_KERNEL);
+    if (!devpath_string) {
+        error = -ENOMEM;
+        goto out;
+    }
+    sprintf(devpath_string, "DEVPATH_OLD=%s", devpath);
+    envp[0] = devpath_string;
+    envp[1] = NULL;
+    error = sysfs_move_dir_ns(kobj, new_parent, kobject_namespace(kobj));
+    if (error)
+        goto out;
+    old_parent = kobj->parent;
+    kobj->parent = new_parent;
+    new_parent = NULL;
+    kobject_put(old_parent);
+    kobject_uevent_env(kobj, KOBJ_MOVE, envp);
+out:
+    kobject_put(new_parent);
+    kobject_put(kobj);
+    kfree(devpath_string);
+    kfree(devpath);
+    return error;
+}
+```
+
+### kobject_del
+
+```c
+void kobject_del(struct kobject *kobj)
+{
+    struct kobject *parent;
+
+    if (!kobj)
+        return;
+
+    parent = kobj->parent;
+    __kobject_del(kobj);
+    kobject_put(parent);
+}
+```
+
+## sysfs
+
+| Step | Layer | Function |
+|------|-------|----------|
+| 1 | VFS | `vfs_read()` → `file->f_op->read_iter()` |
+| 2 | kernfs | `kernfs_fop_read_iter()` → `kernfs_seq_show()` |
+| 3 | sysfs | `sysfs_kf_seq_show()` → `sysfs_ops->show()` |
+| 4 | kobject/driver | `my_show(kobj, attr, buf)` fills buffer |
+| 5 | return | buffer copied back to userspace |
+
+### sysfs_init
+
+```c
+int __init sysfs_init(void)
+{
+    int err;
+
+    sysfs_root = kernfs_create_root(NULL, KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK, NULL);
+    if (IS_ERR(sysfs_root))
+        return PTR_ERR(sysfs_root);
+
+    sysfs_root_kn = kernfs_root_to_node(sysfs_root);
+
+    err = register_filesystem(&sysfs_fs_type);
+    if (err) {
+        kernfs_destroy_root(sysfs_root);
+        return err;
+    }
+
+    return 0;
+}
+
+static struct file_system_type sysfs_fs_type = {
+    .name               = "sysfs",
+    .init_fs_context    = sysfs_init_fs_context,
+    .kill_sb            = sysfs_kill_sb,
+    .fs_flags           = FS_USERNS_MOUNT,
+};
+
+int sysfs_init_fs_context(struct fs_context *fc)
+{
+    struct kernfs_fs_context *kfc;
+    struct net *netns;
+
+    if (!(fc->sb_flags & SB_KERNMOUNT)) {
+        if (!kobj_ns_current_may_mount(KOBJ_NS_TYPE_NET))
+            return -EPERM;
+    }
+
+    kfc = kzalloc(sizeof(struct kernfs_fs_context), GFP_KERNEL);
+    if (!kfc)
+        return -ENOMEM;
+
+    kfc->ns_tag = netns = kobj_ns_grab_current(KOBJ_NS_TYPE_NET);
+    kfc->root = sysfs_root;
+    kfc->magic = SYSFS_MAGIC;
+    fc->fs_private = kfc;
+    fc->ops = &sysfs_fs_context_ops;
+    if (netns) {
+        put_user_ns(fc->user_ns);
+        fc->user_ns = get_user_ns(netns->user_ns);
+    }
+    fc->global = true;
+    return 0;
+}
+
+static const struct fs_context_operations sysfs_fs_context_ops = {
+    .free        = sysfs_fs_context_free,
+    .get_tree    = sysfs_get_tree,
+};
+```
+
+### sysfs_create_dir_ns
+
+```c
+int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
+{
+    struct kernfs_node *parent, *kn;
+    kuid_t uid;
+    kgid_t gid;
+
+    if (WARN_ON(!kobj))
+        return -EINVAL;
+
+    if (kobj->parent)
+        parent = kobj->parent->sd;
+    else
+        parent = sysfs_root_kn;
+
+    if (!parent)
+        return -ENOENT;
+
+    kobject_get_ownership(kobj, &uid, &gid);
+
+    kn = kernfs_create_dir_ns(parent, kobject_name(kobj), 0755, uid, gid, kobj, ns);
+    if (IS_ERR(kn)) {
+        if (PTR_ERR(kn) == -EEXIST)
+            sysfs_warn_dup(parent, kobject_name(kobj));
+        return PTR_ERR(kn);
+    }
+
+    kobj->sd = kn;
+    return 0;
+}
+```
+
+### sysfs_create_groups
+
+```c
+int sysfs_create_groups(struct kobject *kobj,
+            const struct attribute_group **groups)
+{
+    return internal_create_groups(kobj, 0, groups);
+}
+
+int internal_create_groups(struct kobject *kobj, int update,
+                  const struct attribute_group **groups)
+{
+    int error = 0;
+    int i;
+
+    if (!groups)
+        return 0;
+
+    for (i = 0; groups[i]; i++) {
+        error = internal_create_group(kobj, update, groups[i]);
+        if (error) {
+            while (--i >= 0)
+                sysfs_remove_group(kobj, groups[i]);
+            break;
+        }
+    }
+    return error;
+}
+
+int internal_create_group(struct kobject *kobj, int update,
+    const struct attribute_group *grp)
+{
+    struct kernfs_node *kn;
+    kuid_t uid;
+    kgid_t gid;
+    int error;
+
+    if (WARN_ON(!kobj || (!update && !kobj->sd)))
+        return -EINVAL;
+
+    /* Updates may happen before the object has been instantiated */
+    if (unlikely(update && !kobj->sd))
+        return -EINVAL;
+
+    if (!grp->attrs && !grp->bin_attrs) {
+        pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
+             kobj->name, grp->name ?: "");
+        return 0;
+    }
+
+    kobject_get_ownership(kobj, &uid, &gid);
+    if (grp->name) {
+        umode_t mode = __first_visible(grp, kobj) {
+            if (grp->attrs && grp->attrs[0] && grp->is_visible)
+                return grp->is_visible(kobj, grp->attrs[0], 0);
+
+            if (grp->attrs && grp->attrs[0] && grp->is_visible_const)
+                return grp->is_visible_const(kobj, grp->attrs[0], 0);
+
+            if (grp->bin_attrs && grp->bin_attrs[0] && grp->is_bin_visible)
+                return grp->is_bin_visible(kobj, grp->bin_attrs[0], 0);
+
+            return 0;
+        }
+
+        if (mode & SYSFS_GROUP_INVISIBLE)
+            mode = 0;
+        else
+            mode = S_IRWXU | S_IRUGO | S_IXUGO;
+
+        if (update) {
+            kn = kernfs_find_and_get(kobj->sd, grp->name);
+            if (!kn) {
+                pr_debug("attr grp %s/%s not created yet\n",
+                     kobj->name, grp->name);
+                /* may have been invisible prior to this update */
+                update = 0;
+            } else if (!mode) {
+                sysfs_remove_group(kobj, grp);
+                kernfs_put(kn);
+                return 0;
+            }
+        }
+
+        if (!update) {
+            if (!mode)
+                return 0;
+            kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode, uid, gid, kobj, NULL);
+            if (IS_ERR(kn)) {
+                if (PTR_ERR(kn) == -EEXIST)
+                    sysfs_warn_dup(kobj->sd, grp->name);
+                return PTR_ERR(kn);
+            }
+        }
+    } else {
+        kn = kobj->sd;
+    }
+
+    kernfs_get(kn);
+    error = create_files(kn, kobj, uid, gid, grp, update);
+    if (error) {
+        if (grp->name)
+            kernfs_remove(kn);
+    }
+    kernfs_put(kn);
+
+    if (grp->name && update)
+        kernfs_put(kn);
+
+    return error;
+}
+
+int create_files(struct kernfs_node *parent, struct kobject *kobj,
+            kuid_t uid, kgid_t gid,
+            const struct attribute_group *grp, int update)
+{
+    struct attribute *const *attr;
+    const struct bin_attribute *const *bin_attr;
+    int error = 0, i;
+
+    if (grp->attrs) {
+        for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) {
+            umode_t mode = (*attr)->mode;
+
+            /* In update mode, we're changing the permissions or
+             * visibility.  Do this by first removing then
+             * re-adding (if required) the file. */
+            if (update)
+                kernfs_remove_by_name(parent, (*attr)->name);
+            if (grp->is_visible || grp->is_visible_const) {
+                if (grp->is_visible)
+                    mode = grp->is_visible(kobj, *attr, i);
+                else
+                    mode = grp->is_visible_const(kobj, *attr, i);
+                mode &= ~SYSFS_GROUP_INVISIBLE;
+                if (!mode)
+                    continue;
+            }
+
+            WARN(mode & ~(SYSFS_PREALLOC | 0664),
+                 "Attribute %s: Invalid permissions 0%o\n",
+                 (*attr)->name, mode);
+
+            mode &= SYSFS_PREALLOC | 0664;
+            error = sysfs_add_file_mode_ns(parent, *attr, mode, uid, gid, NULL);
+            if (unlikely(error))
+                break;
+        }
+        if (error) {
+            remove_files(parent, grp);
+            goto exit;
+        }
+    }
+
+    if (grp->bin_attrs) {
+        for (i = 0, bin_attr = grp->bin_attrs; *bin_attr; i++, bin_attr++) {
+            umode_t mode = (*bin_attr)->attr.mode;
+            size_t size = (*bin_attr)->size;
+
+            if (update)
+                kernfs_remove_by_name(parent, (*bin_attr)->attr.name);
+            if (grp->is_bin_visible) {
+                mode = grp->is_bin_visible(kobj, *bin_attr, i);
+                mode &= ~SYSFS_GROUP_INVISIBLE;
+                if (!mode)
+                    continue;
+            }
+            if (grp->bin_size)
+                size = grp->bin_size(kobj, *bin_attr, i);
+
+            WARN(mode & ~(SYSFS_PREALLOC | 0664),
+                 "Attribute %s: Invalid permissions 0%o\n",
+                 (*bin_attr)->attr.name, mode);
+
+            mode &= SYSFS_PREALLOC | 0664;
+            error = sysfs_add_bin_file_mode_ns(parent, *bin_attr, mode, size, uid, gid, NULL);
+            if (error)
+                break;
+        }
+        if (error)
+            remove_files(parent, grp);
+    }
+exit:
+    return error;
+}
+```
+
+### sysfs_add_file_mode_ns
+
+```c
+static const struct kernfs_ops sysfs_file_kfops_rw = {
+    .seq_show       = sysfs_kf_seq_show,
+    .write          = sysfs_kf_write,
+};
+
+int sysfs_add_file_mode_ns(struct kernfs_node *parent,
+        const struct attribute *attr, umode_t mode, kuid_t uid,
+        kgid_t gid, const void *ns)
+{
+    struct kobject *kobj = parent->priv;
+    const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
+    struct lock_class_key *key = NULL;
+    const struct kernfs_ops *ops = NULL;
+    struct kernfs_node *kn;
+
+    /* every kobject with an attribute needs a ktype assigned */
+    if (WARN(!sysfs_ops, KERN_ERR
+            "missing sysfs attribute operations for kobject: %s\n",
+            kobject_name(kobj)))
+        return -EINVAL;
+
+    if (mode & SYSFS_PREALLOC) {
+        if (sysfs_ops->show && sysfs_ops->store)
+            ops = &sysfs_prealloc_kfops_rw;
+        else if (sysfs_ops->show)
+            ops = &sysfs_prealloc_kfops_ro;
+        else if (sysfs_ops->store)
+            ops = &sysfs_prealloc_kfops_wo;
+    } else {
+        if (sysfs_ops->show && sysfs_ops->store)
+            ops = &sysfs_file_kfops_rw;
+        else if (sysfs_ops->show)
+            ops = &sysfs_file_kfops_ro;
+        else if (sysfs_ops->store)
+            ops = &sysfs_file_kfops_wo;
+    }
+
+    if (!ops)
+        ops = &sysfs_file_kfops_empty;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    if (!attr->ignore_lockdep)
+        key = attr->key ?: (struct lock_class_key *)&attr->skey;
+#endif
+
+    kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid, PAGE_SIZE, ops, (void *)attr, ns, key);
+    if (IS_ERR(kn)) {
+        if (PTR_ERR(kn) == -EEXIST)
+            sysfs_warn_dup(parent, attr->name);
+        return PTR_ERR(kn);
+    }
+    return 0;
+}
+```
+
+### sysfs_add_bin_file_mode_ns
+
+
+### sysfs_merge_group
+
+```c
+int sysfs_merge_group(struct kobject *kobj,
+               const struct attribute_group *grp)
+{
+    struct kernfs_node *parent;
+    kuid_t uid;
+    kgid_t gid;
+    int error = 0;
+    struct attribute *const *attr;
+    int i;
+
+    parent = kernfs_find_and_get(kobj->sd, grp->name);
+    if (!parent)
+        return -ENOENT;
+
+    kobject_get_ownership(kobj, &uid, &gid);
+
+    for ((i = 0, attr = grp->attrs); *attr && !error; (++i, ++attr))
+        error = sysfs_add_file_mode_ns(parent, *attr, (*attr)->mode,
+                           uid, gid, NULL);
+    if (error) {
+        while (--i >= 0)
+            kernfs_remove_by_name(parent, (*--attr)->name);
+    }
+    kernfs_put(parent);
+
+    return error;
+}
+```
+
+### sysfs_add_link_to_group
+
+```c
+int sysfs_add_link_to_group(struct kobject *kobj, const char *group_name,
+                struct kobject *target, const char *link_name)
+{
+    struct kernfs_node *parent;
+    int error = 0;
+
+    parent = kernfs_find_and_get(kobj->sd, group_name);
+    if (!parent)
+        return -ENOENT;
+
+    error = sysfs_create_link_sd(parent, target, link_name);
+    kernfs_put(parent);
+
+    return error;
+}
+```
+
 ## kernfs
 
 ```c
@@ -12271,26 +12967,6 @@ struct kernfs_open_node {
 };
 ```
 
-```c
-int __init sysfs_init(void)
-{
-    int err;
-
-    sysfs_root = kernfs_create_root(NULL, KERNFS_ROOT_EXTRA_OPEN_PERM_CHECK, NULL);
-    if (IS_ERR(sysfs_root))
-        return PTR_ERR(sysfs_root);
-
-    sysfs_root_kn = kernfs_root_to_node(sysfs_root);
-
-    err = register_filesystem(&sysfs_fs_type);
-    if (err) {
-        kernfs_destroy_root(sysfs_root);
-        return err;
-    }
-
-    return 0;
-}
-```
 ### kernfs_create_root
 
 ```c
@@ -12599,9 +13275,91 @@ struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
 
 ### kernfs_create_link
 
-### kernfs_mount
+```c
+struct kernfs_node *kernfs_create_link(
+    struct kernfs_node *parent,
+    const char *name,
+    struct kernfs_node *target)
+{
+    struct kernfs_node *kn;
+    int error;
+    kuid_t uid = GLOBAL_ROOT_UID;
+    kgid_t gid = GLOBAL_ROOT_GID;
+
+    if (target->iattr) {
+        uid = target->iattr->ia_uid;
+        gid = target->iattr->ia_gid;
+    }
+
+    kn = kernfs_new_node(parent, name, S_IFLNK|0777, uid, gid, KERNFS_LINK);
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    if (kernfs_ns_enabled(parent))
+        kn->ns = target->ns;
+    kn->symlink.target_kn = target;
+    kernfs_get(target);    /* ref owned by symlink */
+
+    error = kernfs_add_one(kn);
+    if (!error)
+        return kn;
+
+    kernfs_put(kn);
+    return ERR_PTR(error);
+}
+```
 
 ### kernfs_find_and_get_ns
+
+```c
+static inline struct kernfs_node *
+kernfs_find_and_get(struct kernfs_node *kn, const char *name)
+{
+    return kernfs_find_and_get_ns(kn, name, NULL);
+}
+
+struct kernfs_node *kernfs_find_and_get_ns(struct kernfs_node *parent,
+                       const char *name, const void *ns)
+{
+    struct kernfs_node *kn;
+    struct kernfs_root *root = kernfs_root(parent);
+
+    down_read(&root->kernfs_rwsem);
+    kn = kernfs_find_ns(parent, name, ns) {
+        struct rb_node *node = parent->dir.children.rb_node;
+        bool has_ns = kernfs_ns_enabled(parent);
+        unsigned int hash;
+
+        lockdep_assert_held(&kernfs_root(parent)->kernfs_rwsem);
+
+        if (has_ns != (bool)ns) {
+            WARN(1, KERN_WARNING "kernfs: ns %s in '%s' for '%s'\n",
+                has_ns ? "required" : "invalid", kernfs_rcu_name(parent), name);
+            return NULL;
+        }
+
+        hash = kernfs_name_hash(name, ns);
+        while (node) {
+            struct kernfs_node *kn;
+            int result;
+
+            kn = rb_to_kn(node);
+            result = kernfs_name_compare(hash, name, ns, kn);
+            if (result < 0)
+                node = node->rb_left;
+            else if (result > 0)
+                node = node->rb_right;
+            else
+                return kn;
+        }
+        return NULL;
+    }
+    kernfs_get(kn);
+    up_read(&root->kernfs_rwsem);
+
+    return kn;
+}
+```
 
 ### kernfs_activate
 
@@ -12884,5 +13642,406 @@ ssize_t kernfs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
     else
         kfree(buf);
     return len;
+}
+```
+
+### kern_mount
+
+```c
+struct vfsmount *kern_mount(struct file_system_type *type)
+{
+    struct vfsmount *mnt;
+    mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
+    if (!IS_ERR(mnt)) {
+        /* it is a longterm mount, don't release mnt until
+         * we unmount before file sys is unregistered */
+        real_mount(mnt)->mnt_ns = MNT_NS_INTERNAL;
+    }
+    return mnt;
+}
+
+struct vfsmount *vfs_kern_mount(struct file_system_type *type,
+                int flags, const char *name,
+                void *data)
+{
+    struct fs_context *fc;
+    struct vfsmount *mnt;
+    int ret = 0;
+
+    fc = fs_context_for_mount(type, flags);
+        --->
+    if (name)
+        ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
+    if (!ret)
+        ret = parse_monolithic_mount_data(fc, data);
+
+    if (!ret) {
+        mnt = fc_mount(fc) {
+            int err = vfs_get_tree(fc);
+            if (!err) {
+                up_write(&fc->root->d_sb->s_umount);
+                return vfs_create_mount(fc);
+            }
+            return ERR_PTR(err);
+        }
+    } else {
+        mnt = ERR_PTR(ret);
+    }
+
+    put_fs_context(fc);
+    return mnt;
+}
+```
+
+### kernfs_get_tree
+
+```c
+int kernfs_get_tree(struct fs_context *fc)
+{
+    struct kernfs_fs_context *kfc = fc->fs_private;
+    struct super_block *sb;
+    struct kernfs_super_info *info;
+    int error;
+
+    info = kzalloc(sizeof(*info), GFP_KERNEL);
+
+    info->root = kfc->root;
+    info->ns = kfc->ns_tag;
+    INIT_LIST_HEAD(&info->node);
+
+    fc->s_fs_info = info;
+    sb = sget_fc(fc, kernfs_test_super, kernfs_set_super);
+
+    if (!sb->s_root) {
+        struct kernfs_super_info *info = kernfs_info(sb) {
+            return sb->s_fs_info;
+        }
+        struct kernfs_root *root = kfc->root;
+
+        kfc->new_sb_created = true;
+
+        error = kernfs_fill_super(sb, kfc) {
+            struct kernfs_super_info *info = kernfs_info(sb);
+            struct kernfs_root *kf_root = kfc->root;
+            struct inode *inode;
+            struct dentry *root;
+
+            info->sb = sb;
+            /* Userspace would break if executables or devices appear on sysfs */
+            sb->s_iflags |= SB_I_NOEXEC | SB_I_NODEV;
+            sb->s_blocksize = PAGE_SIZE;
+            sb->s_blocksize_bits = PAGE_SHIFT;
+            sb->s_magic = kfc->magic;
+            sb->s_op = &kernfs_sops;
+            sb->s_xattr = kernfs_xattr_handlers;
+            if (info->root->flags & KERNFS_ROOT_SUPPORT_EXPORTOP)
+                sb->s_export_op = &kernfs_export_ops;
+            sb->s_time_gran = 1;
+
+            /* sysfs dentries and inodes don't require IO to create */
+            sb->s_shrink->seeks = 0;
+
+            /* get root inode, initialize and unlock it */
+            inode = kernfs_get_inode(sb, info->root->kn) {
+                struct inode *inode;
+
+                inode = iget_locked(sb, kernfs_ino(kn));
+                if (inode && (inode_state_read_once(inode) & I_NEW))
+                    kernfs_init_inode(kn, inode);
+
+                return inode;
+            }
+
+            /* instantiate and link root dentry */
+            root = d_make_root(inode) {
+                struct dentry *res = NULL;
+                if (root_inode) {
+                    res = d_alloc_anon(root_inode->i_sb);
+                    if (res)
+                        d_instantiate(res, root_inode);
+                    else
+                        iput(root_inode);
+                }
+                return res;
+            }
+            sb->s_root = root;
+            sb->s_d_op = &kernfs_dops;
+            return 0;
+        }
+        sb->s_flags |= SB_ACTIVE;
+
+        uuid_t uuid;
+        uuid_gen(&uuid);
+        super_set_uuid(sb, uuid.b, sizeof(uuid));
+
+        list_add(&info->node, &info->root->supers);
+    }
+
+    fc->root = dget(sb->s_root);
+    return 0;
+}
+```
+
+### kernfs_get_inode
+
+```c
+struct inode *kernfs_get_inode(struct super_block *sb, struct kernfs_node *kn)
+{
+    struct inode *inode;
+
+    inode = iget_locked(sb, kernfs_ino(kn));
+    if (inode && (inode_state_read_once(inode) & I_NEW))
+        kernfs_init_inode(kn, inode);
+
+    return inode;
+}
+
+void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
+{
+    kernfs_get(kn);
+    inode->i_private = kn;
+    inode->i_mapping->a_ops = &ram_aops;
+    inode->i_op = &kernfs_iops;
+    inode->i_generation = kernfs_gen(kn);
+
+    set_default_inode_attr(inode, kn->mode) {
+        inode->i_mode = mode;
+        simple_inode_init_ts(inode) {
+            struct timespec64 ts = inode_set_ctime_current(inode);
+
+            inode_set_atime_to_ts(inode, ts);
+            inode_set_mtime_to_ts(inode, ts);
+            return ts;
+        }
+    }
+    kernfs_refresh_inode(kn, inode);
+
+    /* initialize inode according to type */
+    switch (kernfs_type(kn)) {
+    case KERNFS_DIR:
+        inode->i_op = &kernfs_dir_iops;
+        inode->i_fop = &kernfs_dir_fops;
+        if (kn->flags & KERNFS_EMPTY_DIR) {
+            make_empty_dir_inode(inode) {
+                set_nlink(inode, 2);
+                inode->i_mode = S_IFDIR | S_IRUGO | S_IXUGO;
+                inode->i_uid = GLOBAL_ROOT_UID;
+                inode->i_gid = GLOBAL_ROOT_GID;
+                inode->i_rdev = 0;
+                inode->i_size = 0;
+                inode->i_blkbits = PAGE_SHIFT;
+                inode->i_blocks = 0;
+
+                inode->i_op = &empty_dir_inode_operations;
+                inode->i_opflags &= ~IOP_XATTR;
+                inode->i_fop = &empty_dir_operations;
+            }
+        }
+        break;
+    case KERNFS_FILE:
+        inode->i_size = kn->attr.size;
+        inode->i_fop = &kernfs_file_fops;
+        break;
+    case KERNFS_LINK:
+        inode->i_op = &kernfs_symlink_iops;
+        break;
+    default:
+        BUG();
+    }
+
+    unlock_new_inode(inode);
+}
+```
+
+## proc
+
+### proc_create
+
+```c
+struct proc_dir_entry *proc_create(const char *name, umode_t mode,
+				   struct proc_dir_entry *parent,
+				   const struct proc_ops *proc_ops)
+{
+	return proc_create_data(name, mode, parent, proc_ops, NULL) {
+        struct proc_dir_entry *p;
+
+        p = proc_create_reg(name, mode, &parent, data);
+        if (!p)
+            return NULL;
+        p->proc_ops = proc_ops;
+        return proc_register(parent, p);
+    }
+}
+```
+
+### proc_mkdir
+
+```c
+struct proc_dir_entry *proc_mkdir(const char *name,
+		struct proc_dir_entry *parent)
+{
+	return proc_mkdir_data(name, 0, parent, NULL) {
+        return _proc_mkdir(name, mode, parent, data, false) {
+            struct proc_dir_entry *ent;
+
+            if (mode == 0)
+                mode = S_IRUGO | S_IXUGO;
+
+            ent = __proc_create(&parent, name, S_IFDIR | mode, 2);
+            if (ent) {
+                ent->data = data;
+                ent->proc_dir_ops = &proc_dir_operations;
+                ent->proc_iops = &proc_dir_inode_operations;
+                if (force_lookup) {
+                    pde_force_lookup(ent);
+                }
+                ent = proc_register(parent, ent);
+            }
+            return ent;
+        }
+    }
+}
+```
+
+### proc_create_single
+
+```c
+#define proc_create_single(name, mode, parent, show) \
+    proc_create_single_data(name, mode, parent, show, NULL)
+
+struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
+        struct proc_dir_entry *parent,
+        int (*show)(struct seq_file *, void *), void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data) {
+        struct proc_dir_entry *p;
+
+        if ((mode & S_IFMT) == 0)
+            mode |= S_IFREG;
+        if ((mode & S_IALLUGO) == 0)
+            mode |= S_IRUGO;
+        if (WARN_ON_ONCE(!S_ISREG(mode)))
+            return NULL;
+
+        p = __proc_create(parent, name, mode, 1) {
+            struct proc_dir_entry *ent = NULL;
+            const char *fn;
+            struct qstr qstr;
+
+            if (xlate_proc_name(name, parent, &fn) != 0)
+                goto out;
+            qstr.name = fn;
+            qstr.len = strlen(fn);
+            if (qstr.len == 0 || qstr.len >= 256) {
+                WARN(1, "name len %u\n", qstr.len);
+                return NULL;
+            }
+            if (qstr.len == 1 && fn[0] == '.') {
+                WARN(1, "name '.'\n");
+                return NULL;
+            }
+            if (qstr.len == 2 && fn[0] == '.' && fn[1] == '.') {
+                WARN(1, "name '..'\n");
+                return NULL;
+            }
+            if (*parent == &proc_root && name_to_int(&qstr) != ~0U) {
+                WARN(1, "create '/proc/%s' by hand\n", qstr.name);
+                return NULL;
+            }
+            if (is_empty_pde(*parent)) {
+                WARN(1, "attempt to add to permanently empty directory");
+                return NULL;
+            }
+
+            ent = kmem_cache_zalloc(proc_dir_entry_cache, GFP_KERNEL);
+            if (!ent)
+                goto out;
+
+            if (qstr.len + 1 <= SIZEOF_PDE_INLINE_NAME) {
+                ent->name = ent->inline_name;
+            } else {
+                ent->name = kmalloc(qstr.len + 1, GFP_KERNEL);
+                if (!ent->name) {
+                    pde_free(ent);
+                    return NULL;
+                }
+            }
+
+            memcpy(ent->name, fn, qstr.len + 1);
+            ent->namelen = qstr.len;
+            ent->mode = mode;
+            ent->nlink = nlink;
+            ent->subdir = RB_ROOT;
+            refcount_set(&ent->refcnt, 1);
+            spin_lock_init(&ent->pde_unload_lock);
+            INIT_LIST_HEAD(&ent->pde_openers);
+            proc_set_user(ent, (*parent)->uid, (*parent)->gid);
+
+            /* Revalidate everything under /proc/${pid}/net */
+            if ((*parent)->flags & PROC_ENTRY_FORCE_LOOKUP)
+                pde_force_lookup(ent);
+
+        out:
+            return ent;
+        }
+        if (p) {
+            p->proc_iops = &proc_file_inode_operations;
+            p->data = data;
+        }
+        return p;
+    }
+    if (!p)
+        return NULL;
+
+    p->proc_ops = &proc_single_ops;
+    p->single_show = show;
+
+    return proc_register(parent, p) {
+        if (proc_alloc_inum(&dp->low_ino))
+            goto out_free_entry;
+
+        if (!S_ISDIR(dp->mode))
+            pde_set_flags(dp);
+
+        write_lock(&proc_subdir_lock);
+        dp->parent = dir;
+        ret = pde_subdir_insert(dir, dp) {
+            struct rb_root *root = &dir->subdir;
+            struct rb_node **new = &root->rb_node, *parent = NULL;
+
+            /* Figure out where to put new node */
+            while (*new) {
+                struct proc_dir_entry *this =
+                    rb_entry(*new, struct proc_dir_entry, subdir_node);
+                int result = proc_match(de->name, this, de->namelen);
+
+                parent = *new;
+                if (result < 0)
+                    new = &(*new)->rb_left;
+                else if (result > 0)
+                    new = &(*new)->rb_right;
+                else
+                    return false;
+            }
+
+            /* Add new node and rebalance tree. */
+            rb_link_node(&de->subdir_node, parent, new);
+            rb_insert_color(&de->subdir_node, root);
+            return true;
+        }
+
+        if (ret == false) {
+            WARN(1, "proc_dir_entry '%s/%s' already registered\n",
+                dir->name, dp->name);
+            write_unlock(&proc_subdir_lock);
+            goto out_free_inum;
+        }
+        dir->nlink++;
+        write_unlock(&proc_subdir_lock);
+
+        return dp;
+    }
 }
 ```
