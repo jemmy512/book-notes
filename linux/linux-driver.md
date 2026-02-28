@@ -1034,8 +1034,7 @@ int load_module(struct load_info *info, const char __user *uargs,
  coming_cleanup:
     mod->state = MODULE_STATE_GOING;
     destroy_params(mod->kp, mod->num_kp);
-    blocking_notifier_call_chain(&module_notify_list,
-                     MODULE_STATE_GOING, mod);
+    blocking_notifier_call_chain(&module_notify_list, MODULE_STATE_GOING, mod);
     klp_module_going(mod);
  bug_cleanup:
     mod->state = MODULE_STATE_GOING;
@@ -1616,6 +1615,145 @@ bool find_symbol(struct find_symbol_arg *fsa)
 
     pr_debug("Failed to find symbol %s\n", fsa->name);
     return false;
+}
+```
+
+### find_module_sections
+
+```c
+static int find_module_sections(struct module *mod, struct load_info *info)
+{
+    mod->kp = section_objs(info, "__param", sizeof(*mod->kp), &mod->num_kp);
+    mod->syms = section_objs(info, "__ksymtab", sizeof(*mod->syms), &mod->num_syms);
+    mod->crcs = section_addr(info, "__kcrctab");
+    mod->gpl_syms = section_objs(info, "__ksymtab_gpl", sizeof(*mod->gpl_syms), &mod->num_gpl_syms);
+    mod->gpl_crcs = section_addr(info, "__kcrctab_gpl");
+
+#ifdef CONFIG_CONSTRUCTORS
+    mod->ctors = section_objs(info, ".ctors", sizeof(*mod->ctors), &mod->num_ctors);
+    if (!mod->ctors)
+        mod->ctors = section_objs(info, ".init_array", sizeof(*mod->ctors), &mod->num_ctors);
+    else if (find_sec(info, ".init_array")) {
+        /* This shouldn't happen with same compiler and binutils
+         * building all parts of the module. */
+        pr_warn("%s: has both .ctors and .init_array.\n", mod->name);
+        return -EINVAL;
+    }
+#endif
+
+    mod->noinstr_text_start = section_objs(info, ".noinstr.text", 1, &mod->noinstr_text_size);
+
+#ifdef CONFIG_TRACEPOINTS
+    mod->tracepoints_ptrs = section_objs(info, "__tracepoints_ptrs", sizeof(*mod->tracepoints_ptrs), &mod->num_tracepoints);
+#endif
+#ifdef CONFIG_TREE_SRCU
+    mod->srcu_struct_ptrs = section_objs(info, "___srcu_struct_ptrs",
+                         sizeof(*mod->srcu_struct_ptrs),
+                         &mod->num_srcu_structs);
+#endif
+#ifdef CONFIG_BPF_EVENTS
+    mod->bpf_raw_events = section_objs(info, "__bpf_raw_tp_map",
+                       sizeof(*mod->bpf_raw_events),
+                       &mod->num_bpf_raw_events);
+#endif
+#ifdef CONFIG_DEBUG_INFO_BTF_MODULES
+    mod->btf_data = any_section_objs(info, ".BTF", 1, &mod->btf_data_size);
+    mod->btf_base_data = any_section_objs(info, ".BTF.base", 1,
+                          &mod->btf_base_data_size);
+#endif
+#ifdef CONFIG_JUMP_LABEL
+    mod->jump_entries = section_objs(info, "__jump_table",
+                    sizeof(*mod->jump_entries),
+                    &mod->num_jump_entries);
+#endif
+#ifdef CONFIG_EVENT_TRACING
+    mod->trace_events = section_objs(info, "_ftrace_events",
+                     sizeof(*mod->trace_events),
+                     &mod->num_trace_events);
+    mod->trace_evals = section_objs(info, "_ftrace_eval_map",
+                    sizeof(*mod->trace_evals),
+                    &mod->num_trace_evals);
+#endif
+#ifdef CONFIG_TRACING
+    mod->trace_bprintk_fmt_start = section_objs(info, "__trace_printk_fmt",
+                     sizeof(*mod->trace_bprintk_fmt_start),
+                     &mod->num_trace_bprintk_fmt);
+#endif
+#ifdef CONFIG_DYNAMIC_FTRACE
+    /* sechdrs[0].sh_size is always zero */
+    mod->ftrace_callsites = section_objs(info, FTRACE_CALLSITE_SECTION,
+                         sizeof(*mod->ftrace_callsites),
+                         &mod->num_ftrace_callsites);
+#endif
+#ifdef CONFIG_FUNCTION_ERROR_INJECTION
+    mod->ei_funcs = section_objs(info, "_error_injection_whitelist",
+                        sizeof(*mod->ei_funcs),
+                        &mod->num_ei_funcs);
+#endif
+#ifdef CONFIG_KPROBES
+    mod->kprobes_text_start = section_objs(info, ".kprobes.text", 1,
+                        &mod->kprobes_text_size);
+    mod->kprobe_blacklist = section_objs(info, "_kprobe_blacklist",
+                        sizeof(unsigned long),
+                        &mod->num_kprobe_blacklist);
+#endif
+#ifdef CONFIG_PRINTK_INDEX
+    mod->printk_index_start = section_objs(info, ".printk_index",
+                           sizeof(*mod->printk_index_start),
+                           &mod->printk_index_size);
+#endif
+#ifdef CONFIG_HAVE_STATIC_CALL_INLINE
+    mod->static_call_sites = section_objs(info, ".static_call_sites",
+                          sizeof(*mod->static_call_sites),
+                          &mod->num_static_call_sites);
+#endif
+#if IS_ENABLED(CONFIG_KUNIT)
+    mod->kunit_suites = section_objs(info, ".kunit_test_suites",
+                          sizeof(*mod->kunit_suites),
+                          &mod->num_kunit_suites);
+    mod->kunit_init_suites = section_objs(info, ".kunit_init_test_suites",
+                          sizeof(*mod->kunit_init_suites),
+                          &mod->num_kunit_init_suites);
+#endif
+
+    mod->extable = section_objs(info, "__ex_table",
+                    sizeof(*mod->extable), &mod->num_exentries);
+
+    if (section_addr(info, "__obsparm"))
+        pr_warn("%s: Ignoring obsolete parameters\n", mod->name);
+
+#ifdef CONFIG_DYNAMIC_DEBUG_CORE
+    mod->dyndbg_info.descs = section_objs(info, "__dyndbg",
+                          sizeof(*mod->dyndbg_info.descs),
+                          &mod->dyndbg_info.num_descs);
+    mod->dyndbg_info.classes = section_objs(info, "__dyndbg_classes",
+                        sizeof(*mod->dyndbg_info.classes),
+                        &mod->dyndbg_info.num_classes);
+#endif
+
+    return 0;
+}
+
+void *section_objs(const struct load_info *info,
+			  const char *name,
+			  size_t object_size,
+			  unsigned int *num)
+{
+	unsigned int sec = find_sec(info, name) {
+        unsigned int i;
+
+        for (i = 1; i < info->hdr->e_shnum; i++) {
+            Elf_Shdr *shdr = &info->sechdrs[i];
+            /* Alloc bit cleared means "ignore it." */
+            if ((shdr->sh_flags & SHF_ALLOC) && strcmp(info->secstrings + shdr->sh_name, name) == 0)
+                return i;
+        }
+        return 0;
+    }
+
+	/* Section 0 has sh_addr 0 and sh_size 0. */
+	*num = info->sechdrs[sec].sh_size / object_size;
+	return (void *)info->sechdrs[sec].sh_addr;
 }
 ```
 
