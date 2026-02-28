@@ -4055,11 +4055,111 @@ failed:
 }
 ```
 
+### init_function_trace
+
+```c
+__init int init_function_trace(void)
+{
+    init_func_cmd_traceon();
+    return register_tracer(&function_trace);
+}
+
+int __init init_func_cmd_traceon(void)
+{
+    int ret;
+
+    ret = register_ftrace_command(&ftrace_traceoff_cmd);
+    if (ret)
+        return ret;
+
+    ret = register_ftrace_command(&ftrace_traceon_cmd);
+    if (ret)
+        goto out_free_traceoff;
+
+    ret = register_ftrace_command(&ftrace_stacktrace_cmd);
+    if (ret)
+        goto out_free_traceon;
+
+    ret = register_ftrace_command(&ftrace_dump_cmd);
+    if (ret)
+        goto out_free_stacktrace;
+
+    ret = register_ftrace_command(&ftrace_cpudump_cmd);
+    if (ret)
+        goto out_free_dump;
+
+    return 0;
+}
+
+__init int register_ftrace_command(struct ftrace_func_command *cmd)
+{
+    struct ftrace_func_command *p;
+
+    guard(mutex)(&ftrace_cmd_mutex);
+    list_for_each_entry(p, &ftrace_commands, list) {
+        if (strcmp(cmd->name, p->name) == 0)
+            return -EBUSY;
+    }
+    list_add(&cmd->list, &ftrace_commands);
+
+    return 0;
+}
+
+static struct ftrace_func_command ftrace_traceon_cmd = {
+    .name            = "traceon",
+    .func            = ftrace_trace_onoff_callback,
+};
+
+static struct ftrace_func_command ftrace_traceoff_cmd = {
+    .name            = "traceoff",
+    .func            = ftrace_trace_onoff_callback,
+};
+
+static struct ftrace_func_command ftrace_stacktrace_cmd = {
+    .name            = "stacktrace",
+    .func            = ftrace_stacktrace_callback,
+};
+
+static struct ftrace_func_command ftrace_dump_cmd = {
+    .name            = "dump",
+    .func            = ftrace_dump_callback,
+};
+
+static struct ftrace_func_command ftrace_cpudump_cmd = {
+    .name            = "cpudump",
+    .func            = ftrace_cpudump_callback,
+};
+```
+
 ### register_ftrace_function
 
 ```c
-register_ftrace_function(ops) {
-    ftrace_startup(ops, 0);
+int register_ftrace_function(struct ftrace_ops *ops)
+{
+	int ret;
+
+	lock_direct_mutex();
+	ret = prepare_direct_functions_for_ipmodify(ops);
+	if (ret < 0)
+		goto out_unlock;
+
+	ret = register_ftrace_function_nolock(ops) {
+        int ret;
+
+        ftrace_ops_init(ops);
+
+        mutex_lock(&ftrace_lock);
+
+        ret = ftrace_startup(ops, 0);
+
+        mutex_unlock(&ftrace_lock);
+
+        return ret;
+    }
+
+out_unlock:
+	unlock_direct_mutex();
+	return ret;
 }
 
 int ftrace_startup(struct ftrace_ops *ops, int command)
@@ -4073,7 +4173,10 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
      * ftraced funciont own frace_ops is encoded in trampoline
      * at ftrace_make_call */
     ret = __register_ftrace_function(ops) {
-        add_ftrace_ops(&ftrace_ops_list, ops);
+        add_ftrace_ops(&ftrace_ops_list, ops) {
+            rcu_assign_pointer(ops->next, *list);
+            rcu_assign_pointer(*list, ops);
+        }
 
         /* Always save the function, and reset at unregistering */
         ops->saved_func = ops->func;
@@ -4085,8 +4188,7 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
             unsigned long trampoline = ops->trampoline;
 
             arch_ftrace_update_trampoline(ops);
-            if (ops->trampoline && ops->trampoline != trampoline &&
-                (ops->flags & FTRACE_OPS_FL_ALLOC_TRAMP)) {
+            if (ops->trampoline && ops->trampoline != trampoline && (ops->flags & FTRACE_OPS_FL_ALLOC_TRAMP)) {
                 /* Add to kallsyms before the perf events */
                 ftrace_add_trampoline_to_kallsyms(ops);
                 perf_event_ksymbol(PERF_RECORD_KSYMBOL_TYPE_OOL,
@@ -4145,7 +4247,6 @@ int ftrace_startup(struct ftrace_ops *ops, int command)
 
             /* Update rec->flags */
             do_for_each_ftrace_rec(pg, rec) {
-
                 if (rec->flags & FTRACE_FL_DISABLED)
                     continue;
 
@@ -4982,11 +5083,252 @@ sudo rmmod ftrace_fn
 make clean
 ```
 
+## trace_point
+
+```c
+``c
+struct tracepoint {
+    const char              *name;       /* Tracepoint name */
+    struct static_key_false key;
+    struct static_call_key  *static_call_key;
+    void                    *static_call_tramp;
+    void                    *iterator;
+    void                    *probestub;
+
+    struct tracepoint_func {
+        void    *func;
+        void    *data;
+        int     prio;
+    } __rcu     *funcs;
+
+    struct tracepoint_ext *ext;
+};
+
+#define DECLARE_TRACE(name, proto, args)                \
+    __DECLARE_TRACE(name##_tp, PARAMS(proto), PARAMS(args),        \
+            cpu_online(raw_smp_processor_id()),        \
+            PARAMS(void *__data, proto))
+
+#define __DECLARE_TRACE_COMMON(name, proto, args, data_proto)        \
+    extern int __traceiter_##name(data_proto);            \
+    DECLARE_STATIC_CALL(tp_func_##name, __traceiter_##name);    \
+    extern struct tracepoint __tracepoint_##name;            \
+    extern void rust_do_trace_##name(proto);            \
+    static inline int                        \
+    register_trace_##name(void (*probe)(data_proto), void *data)    \
+    {                                \
+        return tracepoint_probe_register(&__tracepoint_##name,    \
+                        (void *)probe, data);    \
+    }                                \
+    static inline int                        \
+    register_trace_prio_##name(void (*probe)(data_proto), void *data,\
+                   int prio)                \
+    {                                \
+        return tracepoint_probe_register_prio(&__tracepoint_##name, \
+                          (void *)probe, data, prio); \
+    }                                \
+    static inline int                        \
+    unregister_trace_##name(void (*probe)(data_proto), void *data)    \
+    {                                \
+        return tracepoint_probe_unregister(&__tracepoint_##name,\
+                        (void *)probe, data);    \
+    }                                \
+    static inline void                        \
+    check_trace_callback_type_##name(void (*cb)(data_proto))    \
+    {                                \
+    }                                \
+    static inline bool                        \
+    trace_##name##_enabled(void)                    \
+    {                                \
+        return static_branch_unlikely(&__tracepoint_##name.key);\
+    }
+
+#define __DECLARE_TRACE(name, proto, args, cond, data_proto)        \
+    __DECLARE_TRACE_COMMON(name, PARAMS(proto), PARAMS(args), PARAMS(data_proto)) \
+    static inline void __do_trace_##name(proto)            \
+    {                                \
+        TRACEPOINT_CHECK(name)                    \
+        if (cond) {                        \
+            guard(preempt_notrace)();            \
+            __DO_TRACE_CALL(name, TP_ARGS(args));        \
+        }                            \
+    }                                \
+    static inline void trace_##name(proto)                \
+    {                                \
+        if (static_branch_unlikely(&__tracepoint_##name.key))    \
+            __do_trace_##name(args);            \
+        if (IS_ENABLED(CONFIG_LOCKDEP) && (cond)) {        \
+            WARN_ONCE(!rcu_is_watching(),            \
+                  "RCU not watching for tracepoint");    \
+        }                            \
+    }
+```
+
+### tracepoint_probe_register_prio
+
+```c
+int tracepoint_probe_register_prio(struct tracepoint *tp, void *probe,
+                   void *data, int prio)
+{
+    struct tracepoint_func tp_func;
+    int ret;
+
+    mutex_lock(&tracepoints_mutex);
+    tp_func.func = probe;
+    tp_func.data = data;
+    tp_func.prio = prio;
+    ret = tracepoint_add_func(tp, &tp_func, prio, true);
+    mutex_unlock(&tracepoints_mutex);
+    return ret;
+}
+
+int tracepoint_add_func(struct tracepoint *tp,
+                   struct tracepoint_func *func, int prio,
+                   bool warn)
+{
+    struct tracepoint_func *old, *tp_funcs;
+    int ret;
+
+    if (tp->ext && tp->ext->regfunc && !static_key_enabled(&tp->key)) {
+        ret = tp->ext->regfunc();
+        if (ret < 0)
+            return ret;
+    }
+
+    tp_funcs = rcu_dereference_protected(tp->funcs,
+            lockdep_is_held(&tracepoints_mutex));
+    old = func_add(&tp_funcs, func, prio);
+    if (IS_ERR(old)) {
+        WARN_ON_ONCE(warn && PTR_ERR(old) != -ENOMEM);
+        return PTR_ERR(old);
+    }
+
+    /* rcu_assign_pointer has as smp_store_release() which makes sure
+     * that the new probe callbacks array is consistent before setting
+     * a pointer to it.  This array is referenced by __DO_TRACE from
+     * include/linux/tracepoint.h using rcu_dereference_sched(). */
+    ret = nr_func_state(tp_funcs) {
+        if (!tp_funcs)
+            return TP_FUNC_0;
+        if (!tp_funcs[1].func)
+            return TP_FUNC_1;
+        if (!tp_funcs[2].func)
+            return TP_FUNC_2;
+        return TP_FUNC_N;
+    }
+    switch (ret) {
+    case TP_FUNC_1:        /* 0->1 */
+        /* Make sure new static func never uses old data after a
+         * 1->0->1 transition sequence. */
+        tp_rcu_cond_sync(TP_TRANSITION_SYNC_1_0_1);
+        /* Set static call to first function */
+        tracepoint_update_call(tp, tp_funcs);
+        /* Both iterator and static call handle NULL tp->funcs */
+        rcu_assign_pointer(tp->funcs, tp_funcs);
+        static_branch_enable(&tp->key);
+        break;
+    case TP_FUNC_2:        /* 1->2 */
+        /* Set iterator static call */
+        tracepoint_update_call(tp, tp_funcs);
+        /* Iterator callback installed before updating tp->funcs.
+         * Requires ordering between RCU assign/dereference and
+         * static call update/call. */
+        fallthrough;
+    case TP_FUNC_N:        /* N->N+1 (N>1) */
+        rcu_assign_pointer(tp->funcs, tp_funcs);
+        /* Make sure static func never uses incorrect data after a
+         * N->...->2->1 (N>1) transition sequence. */
+        if (tp_funcs[0].data != old[0].data)
+            tp_rcu_get_state(TP_TRANSITION_SYNC_N_2_1);
+        break;
+    default:
+        WARN_ON_ONCE(1);
+        break;
+    }
+
+    release_probes(tp, old);
+    return 0;
+}
+
+struct tracepoint_func *
+func_add(struct tracepoint_func **funcs, struct tracepoint_func *tp_func,
+     int prio)
+{
+    struct tracepoint_func *old, *new;
+    int iter_probes;    /* Iterate over old probe array. */
+    int nr_probes = 0;    /* Counter for probes */
+    int pos = -1;        /* Insertion position into new array */
+
+    if (WARN_ON(!tp_func->func))
+        return ERR_PTR(-EINVAL);
+
+    debug_print_probes(*funcs);
+    old = *funcs;
+    if (old) {
+        /* (N -> N+1), (N != 0, 1) probes */
+        for (iter_probes = 0; old[iter_probes].func; iter_probes++) {
+            if (old[iter_probes].func == tp_stub_func)
+                continue;    /* Skip stub functions. */
+            if (old[iter_probes].func == tp_func->func &&
+                old[iter_probes].data == tp_func->data)
+                return ERR_PTR(-EEXIST);
+            nr_probes++;
+        }
+    }
+    /* + 2 : one for new probe, one for NULL func */
+    new = allocate_probes(nr_probes + 2) {
+        struct tp_probes *p  = kmalloc(
+            struct_size(p, probes, count), GFP_KERNEL);
+        return p == NULL ? NULL : p->probes;
+    }
+    if (new == NULL)
+        return ERR_PTR(-ENOMEM);
+    if (old) {
+        nr_probes = 0;
+        for (iter_probes = 0; old[iter_probes].func; iter_probes++) {
+            if (old[iter_probes].func == tp_stub_func)
+                continue;
+            /* Insert before probes of lower priority */
+            if (pos < 0 && old[iter_probes].prio < prio)
+                pos = nr_probes++;
+            new[nr_probes++] = old[iter_probes];
+        }
+        if (pos < 0)
+            pos = nr_probes++;
+        /* nr_probes now points to the end of the new array */
+    } else {
+        pos = 0;
+        nr_probes = 1; /* must point at end of array */
+    }
+    new[pos] = *tp_func;
+    new[nr_probes].func = NULL;
+    *funcs = new;
+    debug_print_probes(*funcs);
+    return old;
+}
+```
+
+### __static_call_update
+
+```c
+static void tracepoint_update_call(struct tracepoint *tp, struct tracepoint_func *tp_funcs)
+{
+    void *func = tp->iterator;
+
+    /* Synthetic events do not have static call sites */
+    if (!tp->static_call_key)
+        return;
+    if (nr_func_state(tp_funcs) == TP_FUNC_1)
+        func = tp_funcs[0].func;
+    __static_call_update(tp->static_call_key, tp->static_call_tramp, func);
+}
+```
+
 ## ftrace_event
 
 | **Event Type** | **Description** |
 | :-: | :-: |
-| **Syscalls**           | Events triggered by system calls (e.g., `sys_enter`, `sys_exit`) to track entry and exit points of syscalls. |
+| **Syscalls** | Events triggered by system calls (e.g., `sys_enter`, `sys_exit`) to track entry and exit points of syscalls. |
 | **IRQ** | Events related to hardware interrupts, such as `irq_handler_entry` and `irq_handler_exit`. |
 | **SoftIRQ** | Events for software interrupts, such as `softirq_entry` and `softirq_exit`. |
 | **Sched** | Events related to the scheduler, such as `sched_switch`, `sched_wakeup`, and `sched_process_exit`. |
@@ -5006,27 +5348,11 @@ make clean
 TracePoints employee **static key** to eliminate **branch check/mispredict** overhead.
 
 ```c
-struct tracepoint {
-    const char *name;       /* Tracepoint name */
-    struct static_key_false key;
-    struct static_call_key *static_call_key;
-    void *static_call_tramp;
-    void *iterator;
-    void *probestub;
-
-    struct tracepoint_func {
-        void *func;
-        void *data;
-        int prio;
-    } __rcu *funcs;
-
-    struct tracepoint_ext *ext;
-};
-```
-
-```c
 #define TRACE_EVENT(name, proto, args, struct, assign, print) \
     DECLARE_TRACE(name, PARAMS(proto), PARAMS(args))
+
+#define DEFINE_TRACE(_name, _proto, _args)                \
+    __DEFINE_TRACE_EXT(_name, NULL, PARAMS(_proto), PARAMS(_args));
 
 #define TRACE_EVENT(name, proto, args, tstruct, assign, print) \
     DECLARE_EVENT_CLASS(name,   \
@@ -5111,6 +5437,55 @@ struct tracepoint {
     { \
         return static_branch_unlikely(&__tracepoint_##name.key);\
     }
+
+#define __DEFINE_TRACE_EXT(_name, _ext, proto, args)            \
+    static const char __tpstrtab_##_name[]                \
+    __section("__tracepoints_strings") = #_name;            \
+    extern struct static_call_key STATIC_CALL_KEY(tp_func_##_name);    \
+    int __traceiter_##_name(void *__data, proto);            \
+    void __probestub_##_name(void *__data, proto);            \
+    struct tracepoint __tracepoint_##_name    __used            \
+    __section("__tracepoints") = {                    \
+        .name = __tpstrtab_##_name,                \
+        .key = STATIC_KEY_FALSE_INIT,                \
+        .static_call_key = &STATIC_CALL_KEY(tp_func_##_name),    \
+        .static_call_tramp = STATIC_CALL_TRAMP_ADDR(tp_func_##_name), \
+        .iterator = &__traceiter_##_name,            \
+        .probestub = &__probestub_##_name,            \
+        .funcs = NULL,                        \
+        .ext = _ext,                        \
+    };                                \
+    __TRACEPOINT_ENTRY(_name);                    \
+    int __traceiter_##_name(void *__data, proto)            \
+    {                                \
+        struct tracepoint_func *it_func_ptr;            \
+        void *it_func;                        \
+                                    \
+        it_func_ptr =                        \
+            rcu_dereference_raw((&__tracepoint_##_name)->funcs); \
+        if (it_func_ptr) {                    \
+            do {                        \
+                it_func = READ_ONCE((it_func_ptr)->func); \
+                __data = (it_func_ptr)->data;        \
+                ((void(*)(void *, proto))(it_func))(__data, args); \
+            } while ((++it_func_ptr)->func);        \
+        }                            \
+        return 0;                        \
+    }                                \
+    void __probestub_##_name(void *__data, proto)            \
+    {                                \
+    }                                \
+    DEFINE_STATIC_CALL(tp_func_##_name, __traceiter_##_name);    \
+    DEFINE_RUST_DO_TRACE(_name, TP_PROTO(proto), TP_ARGS(args))
+
+#define DEFINE_TRACE_FN(_name, _reg, _unreg, _proto, _args)        \
+    static struct tracepoint_ext __tracepoint_ext_##_name = {    \
+        .regfunc = _reg,                    \
+        .unregfunc = _unreg,                    \
+        .faultable = false,                    \
+    };                                \
+    __DEFINE_TRACE_EXT(_name, &__tracepoint_ext_##_name, PARAMS(_proto), PARAMS(_args));
+
 ```
 
 ```c
@@ -5201,69 +5576,363 @@ discard:
 }
 ```
 
-## trace_point
+## tracer
 
 ```c
-#define DECLARE_TRACE(name, proto, args)                \
-    __DECLARE_TRACE(name##_tp, PARAMS(proto), PARAMS(args),        \
-            cpu_online(raw_smp_processor_id()),        \
-            PARAMS(void *__data, proto))
+static struct tracer branch_trace __read_mostly =
+{
+    .name        = "branch",
+    .init        = branch_trace_init,
+    .reset        = branch_trace_reset,
+#ifdef CONFIG_FTRACE_SELFTEST
+    .selftest    = trace_selftest_startup_branch,
+#endif /* CONFIG_FTRACE_SELFTEST */
+    .print_header    = branch_print_header,
+};
 
-#define __DECLARE_TRACE_COMMON(name, proto, args, data_proto)        \
-    extern int __traceiter_##name(data_proto);            \
-    DECLARE_STATIC_CALL(tp_func_##name, __traceiter_##name);    \
-    extern struct tracepoint __tracepoint_##name;            \
-    extern void rust_do_trace_##name(proto);            \
-    static inline int                        \
-    register_trace_##name(void (*probe)(data_proto), void *data)    \
-    {                                \
-        return tracepoint_probe_register(&__tracepoint_##name,    \
-                        (void *)probe, data);    \
-    }                                \
-    static inline int                        \
-    register_trace_prio_##name(void (*probe)(data_proto), void *data,\
-                   int prio)                \
-    {                                \
-        return tracepoint_probe_register_prio(&__tracepoint_##name, \
-                          (void *)probe, data, prio); \
-    }                                \
-    static inline int                        \
-    unregister_trace_##name(void (*probe)(data_proto), void *data)    \
-    {                                \
-        return tracepoint_probe_unregister(&__tracepoint_##name,\
-                        (void *)probe, data);    \
-    }                                \
-    static inline void                        \
-    check_trace_callback_type_##name(void (*cb)(data_proto))    \
-    {                                \
-    }                                \
-    static inline bool                        \
-    trace_##name##_enabled(void)                    \
-    {                                \
-        return static_branch_unlikely(&__tracepoint_##name.key);\
+__init static int init_branch_tracer(void)
+{
+    int ret;
+
+    ret = register_trace_event(&trace_branch_event);
+    if (!ret) {
+        printk(KERN_WARNING "Warning: could not register "
+                    "branch events\n");
+        return 1;
     }
-
-#define __DECLARE_TRACE(name, proto, args, cond, data_proto)        \
-    __DECLARE_TRACE_COMMON(name, PARAMS(proto), PARAMS(args), PARAMS(data_proto)) \
-    static inline void __do_trace_##name(proto)            \
-    {                                \
-        TRACEPOINT_CHECK(name)                    \
-        if (cond) {                        \
-            guard(preempt_notrace)();            \
-            __DO_TRACE_CALL(name, TP_ARGS(args));        \
-        }                            \
-    }                                \
-    static inline void trace_##name(proto)                \
-    {                                \
-        if (static_branch_unlikely(&__tracepoint_##name.key))    \
-            __do_trace_##name(args);            \
-        if (IS_ENABLED(CONFIG_LOCKDEP) && (cond)) {        \
-            WARN_ONCE(!rcu_is_watching(),            \
-                  "RCU not watching for tracepoint");    \
-        }                            \
-    }
-
+    return register_tracer(&branch_trace);
+}
+core_initcall(init_branch_tracer);
 ```
+
+### register_tracer
+
+```c
+register_tracer(struct tracer *type)
+{
+    struct trace_array *tr;
+    struct tracer *t;
+    int ret = 0;
+
+    if (!type->name) {
+        pr_info("Tracer must have a name\n");
+        return -1;
+    }
+
+    if (strlen(type->name) >= MAX_TRACER_SIZE) {
+        pr_info("Tracer has a name longer than %d\n", MAX_TRACER_SIZE);
+        return -1;
+    }
+
+    if (security_locked_down(LOCKDOWN_TRACEFS)) {
+        pr_warn("Can not register tracer %s due to lockdown\n",
+               type->name);
+        return -EPERM;
+    }
+
+    mutex_lock(&trace_types_lock);
+
+    for (t = trace_types; t; t = t->next) {
+        if (strcmp(type->name, t->name) == 0) {
+            /* already found */
+            pr_info("Tracer %s already registered\n",
+                type->name);
+            ret = -1;
+            goto out;
+        }
+    }
+
+    /* store the tracer for __set_tracer_option */
+    if (type->flags)
+        type->flags->trace = type;
+
+    ret = do_run_tracer_selftest(type) {
+        cond_resched();
+
+        tracing_selftest_running = true;
+        ret = run_tracer_selftest(type);
+        tracing_selftest_running = false;
+
+        return ret;
+    }
+    if (ret < 0)
+        goto out;
+
+    list_for_each_entry(tr, &ftrace_trace_arrays, list) {
+        ret = add_tracer(tr, type);
+        if (ret < 0) {
+            /* The tracer will still exist but without options */
+            pr_warn("Failed to create tracer options for %s\n", type->name);
+            break;
+        }
+    }
+
+    type->next = trace_types;
+    trace_types = type;
+
+ out:
+    mutex_unlock(&trace_types_lock);
+
+    if (ret || !default_bootup_tracer)
+        return ret;
+
+    if (strncmp(default_bootup_tracer, type->name, MAX_TRACER_SIZE))
+        return 0;
+
+    printk(KERN_INFO "Starting tracer '%s'\n", type->name);
+    /* Do we want this tracer to start on bootup? */
+    WARN_ON(tracing_set_tracer(&global_trace, type->name) < 0);
+    default_bootup_tracer = NULL;
+
+    apply_trace_boot_options();
+
+    /* disable other selftests, since this will break it. */
+    disable_tracing_selftest("running a tracer");
+
+    return 0;
+}
+```
+
+### add_tracer
+
+```c
+static int add_tracer(struct trace_array *tr, struct tracer *tracer)
+{
+    struct tracer_flags *flags;
+    struct tracers *t;
+    int ret;
+
+    /* Only enable if the directory has been created already. */
+    if (!tr->dir && !(tr->flags & TRACE_ARRAY_FL_GLOBAL))
+        return 0;
+
+    /* If this is an instance, only create flags for tracers
+     * the instance may have. */
+    if (!trace_ok_for_array(tracer, tr))
+        return 0;
+
+    t = kmalloc(sizeof(*t), GFP_KERNEL);
+    if (!t)
+        return -ENOMEM;
+
+    t->tracer = tracer;
+    t->flags = NULL;
+
+    list_add(&t->list, &tr->tracers);
+
+    flags = tracer->flags;
+    if (!flags) {
+        if (!tracer->default_flags)
+            return 0;
+
+        /* If the tracer defines default flags, it means the flags are
+         * per trace instance. */
+        flags = kmalloc(sizeof(*flags), GFP_KERNEL);
+        if (!flags)
+            return -ENOMEM;
+
+        *flags = *tracer->default_flags;
+        flags->trace = tracer;
+
+        t->flags = flags;
+
+        /* If this is an instance, inherit the global_trace flags */
+        if (!(tr->flags & TRACE_ARRAY_FL_GLOBAL)) {
+            int val = get_global_flags_val(tracer);
+            if (!WARN_ON_ONCE(val < 0))
+                flags->val = val;
+        }
+    }
+
+    ret = add_tracer_options(tr, t) {
+        struct tracer *tracer = t->tracer;
+        struct tracer_flags *flags = t->flags ?: tracer->flags;
+
+        if (!flags)
+            return 0;
+
+        /* Only add tracer options after update_tracer_options finish */
+        if (!tracer_options_updated)
+            return 0;
+
+        return create_trace_option_files(tr, tracer, flags);
+    }
+    if (ret < 0) {
+        list_del(&t->list);
+        kfree(t->flags);
+        kfree(t);
+    }
+
+    return ret;
+}
+
+static int
+create_trace_option_files(struct trace_array *tr, struct tracer *tracer,
+              struct tracer_flags *flags)
+{
+    struct trace_option_dentry *topts;
+    struct trace_options *tr_topts;
+    struct tracer_opt *opts;
+    int cnt;
+
+    if (!flags || !flags->opts)
+        return 0;
+
+    opts = flags->opts;
+
+    for (cnt = 0; opts[cnt].name; cnt++)
+        ;
+
+    topts = kcalloc(cnt + 1, sizeof(*topts), GFP_KERNEL);
+    if (!topts)
+        return 0;
+
+    tr_topts = krealloc(tr->topts, sizeof(*tr->topts) * (tr->nr_topts + 1),
+                GFP_KERNEL);
+    if (!tr_topts) {
+        kfree(topts);
+        return -ENOMEM;
+    }
+
+    tr->topts = tr_topts;
+    tr->topts[tr->nr_topts].tracer = tracer;
+    tr->topts[tr->nr_topts].topts = topts;
+    tr->nr_topts++;
+
+    for (cnt = 0; opts[cnt].name; cnt++) {
+        create_trace_option_file(tr, &topts[cnt], flags, &opts[cnt]) {
+            struct dentry *t_options;
+
+            t_options = trace_options_init_dentry(tr);
+            if (!t_options)
+                return;
+
+            topt->flags = flags;
+            topt->opt = opt;
+            topt->tr = tr;
+
+            topt->entry = trace_create_file(opt->name, TRACE_MODE_WRITE,
+                            t_options, topt, &trace_options_fops);
+        }
+        MEM_FAIL(topts[cnt].entry == NULL,
+              "Failed to create trace option: %s",
+              opts[cnt].name);
+    }
+    return 0;
+}
+```
+
+### function
+
+```c
+static struct tracer function_trace __tracer_data =
+{
+    .name               = "function",
+    .init               = function_trace_init,
+    .reset              = function_trace_reset,
+    .start              = function_trace_start,
+    .default_flags      = &func_flags,
+    .set_flag           = func_set_flag,
+    .allow_instances    = true,
+#ifdef CONFIG_FTRACE_SELFTEST
+    .selftest           = trace_selftest_startup_function,
+#endif
+};
+
+static struct tracer_flags func_flags = {
+    .val = TRACE_FUNC_NO_OPTS, /* By default: all flags disabled */
+    .opts = func_opts
+};
+
+static struct tracer_opt func_opts[] = {
+#ifdef CONFIG_STACKTRACE
+    { TRACER_OPT(func_stack_trace, TRACE_FUNC_OPT_STACK) },
+#endif
+    { TRACER_OPT(func-no-repeats, TRACE_FUNC_OPT_NO_REPEATS) },
+#ifdef CONFIG_FUNCTION_TRACE_ARGS
+    { TRACER_OPT(func-args, TRACE_FUNC_OPT_ARGS) },
+#endif
+    { } /* Always set a last empty entry */
+};
+
+static int function_trace_init(struct trace_array *tr)
+{
+    ftrace_func_t func;
+    /* Instance trace_arrays get their ops allocated
+     * at instance creation. Unless it failed
+     * the allocation. */
+    if (!tr->ops)
+        return -ENOMEM;
+
+    func = select_trace_function(tr->current_trace_flags->val) {
+        switch (flags_val & TRACE_FUNC_OPT_MASK) {
+        case TRACE_FUNC_NO_OPTS:
+            return function_trace_call;
+        case TRACE_FUNC_OPT_ARGS:
+            return function_args_trace_call;
+        case TRACE_FUNC_OPT_STACK:
+            return function_stack_trace_call;
+        case TRACE_FUNC_OPT_NO_REPEATS:
+            return function_no_repeats_trace_call;
+        case TRACE_FUNC_OPT_STACK | TRACE_FUNC_OPT_NO_REPEATS:
+            return function_stack_no_repeats_trace_call;
+        default:
+            return NULL;
+        }
+    }
+    if (!func)
+        return -EINVAL;
+
+    if (!handle_func_repeats(tr, tr->current_trace_flags->val))
+        return -ENOMEM;
+
+    /* each tracer sets its own tr->ops->func */
+    ftrace_init_array_ops(tr, func) {
+        if (tr->flags & TRACE_ARRAY_FL_GLOBAL) {
+            if (WARN_ON(tr->ops->func != ftrace_stub))
+                printk("ftrace ops had %pS for function\n",
+                    tr->ops->func);
+        }
+        tr->ops->func = func;
+        tr->ops->private = tr;
+    }
+
+    tr->array_buffer.cpu = raw_smp_processor_id();
+
+    tracing_start_cmdline_record() {
+        tracing_start_sched_switch(RECORD_CMDLINE) {
+            bool sched_register;
+
+            mutex_lock(&sched_register_mutex);
+            sched_register = (!sched_cmdline_ref && !sched_tgid_ref);
+
+            switch (ops) {
+            case RECORD_CMDLINE:
+                sched_cmdline_ref++;
+                break;
+
+            case RECORD_TGID:
+                sched_tgid_ref++;
+                break;
+            }
+
+            if (sched_register && (sched_cmdline_ref || sched_tgid_ref))
+                tracing_sched_register();
+            mutex_unlock(&sched_register_mutex);
+        }
+    }
+
+    tracing_start_function_trace(tr) {
+        tr->function_enabled = 0;
+        register_ftrace_function(tr->ops);
+            --->
+        tr->function_enabled = 1;
+    }
+
+    return 0;
+}
+```
+
 
 ## ftrace-cmd
 
@@ -6475,7 +7144,7 @@ __rb_reserve_next(struct ring_buffer_per_cpu *cpu_buffer,
          * Don't bother if this is the start of a new page (w == 0). */
         if (!w) {
            /* w==0 means we're at the start of a fresh page.
-			* The page itself carries the timestamp, so delta=0 */
+            * The page itself carries the timestamp, so delta=0 */
             info->delta = 0;
         } else if (unlikely(info->before != info->after)) {
             /* we interrupted someone else:
@@ -7307,7 +7976,96 @@ bool rb_watermark_hit(struct trace_buffer *buffer, int cpu, int full)
 }
 ```
 
-## init_tracer_tracefs
+## tracer_init_tracefs
+
+```c
+int tracer_init_tracefs(void)
+{
+    int ret;
+
+    trace_access_lock_init();
+
+    ret = tracing_init_dentry() {
+        struct trace_array *tr = &global_trace;
+
+        if (security_locked_down(LOCKDOWN_TRACEFS)) {
+            pr_warn("Tracing disabled due to lockdown\n");
+            return -EPERM;
+        }
+
+        /* The top level trace array uses  NULL as parent */
+        if (tr->dir)
+            return 0;
+
+        if (WARN_ON(!tracefs_initialized()))
+            return -ENODEV;
+
+    #ifdef CONFIG_TRACEFS_AUTOMOUNT_DEPRECATED
+        /* As there may still be users that expect the tracing
+        * files to exist in debugfs/tracing, we must automount
+        * the tracefs file system there, so older tools still
+        * work with the newer kernel. */
+        tr->dir = debugfs_create_automount("tracing", NULL,
+                        trace_automount, NULL);
+    #endif
+
+        return 0;
+    }
+    if (ret)
+        return 0;
+
+    if (eval_map_wq) {
+        INIT_WORK(&tracerfs_init_work, tracer_init_tracefs_work_func);
+        queue_work(eval_map_wq, &tracerfs_init_work);
+    } else {
+        tracer_init_tracefs_work_func(NULL) {
+            event_trace_init();
+
+            init_tracer_tracefs(&global_trace, NULL);
+
+            ftrace_init_tracefs_toplevel(&global_trace, NULL);
+
+            trace_create_file("tracing_thresh", TRACE_MODE_WRITE, NULL,
+                    &global_trace, &tracing_thresh_fops);
+
+            trace_create_file("README", TRACE_MODE_READ, NULL,
+                    NULL, &tracing_readme_fops);
+
+            trace_create_file("saved_cmdlines", TRACE_MODE_READ, NULL,
+                    NULL, &tracing_saved_cmdlines_fops);
+
+            trace_create_file("saved_cmdlines_size", TRACE_MODE_WRITE, NULL,
+                    NULL, &tracing_saved_cmdlines_size_fops);
+
+            trace_create_file("saved_tgids", TRACE_MODE_READ, NULL,
+                    NULL, &tracing_saved_tgids_fops);
+
+            trace_create_eval_file(NULL);
+
+        #ifdef CONFIG_MODULES
+            register_module_notifier(&trace_module_nb);
+        #endif
+
+        #ifdef CONFIG_DYNAMIC_FTRACE
+            trace_create_file("dyn_ftrace_total_info", TRACE_MODE_READ, NULL,
+                    NULL, &tracing_dyn_info_fops);
+        #endif
+
+            create_trace_instances(NULL);
+
+            update_tracer_options();
+        }
+    }
+
+    if (rv_init_interface())
+        pr_err("RV: Error while creating the RV interface\n");
+
+    return 0;
+}
+fs_initcall(tracer_init_tracefs);
+```
+
+### init_tracer_tracefs
 
 ```c
 static void
@@ -7363,7 +8121,28 @@ init_tracer_tracefs(struct trace_array *tr, struct dentry *d_tracer)
     trace_create_maxlat_file(tr, d_tracer);
 #endif
 
-    if (ftrace_create_function_files(tr, d_tracer))
+    ret = ftrace_create_function_files(tr, d_tracer) {
+        if (tr->flags & TRACE_ARRAY_FL_GLOBAL)
+            return 0;
+
+        if (!tr->ops)
+            return -EINVAL;
+
+        ret = allocate_fgraph_ops(tr, tr->ops);
+        if (ret) {
+            kfree(tr->ops);
+            return ret;
+        }
+
+        ftrace_create_filter_files(tr->ops, parent) {
+            trace_create_file("set_ftrace_filter", TRACE_MODE_WRITE, parent,
+                    ops, &ftrace_filter_fops);
+
+            trace_create_file("set_ftrace_notrace", TRACE_MODE_WRITE, parent,
+                    ops, &ftrace_notrace_fops);
+        }
+    }
+    if (ret)
         MEM_FAIL(1, "Could not allocate function filter files");
 
     if (tr->range_addr_start) {
@@ -7422,6 +8201,489 @@ tracing_init_tracefs_percpu(struct trace_array *tr, long cpu)
         trace_create_cpu_file("snapshot_raw", TRACE_MODE_READ, d_cpu, tr, cpu, &snapshot_raw_fops);
     }
 #endif
+}
+```
+
+### create_trace_instances
+
+```c
+static __init void create_trace_instances(struct dentry *d_tracer)
+{
+    struct trace_array *tr;
+
+    trace_instance_dir = tracefs_create_instance_dir(
+        "instances", d_tracer, instance_mkdir, instance_rmdir) {
+
+        struct dentry *dentry;
+
+        /* Only allow one instance of the instances directory. */
+        if (WARN_ON(tracefs_ops.mkdir || tracefs_ops.rmdir))
+            return NULL;
+
+        dentry = __create_dir(name, parent, &tracefs_instance_dir_inode_operations);
+        if (!dentry)
+            return NULL;
+
+        tracefs_ops.mkdir = mkdir;
+        tracefs_ops.rmdir = rmdir;
+
+        return dentry;
+    }
+    if (MEM_FAIL(!trace_instance_dir, "Failed to create instances directory\n"))
+        return;
+
+    guard(mutex)(&event_mutex);
+    guard(mutex)(&trace_types_lock);
+
+    list_for_each_entry(tr, &ftrace_trace_arrays, list) {
+        if (!tr->name)
+            continue;
+        if (MEM_FAIL(trace_array_create_dir(tr) < 0,
+                 "Failed to create instance directory\n"))
+            return;
+    }
+}
+```
+
+```c
+static const struct inode_operations tracefs_instance_dir_inode_operations = {
+    .lookup        = simple_lookup,
+    .mkdir        = tracefs_syscall_mkdir,
+    .rmdir        = tracefs_syscall_rmdir,
+    .permission    = tracefs_permission,
+    .getattr    = tracefs_getattr,
+    .setattr    = tracefs_setattr,
+};
+```
+
+### /sys/kernel/tracing/current_tracer
+
+```c
+static const struct file_operations set_tracer_fops = {
+    .open           = tracing_open_generic_tr,
+    .read           = tracing_set_trace_read,
+    .write          = tracing_set_trace_write,
+    .llseek         = generic_file_llseek,
+    .release        = tracing_release_generic_tr,
+};
+
+static ssize_t
+tracing_set_trace_write(struct file *filp, const char __user *ubuf,
+            size_t cnt, loff_t *ppos)
+{
+    struct trace_array *tr = filp->private_data;
+    char buf[MAX_TRACER_SIZE+1];
+    char *name;
+    size_t ret;
+    int err;
+
+    ret = cnt;
+
+    if (cnt > MAX_TRACER_SIZE)
+        cnt = MAX_TRACER_SIZE;
+
+    if (copy_from_user(buf, ubuf, cnt))
+        return -EFAULT;
+
+    buf[cnt] = 0;
+
+    name = strim(buf);
+
+    err = tracing_set_tracer(tr, name);
+    if (err)
+        return err;
+
+    *ppos += ret;
+
+    return ret;
+}
+
+int tracing_set_tracer(struct trace_array *tr, const char *buf)
+{
+    struct tracer *trace = NULL;
+    struct tracers *t;
+#ifdef CONFIG_TRACER_MAX_TRACE
+    bool had_max_tr;
+#endif
+    int ret;
+
+    guard(mutex)(&trace_types_lock);
+
+    update_last_data(tr);
+
+    if (!tr->ring_buffer_expanded) {
+        ret = __tracing_resize_ring_buffer(tr, trace_buf_size, RING_BUFFER_ALL_CPUS);
+        if (ret < 0)
+            return ret;
+        ret = 0;
+    }
+
+    list_for_each_entry(t, &tr->tracers, list) {
+        if (strcmp(t->tracer->name, buf) == 0) {
+            trace = t->tracer;
+            break;
+        }
+    }
+    if (!trace)
+        return -EINVAL;
+
+    if (trace == tr->current_trace)
+        return 0;
+
+#ifdef CONFIG_TRACER_SNAPSHOT
+    if (trace->use_max_tr) {
+        local_irq_disable();
+        arch_spin_lock(&tr->max_lock);
+        ret = tr->cond_snapshot ? -EBUSY : 0;
+        arch_spin_unlock(&tr->max_lock);
+        local_irq_enable();
+        if (ret)
+            return ret;
+    }
+#endif
+    /* Some tracers won't work on kernel command line */
+    if (system_state < SYSTEM_RUNNING && trace->noboot) {
+        pr_warn("Tracer '%s' is not allowed on command line, ignored\n",
+            trace->name);
+        return -EINVAL;
+    }
+
+    /* Some tracers are only allowed for the top level buffer */
+    if (!trace_ok_for_array(trace, tr))
+        return -EINVAL;
+
+    /* If trace pipe files are being read, we can't change the tracer */
+    if (tr->trace_ref)
+        return -EBUSY;
+
+    trace_branch_disable();
+
+    tr->current_trace->enabled--;
+
+    if (tr->current_trace->reset)
+        tr->current_trace->reset(tr);
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+    had_max_tr = tr->current_trace->use_max_tr;
+
+    /* Current trace needs to be nop_trace before synchronize_rcu */
+    tr->current_trace = &nop_trace;
+    tr->current_trace_flags = nop_trace.flags;
+
+    if (had_max_tr && !trace->use_max_tr) {
+        /* We need to make sure that the update_max_tr sees that
+         * current_trace changed to nop_trace to keep it from
+         * swapping the buffers after we resize it.
+         * The update_max_tr is called from interrupts disabled
+         * so a synchronized_sched() is sufficient. */
+        synchronize_rcu();
+        free_snapshot(tr);
+        tracing_disarm_snapshot(tr);
+    }
+
+    if (!had_max_tr && trace->use_max_tr) {
+        ret = tracing_arm_snapshot_locked(tr);
+        if (ret)
+            return ret;
+    }
+#else
+    tr->current_trace = &nop_trace;
+#endif
+
+    tr->current_trace_flags = t->flags ? : t->tracer->flags;
+
+    if (trace->init) {
+        ret = tracer_init(trace, tr) {
+            tracing_reset_online_cpus(&tr->array_buffer);
+            /* function_trace_init
+             * branch_trace_init
+             * graph_trace_init
+             * nop_trace_init */
+            return t->init(tr);
+        }
+        if (ret) {
+#ifdef CONFIG_TRACER_MAX_TRACE
+            if (trace->use_max_tr)
+                tracing_disarm_snapshot(tr);
+#endif
+            tr->current_trace_flags = nop_trace.flags;
+            return ret;
+        }
+    }
+
+    tr->current_trace = trace;
+    tr->current_trace->enabled++;
+    trace_branch_enable(tr);
+
+    return 0;
+}
+```
+
+### /sys/kernel/tracing/set_ftrace_filter
+
+```c
+static const struct file_operations ftrace_filter_fops = {
+    .open           = ftrace_filter_open,
+    .read           = seq_read,
+    .write          = ftrace_filter_write,
+    .llseek         = tracing_lseek,
+    .release        = ftrace_regex_release,
+};
+```
+
+#### ftrace_filter_open
+
+```c
+static int
+ftrace_filter_open(struct inode *inode, struct file *file)
+{
+    /* the trace_array's ops */
+	struct ftrace_ops *ops = inode->i_private;
+
+	/* Checks for tracefs lockdown */
+	return ftrace_regex_open(ops,
+			FTRACE_ITER_FILTER | FTRACE_ITER_DO_PROBES,
+			inode, file);
+}
+
+int
+ftrace_regex_open(struct ftrace_ops *ops, int flag,
+		  struct inode *inode, struct file *file)
+{
+	struct ftrace_iterator *iter;
+	struct ftrace_hash *hash;
+	struct list_head *mod_head;
+	struct trace_array *tr = ops->private;
+	int ret = -ENOMEM;
+
+	ftrace_ops_init(ops);
+
+	if (unlikely(ftrace_disabled))
+		return -ENODEV;
+
+	if (tracing_check_open_get_tr(tr))
+		return -ENODEV;
+
+	iter = kzalloc(sizeof(*iter), GFP_KERNEL);
+	if (!iter)
+		goto out;
+
+	if (trace_parser_get_init(&iter->parser, FTRACE_BUFF_MAX))
+		goto out;
+
+	iter->ops = ops;
+	iter->flags = flag;
+	iter->tr = tr;
+
+	mutex_lock(&ops->func_hash->regex_lock);
+
+	if (flag & FTRACE_ITER_NOTRACE) {
+		hash = ops->func_hash->notrace_hash;
+		mod_head = tr ? &tr->mod_notrace : NULL;
+	} else {
+		hash = ops->func_hash->filter_hash;
+		mod_head = tr ? &tr->mod_trace : NULL;
+	}
+
+	iter->mod_list = mod_head;
+
+	if (file->f_mode & FMODE_WRITE) {
+		const int size_bits = FTRACE_HASH_DEFAULT_BITS;
+
+		if (file->f_flags & O_TRUNC) {
+			iter->hash = alloc_ftrace_hash(size_bits);
+			clear_ftrace_mod_list(mod_head);
+	        } else {
+			iter->hash = alloc_and_copy_ftrace_hash(size_bits, hash);
+		}
+	} else {
+		if (hash)
+			iter->hash = alloc_and_copy_ftrace_hash(hash->size_bits, hash);
+		else
+			iter->hash = EMPTY_HASH;
+	}
+
+	if (!iter->hash) {
+		trace_parser_put(&iter->parser);
+		goto out_unlock;
+	}
+
+	ret = 0;
+
+	if (file->f_mode & FMODE_READ) {
+		iter->pg = ftrace_pages_start;
+
+		ret = seq_open(file, &show_ftrace_seq_ops);
+		if (!ret) {
+			struct seq_file *m = file->private_data;
+			m->private = iter;
+		} else {
+			/* Failed */
+			free_ftrace_hash(iter->hash);
+			trace_parser_put(&iter->parser);
+		}
+	} else
+		file->private_data = iter;
+
+ out_unlock:
+	mutex_unlock(&ops->func_hash->regex_lock);
+
+ out:
+	if (ret) {
+		kfree(iter);
+		if (tr)
+			trace_array_put(tr);
+	}
+
+	return ret;
+}
+```
+
+#### ftrace_filter_write
+
+```c
+ssize_t
+ftrace_filter_write(struct file *file, const char __user *ubuf,
+            size_t cnt, loff_t *ppos)
+{
+    return ftrace_regex_write(file, ubuf, cnt, ppos, 1);
+}
+
+static ssize_t
+ftrace_regex_write(struct file *file, const char __user *ubuf,
+           size_t cnt, loff_t *ppos, int enable)
+{
+    struct ftrace_iterator *iter;
+    struct trace_parser *parser;
+    ssize_t ret, read;
+
+    if (!cnt)
+        return 0;
+
+    if (file->f_mode & FMODE_READ) {
+        struct seq_file *m = file->private_data;
+        iter = m->private;
+    } else
+        iter = file->private_data;
+
+    if (unlikely(ftrace_disabled))
+        return -ENODEV;
+
+    /* iter->hash is a local copy, so we don't need regex_lock */
+
+    parser = &iter->parser;
+    read = trace_get_user(parser, ubuf, cnt, ppos);
+
+    if (read >= 0 && trace_parser_loaded(parser) && !trace_parser_cont(parser)) {
+        ret = ftrace_process_regex(iter, parser->buffer, parser->idx, enable);
+        trace_parser_clear(parser);
+        if (ret < 0)
+            return ret;
+    }
+
+    return read;
+}
+
+int ftrace_process_regex(struct ftrace_iterator *iter,
+                char *buff, int len, int enable)
+{
+    struct ftrace_hash *hash = iter->hash;
+    struct trace_array *tr = iter->ops->private;
+    char *func, *command, *next = buff;
+    struct ftrace_func_command *p;
+    int ret;
+
+    func = strsep(&next, ":");
+
+    if (!next) {
+        /* set filter */
+        ret = ftrace_match_records(hash, func, len);
+            --->
+        if (!ret)
+            ret = -EINVAL;
+        if (ret < 0)
+            return ret;
+        return 0;
+    }
+
+    /* command found */
+
+    command = strsep(&next, ":");
+
+    guard(mutex)(&ftrace_cmd_mutex);
+
+    list_for_each_entry(p, &ftrace_commands, list) {
+        if (strcmp(p->name, command) == 0)
+            return p->func(tr, hash, func, command, next, enable);
+    }
+
+    return -EINVAL;
+}
+```
+
+### /sys/kernel/tracing/tracing_on
+
+```c
+static const struct file_operations rb_simple_fops = {
+    .open           = tracing_open_generic_tr,
+    .read           = rb_simple_read,
+    .write          = rb_simple_write,
+    .release        = tracing_release_generic_tr,
+    .llseek         = default_llseek,
+};
+
+static ssize_t
+rb_simple_write(struct file *filp, const char __user *ubuf,
+        size_t cnt, loff_t *ppos)
+{
+    struct trace_array *tr = filp->private_data;
+    struct trace_buffer *buffer = tr->array_buffer.buffer;
+    unsigned long val;
+    int ret;
+
+    ret = kstrtoul_from_user(ubuf, cnt, 10, &val);
+    if (ret)
+        return ret;
+
+    if (buffer) {
+        guard(mutex)(&trace_types_lock);
+        if (!!val == tracer_tracing_is_on(tr)) {
+            val = 0; /* do nothing */
+        } else if (val) {
+            tracer_tracing_on(tr) {
+                if (tr->array_buffer.buffer) {
+                    ring_buffer_record_on(tr->array_buffer.buffer) {
+                        unsigned int rd;
+                        unsigned int new_rd;
+
+                        rd = atomic_read(&buffer->record_disabled);
+                        do {
+                            new_rd = rd & ~RB_BUFFER_OFF;
+                        } while (!atomic_try_cmpxchg(&buffer->record_disabled, &rd, new_rd));
+                    }
+                }
+                /* This flag is looked at when buffers haven't been allocated
+                * yet, or by some tracers (like irqsoff), that just want to
+                * know if the ring buffer has been disabled, but it can handle
+                * races of where it gets disabled but we still do a record.
+                * As the check is in the fast path of the tracers, it is more
+                * important to be fast than accurate. */
+                tr->buffer_disabled = 0;
+            }
+            if (tr->current_trace->start)
+                tr->current_trace->start(tr);
+        } else {
+            tracer_tracing_off(tr);
+            if (tr->current_trace->stop)
+                tr->current_trace->stop(tr);
+            /* Wake up any waiters */
+            ring_buffer_wake_waiters(buffer, RING_BUFFER_ALL_CPUS);
+        }
+    }
+
+    (*ppos)++;
+
+    return cnt;
 }
 ```
 
@@ -8223,73 +9485,6 @@ static int tracing_wait_pipe(struct file *filp)
 }
 ```
 
-
-### /sys/kernel/tracing/tracing_on
-
-```c
-static const struct file_operations rb_simple_fops = {
-    .open           = tracing_open_generic_tr,
-    .read           = rb_simple_read,
-    .write          = rb_simple_write,
-    .release        = tracing_release_generic_tr,
-    .llseek         = default_llseek,
-};
-
-static ssize_t
-rb_simple_write(struct file *filp, const char __user *ubuf,
-        size_t cnt, loff_t *ppos)
-{
-    struct trace_array *tr = filp->private_data;
-    struct trace_buffer *buffer = tr->array_buffer.buffer;
-    unsigned long val;
-    int ret;
-
-    ret = kstrtoul_from_user(ubuf, cnt, 10, &val);
-    if (ret)
-        return ret;
-
-    if (buffer) {
-        guard(mutex)(&trace_types_lock);
-        if (!!val == tracer_tracing_is_on(tr)) {
-            val = 0; /* do nothing */
-        } else if (val) {
-            tracer_tracing_on(tr) {
-                if (tr->array_buffer.buffer) {
-                    ring_buffer_record_on(tr->array_buffer.buffer) {
-                        unsigned int rd;
-                        unsigned int new_rd;
-
-                        rd = atomic_read(&buffer->record_disabled);
-                        do {
-                            new_rd = rd & ~RB_BUFFER_OFF;
-                        } while (!atomic_try_cmpxchg(&buffer->record_disabled, &rd, new_rd));
-                    }
-                }
-                /* This flag is looked at when buffers haven't been allocated
-                * yet, or by some tracers (like irqsoff), that just want to
-                * know if the ring buffer has been disabled, but it can handle
-                * races of where it gets disabled but we still do a record.
-                * As the check is in the fast path of the tracers, it is more
-                * important to be fast than accurate. */
-                tr->buffer_disabled = 0;
-            }
-            if (tr->current_trace->start)
-                tr->current_trace->start(tr);
-        } else {
-            tracer_tracing_off(tr);
-            if (tr->current_trace->stop)
-                tr->current_trace->stop(tr);
-            /* Wake up any waiters */
-            ring_buffer_wake_waiters(buffer, RING_BUFFER_ALL_CPUS);
-        }
-    }
-
-    (*ppos)++;
-
-    return cnt;
-}
-```
-
 # static_key
 
 ![](../images/kernel/trace-static_key.svg)
@@ -8641,6 +9836,128 @@ static __always_inline bool arch_static_branch_jump(struct static_key * const ke
     return false;
 l_yes:
     return true;
+}
+```
+
+## jump_label_module_notify
+
+```c
+static struct notifier_block jump_label_module_nb = {
+    .notifier_call = jump_label_module_notify,
+    .priority = 1, /* higher than tracepoints */
+};
+
+static __init int jump_label_init_module(void)
+{
+    return register_module_notifier(&jump_label_module_nb) {
+        return blocking_notifier_chain_register(&module_notify_list, nb);
+    }
+}
+early_initcall(jump_label_init_module);
+
+do_init_module()
+{
+    blocking_notifier_call_chain(&module_notify_list, MODULE_STATE_LIVE, mod);
+}
+```
+
+```c
+jump_label_module_notify(struct notifier_block *self, unsigned long val,
+             void *data)
+{
+    struct module *mod = data;
+    int ret = 0;
+
+    cpus_read_lock();
+    jump_label_lock();
+
+    switch (val) {
+    case MODULE_STATE_COMING:
+        ret = jump_label_add_module(mod);
+        if (ret) {
+            WARN(1, "Failed to allocate memory: jump_label may not work properly.\n");
+            jump_label_del_module(mod);
+        }
+        break;
+    case MODULE_STATE_GOING:
+        jump_label_del_module(mod);
+        break;
+    }
+
+    jump_label_unlock();
+    cpus_read_unlock();
+
+    return notifier_from_errno(ret);
+}
+
+int jump_label_add_module(struct module *mod)
+{
+    struct jump_entry *iter_start = mod->jump_entries;
+    struct jump_entry *iter_stop = iter_start + mod->num_jump_entries;
+    struct jump_entry *iter;
+    struct static_key *key = NULL;
+    struct static_key_mod *jlm, *jlm2;
+
+    /* if the module doesn't have jump label entries, just return */
+    if (iter_start == iter_stop)
+        return 0;
+
+    jump_label_sort_entries(iter_start, iter_stop);
+
+    for (iter = iter_start; iter < iter_stop; iter++) {
+        struct static_key *iterk;
+        bool in_init;
+
+        in_init = within_module_init(jump_entry_code(iter), mod);
+        jump_entry_set_init(iter, in_init);
+
+        iterk = jump_entry_key(iter);
+        if (iterk == key)
+            continue;
+
+        key = iterk;
+        if (within_module((unsigned long)key, mod)) {
+            static_key_set_entries(key, iter);
+            continue;
+        }
+
+        /* If the key was sealed at init, then there's no need to keep a
+         * reference to its module entries - just patch them now and be
+         * done with it. */
+        if (static_key_sealed(key))
+            goto do_poke;
+
+        jlm = kzalloc(sizeof(struct static_key_mod), GFP_KERNEL);
+        if (!jlm)
+            return -ENOMEM;
+        if (!static_key_linked(key)) {
+            jlm2 = kzalloc(sizeof(struct static_key_mod),
+                       GFP_KERNEL);
+            if (!jlm2) {
+                kfree(jlm);
+                return -ENOMEM;
+            }
+            scoped_guard(rcu)
+                jlm2->mod = __module_address((unsigned long)key);
+
+            jlm2->entries = static_key_entries(key);
+            jlm2->next = NULL;
+            static_key_set_mod(key, jlm2);
+            static_key_set_linked(key);
+        }
+        jlm->mod = mod;
+        jlm->entries = iter;
+        jlm->next = static_key_mod(key);
+        static_key_set_mod(key, jlm);
+        static_key_set_linked(key);
+
+        /* Only update if we've changed from our initial state */
+do_poke:
+        if (jump_label_type(iter) != jump_label_init_type(iter))
+            __jump_label_update(key, iter, iter_stop, true);
+    }
+
+    return 0;
 }
 ```
 
