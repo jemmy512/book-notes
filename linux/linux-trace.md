@@ -3860,6 +3860,7 @@ SYM_CODE_START(ftrace_caller)
     #else
         ldr_l   x2, function_trace_op       // op
 
+    /* update at update_ftrace_func(ftrace_ops_list_func) */
     SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
         bl      ftrace_stub                 // func(ip, parent_ip, op, regs)
     #endif
@@ -3967,17 +3968,17 @@ static struct ftrace_page    *ftrace_pages;
 
 /* Basic structures for ftrace pages (kernel/trace/ftrace.c) */
 struct ftrace_page {
-    struct ftrace_page    *next;    /* Next page */
-    struct dyn_ftrace    *records;  /* Array of trace records */
-    int            index;           /* Current record index */
-    int            size;            /* Number of records in page */
+    struct ftrace_page  *next;      /* Next page */
+    struct dyn_ftrace   *records;   /* Array of trace records */
+    int                 index;      /* Current record index */
+    int                 size;       /* Number of records in page */
 };
 
 /* Record for each traced function */
 struct dyn_ftrace {
-    unsigned long        ip;        /* Instruction pointer */
-    unsigned long        flags;     /* Status flags */
-    struct dyn_arch_ftrace    arch;    /* Architecture specific data */
+    unsigned long           ip;     /* Instruction pointer */
+    unsigned long           flags;  /* Status flags */
+    struct dyn_arch_ftrace  arch;   /* Architecture specific data */
 };
 ```
 
@@ -4136,14 +4137,14 @@ static struct ftrace_func_command ftrace_cpudump_cmd = {
 ```c
 int register_ftrace_function(struct ftrace_ops *ops)
 {
-	int ret;
+    int ret;
 
-	lock_direct_mutex();
-	ret = prepare_direct_functions_for_ipmodify(ops);
-	if (ret < 0)
-		goto out_unlock;
+    lock_direct_mutex();
+    ret = prepare_direct_functions_for_ipmodify(ops);
+    if (ret < 0)
+        goto out_unlock;
 
-	ret = register_ftrace_function_nolock(ops) {
+    ret = register_ftrace_function_nolock(ops) {
         int ret;
 
         ftrace_ops_init(ops);
@@ -4158,8 +4159,8 @@ int register_ftrace_function(struct ftrace_ops *ops)
     }
 
 out_unlock:
-	unlock_direct_mutex();
-	return ret;
+    unlock_direct_mutex();
+    return ret;
 }
 
 int ftrace_startup(struct ftrace_ops *ops, int command)
@@ -4398,8 +4399,7 @@ static bool ftrace_hash_rec_enable(struct ftrace_ops *ops)
                 * left has a trampoline. As TRAMP can only be
                 * enabled if there is only a single ops attached
                 * to it. */
-                if (ftrace_rec_count(rec) == 1 &&
-                    ftrace_find_tramp_ops_any_other(rec, ops))
+                if (ftrace_rec_count(rec) == 1 && ftrace_find_tramp_ops_any_other(rec, ops))
                     rec->flags |= FTRACE_FL_TRAMP;
                 else
                     rec->flags &= ~FTRACE_FL_TRAMP;
@@ -4448,279 +4448,281 @@ ftrace_startup_enable(command) {
         ftrace_arch_code_modify_prepare();
         arch_ftrace_update_code(command) {
             command |= FTRACE_MAY_SLEEP;
-            ftrace_modify_all_code(command) {
-                int update = command & FTRACE_UPDATE_TRACE_FUNC;
-                int mod_flags = 0;
-                int err = 0;
-
-                if (command & FTRACE_MAY_SLEEP)
-                    mod_flags = FTRACE_MODIFY_MAY_SLEEP_FL;
-
-                if (update) {
-                    err = update_ftrace_func(ftrace_ops_list_func);
-                        --->
-                    if (FTRACE_WARN_ON(err))
-                        return;
-                }
-
-                if (command & FTRACE_UPDATE_CALLS) {
-                    ftrace_replace_code(mod_flags | FTRACE_MODIFY_ENABLE_FL);
-                } else if (command & FTRACE_DISABLE_CALLS) {
-                    ftrace_replace_code(mod_flags) {
-                        struct dyn_ftrace *rec;
-                        struct ftrace_page *pg;
-                        bool enable = mod_flags & FTRACE_MODIFY_ENABLE_FL;
-                        int schedulable = mod_flags & FTRACE_MODIFY_MAY_SLEEP_FL;
-                        int failed;
-
-                        if (unlikely(ftrace_disabled))
-                            return;
-
-                        do_for_each_ftrace_rec(pg, rec) {
-                            ret = skip_record(rec) {
-                                return rec->flags & FTRACE_FL_DISABLED
-                                    && !(rec->flags & FTRACE_FL_ENABLED);
-                            }
-                            if (ret)
-                                continue;
-
-                            failed = __ftrace_replace_code(rec, enable) {
-                                unsigned long ftrace_old_addr;
-                                unsigned long ftrace_addr;
-                                int ret;
-
-                                /* Determines the new address to be patched into the callsite
-                                 * based on the current state of registered ftrace_ops for that callsite */
-                                ftrace_addr = ftrace_get_addr_new(rec) {
-                                    struct ftrace_ops *ops;
-                                    unsigned long addr;
-
-                                    if ((rec->flags & FTRACE_FL_DIRECT) && (ftrace_rec_count(rec) == 1)) {
-                                        addr = ftrace_find_rec_direct(rec->ip) {
-                                            struct ftrace_func_entry *entry;
-
-                                            entry = __ftrace_lookup_ip(direct_functions, ip);
-                                            if (!entry)
-                                                return 0;
-
-                                            return entry->direct;
-                                        }
-                                        if (addr)
-                                            return addr;
-                                        WARN_ON_ONCE(1);
-                                    }
-
-                                    /* Trampolines take precedence over regs */
-                                    if (rec->flags & FTRACE_FL_TRAMP) {
-                                        ops = ftrace_find_tramp_ops_new(rec) {
-                                            struct ftrace_ops *op;
-                                            unsigned long ip = rec->ip;
-
-                                            do_for_each_ftrace_op(op, ftrace_ops_list) {
-                                                /* pass rec in as regs to have non-NULL val */
-                                                if (hash_contains_ip(ip, op->func_hash))
-                                                    return op;
-                                            } while_for_each_ftrace_op(op);
-
-                                            return NULL;
-                                        }
-                                        if (FTRACE_WARN_ON(!ops || !ops->trampoline)) {
-                                            /* Ftrace is shutting down, return anything */
-                                            return (unsigned long)FTRACE_ADDR;
-                                        }
-                                        return ops->trampoline;
-                                    }
-
-                                    if (rec->flags & FTRACE_FL_REGS)
-                                        return (unsigned long)FTRACE_REGS_ADDR; /* (unsigned long)ftrace_regs_caller */
-                                    else
-                                        return (unsigned long)FTRACE_ADDR; /* (unsigned long)ftrace_caller */
-                                }
-
-                                /* Retrieves the current address already patched into the callsite,
-                                 * reflecting the existing ftrace_ops or trampoline. */
-                                ftrace_old_addr = ftrace_get_addr_curr(rec);
-
-                                ftrace_bug_type = FTRACE_BUG_UNKNOWN;
-
-                                /* set a record that now is tracing or not */
-                                ret = ftrace_update_record(rec, enable);
-                                switch (ret) {
-                                case FTRACE_UPDATE_IGNORE:
-                                    return 0;
-
-                                case FTRACE_UPDATE_MAKE_CALL:
-                                    ftrace_bug_type = FTRACE_BUG_CALL;
-                                    return ftrace_make_call(rec, ftrace_addr/*addr*/) {
-                                        unsigned long pc = rec->ip;
-                                        u32 old, new;
-                                        int ret;
-
-                                        /* Memory Layout After Patching:
-                                         * 0x0FF0  IMM of ftrace_ops/ftrace_list_ops (literal pool entry)
-                                         * 0x1000  MOV X9, LR (save return address after BL ftrace_caller)
-                                         * 0x1004  BL ftrace_caller (branch to trampoline)
-                                         * 0x1008  Start of the original function body */
-
-                                        /* 1. patch the ftrace_ops/ftrace_list_ops into literal pool */
-                                        ret = ftrace_rec_update_ops(rec) {
-                                            /* search rec->ip in hash table of every ftrace_ops linked in ftrace_ops_list
-                                             * return the single ftrace_ops if the rec is attached only one ftrace_ops
-                                             * otherwise return `ftrace_list_ops` */
-                                            ops = arm64_rec_get_ops(rec) {
-                                                const struct ftrace_ops *ops = NULL;
-
-                                                if (rec->flags & FTRACE_FL_CALL_OPS_EN) {
-                                                    ops = ftrace_find_unique_ops(rec) {
-                                                        struct ftrace_ops *op, *found = NULL;
-                                                        unsigned long ip = rec->ip;
-
-                                                        do_for_each_ftrace_op(op, ftrace_ops_list) {
-
-                                                            if (hash_contains_ip(ip, op->func_hash)) {
-                                                                if (found)
-                                                                    return NULL;
-                                                                found = op;
-                                                            }
-
-                                                        } while_for_each_ftrace_op(op);
-
-                                                        return found;
-                                                    }
-                                                    WARN_ON_ONCE(!ops);
-                                                }
-
-                                                if (!ops)
-                                                    ops = &ftrace_list_ops; /* searh all ftrace_ops in the list */
-
-                                                return ops;
-                                            }
-
-                                            return ftrace_rec_set_ops(rec, ops) {
-                                                unsigned long literal = ALIGN_DOWN(rec->ip - 12, 8);
-                                                return aarch64_insn_write_literal_u64((void *)literal, (unsigned long)ops) {
-                                                    u64 *waddr;
-                                                    unsigned long flags;
-                                                    int ret;
-
-                                                    raw_spin_lock_irqsave(&patch_lock, flags);
-                                                    waddr = patch_map(addr, FIX_TEXT_POKE0);
-
-                                                    ret = copy_to_kernel_nofault(waddr, &val, sizeof(val));
-
-                                                    patch_unmap(FIX_TEXT_POKE0);
-                                                    raw_spin_unlock_irqrestore(&patch_lock, flags);
-
-                                                    return ret;
-                                                }
-                                            }
-                                        }
-                                        if (ret)
-                                            return ret;
-
-                                        if (!ftrace_find_callable_addr(rec, NULL, &addr))
-                                            return -EINVAL;
-
-                                        old = aarch64_insn_gen_nop();
-                                        new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK) {
-                                            /* BL ftrace_call */
-                                        }
-
-                                        /* 2. patch `BL ftrace_call` after litral pool */
-                                        return ftrace_modify_code(pc, old, new, true) {
-                                            aarch64_insn_patch_text_nosync((void *)pc, new);
-                                        }
-                                    }
-
-                                case FTRACE_UPDATE_MAKE_NOP:
-                                    ftrace_bug_type = FTRACE_BUG_NOP;
-                                    return ftrace_make_nop(NULL, rec, ftrace_old_addr);
-
-                                case FTRACE_UPDATE_MODIFY_CALL:
-                                    ftrace_bug_type = FTRACE_BUG_UPDATE;
-                                    return ftrace_modify_call(rec, ftrace_old_addr, ftrace_addr) {
-                                        unsigned long pc = rec->ip;
-                                        u32 old, new;
-                                        int ret;
-
-                                        ret = ftrace_rec_set_ops(rec, arm64_rec_get_ops(rec));
-                                        if (ret)
-                                            return ret;
-
-                                        if (!ftrace_find_callable_addr(rec, NULL, &old_addr))
-                                            return -EINVAL;
-                                        if (!ftrace_find_callable_addr(rec, NULL, &addr))
-                                            return -EINVAL;
-
-                                        old = aarch64_insn_gen_branch_imm(pc, old_addr, AARCH64_INSN_BRANCH_LINK);
-                                        new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
-
-                                        return ftrace_modify_code(pc, old, new, true) {
-                                            aarch64_insn_patch_text_nosync((void *)pc, new) {
-                                                --->
-                                            }
-                                        }
-                                    }
-                                }
-
-                                return -1; /* unknown ftrace bug */
-                            }
-
-                            if (schedulable)
-                                cond_resched();
-                        } while_for_each_ftrace_rec();
-                    }
-                }
-
-                if (update && ftrace_trace_function != ftrace_ops_list_func) {
-                    function_trace_op = set_function_trace_op;
-                    smp_wmb();
-                    /* If irqs are disabled, we are in stop machine */
-                    if (!irqs_disabled())
-                        smp_call_function(ftrace_sync_ipi, NULL, 1);
-
-                    err = update_ftrace_func(ftrace_trace_function/*func*/) {
-                        static ftrace_func_t save_func;
-
-                        /* Avoid updating if it hasn't changed */
-                        if (func == save_func)
-                            return 0;
-
-                        save_func = func;
-
-                        /* Replace tracer function in ftrace_caller() */
-                        return ftrace_update_ftrace_func(func) {
-                            unsigned long pc;
-                            u32 new;
-
-                            /* When using CALL_OPS, the function to call is associated with the
-                             * call site, and we don't have a global function pointer to update. */
-                            if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
-                                return 0;
-
-                            pc = (unsigned long)ftrace_call;
-                            new = aarch64_insn_gen_branch_imm(
-                                pc,
-                                (unsigned long)func,
-                                AARCH64_INSN_BRANCH_LINK
-                            );
-
-                            return ftrace_modify_code(pc, 0, new, false);
-                        }
-                    }
-                    if (FTRACE_WARN_ON(err))
-                        return;
-                }
-
-                if (command & FTRACE_START_FUNC_RET)
-                    err = ftrace_enable_ftrace_graph_caller();
-                else if (command & FTRACE_STOP_FUNC_RET)
-                    err = ftrace_disable_ftrace_graph_caller();
-                FTRACE_WARN_ON(err);
-            }
+            ftrace_modify_all_code(command);
         }
         ftrace_arch_code_modify_post_process();
     }
+}
+
+void ftrace_modify_all_code(int command) {
+    int update = command & FTRACE_UPDATE_TRACE_FUNC;
+    int mod_flags = 0;
+    int err = 0;
+
+    if (command & FTRACE_MAY_SLEEP)
+        mod_flags = FTRACE_MODIFY_MAY_SLEEP_FL;
+
+    if (update) {
+        err = update_ftrace_func(ftrace_ops_list_func);
+            --->
+        if (FTRACE_WARN_ON(err))
+            return;
+    }
+
+    if (command & FTRACE_UPDATE_CALLS) {
+        ftrace_replace_code(mod_flags | FTRACE_MODIFY_ENABLE_FL);
+    } else if (command & FTRACE_DISABLE_CALLS) {
+        ftrace_replace_code(mod_flags) {
+            struct dyn_ftrace *rec;
+            struct ftrace_page *pg;
+            bool enable = mod_flags & FTRACE_MODIFY_ENABLE_FL;
+            int schedulable = mod_flags & FTRACE_MODIFY_MAY_SLEEP_FL;
+            int failed;
+
+            if (unlikely(ftrace_disabled))
+                return;
+
+            do_for_each_ftrace_rec(pg, rec) {
+                ret = skip_record(rec) {
+                    return rec->flags & FTRACE_FL_DISABLED
+                        && !(rec->flags & FTRACE_FL_ENABLED);
+                }
+                if (ret)
+                    continue;
+
+                failed = __ftrace_replace_code(rec, enable) {
+                    unsigned long ftrace_old_addr;
+                    unsigned long ftrace_addr;
+                    int ret;
+
+                    /* Determines the new address to be patched into the callsite
+                        * based on the current state of registered ftrace_ops for that callsite */
+                    ftrace_addr = ftrace_get_addr_new(rec) {
+                        struct ftrace_ops *ops;
+                        unsigned long addr;
+
+                        if ((rec->flags & FTRACE_FL_DIRECT) && (ftrace_rec_count(rec) == 1)) {
+                            addr = ftrace_find_rec_direct(rec->ip) {
+                                struct ftrace_func_entry *entry;
+
+                                entry = __ftrace_lookup_ip(direct_functions, ip);
+                                if (!entry)
+                                    return 0;
+
+                                return entry->direct;
+                            }
+                            if (addr)
+                                return addr;
+                            WARN_ON_ONCE(1);
+                        }
+
+                        /* Trampolines take precedence over regs */
+                        if (rec->flags & FTRACE_FL_TRAMP) {
+                            ops = ftrace_find_tramp_ops_new(rec) {
+                                struct ftrace_ops *op;
+                                unsigned long ip = rec->ip;
+
+                                do_for_each_ftrace_op(op, ftrace_ops_list) {
+                                    /* pass rec in as regs to have non-NULL val */
+                                    if (hash_contains_ip(ip, op->func_hash))
+                                        return op;
+                                } while_for_each_ftrace_op(op);
+
+                                return NULL;
+                            }
+                            if (FTRACE_WARN_ON(!ops || !ops->trampoline)) {
+                                /* Ftrace is shutting down, return anything */
+                                return (unsigned long)FTRACE_ADDR;
+                            }
+                            return ops->trampoline;
+                        }
+
+                        if (rec->flags & FTRACE_FL_REGS)
+                            return (unsigned long)FTRACE_REGS_ADDR; /* (unsigned long)ftrace_regs_caller */
+                        else
+                            return (unsigned long)FTRACE_ADDR; /* (unsigned long)ftrace_caller */
+                    }
+
+                    /* Retrieves the current address already patched into the callsite,
+                        * reflecting the existing ftrace_ops or trampoline. */
+                    ftrace_old_addr = ftrace_get_addr_curr(rec);
+
+                    ftrace_bug_type = FTRACE_BUG_UNKNOWN;
+
+                    /* set a record that now is tracing or not */
+                    ret = ftrace_update_record(rec, enable);
+                    switch (ret) {
+                    case FTRACE_UPDATE_IGNORE:
+                        return 0;
+
+                    case FTRACE_UPDATE_MAKE_CALL:
+                        ftrace_bug_type = FTRACE_BUG_CALL;
+                        return ftrace_make_call(rec, ftrace_addr/*addr*/) {
+                            unsigned long pc = rec->ip;
+                            u32 old, new;
+                            int ret;
+
+                            /* Memory Layout After Patching:
+                                * 0x0FF0  IMM of ftrace_ops/ftrace_list_ops (literal pool entry)
+                                * 0x1000  MOV X9, LR (save return address after BL ftrace_caller)
+                                * 0x1004  BL ftrace_caller (branch to trampoline)
+                                * 0x1008  Start of the original function body */
+
+                            /* 1. patch the ftrace_ops/ftrace_list_ops into literal pool */
+                            ret = ftrace_rec_update_ops(rec) {
+                                /* search rec->ip in hash table of every ftrace_ops linked in ftrace_ops_list
+                                    * return the single ftrace_ops if the rec is attached only one ftrace_ops
+                                    * otherwise return `ftrace_list_ops` */
+                                ops = arm64_rec_get_ops(rec) {
+                                    const struct ftrace_ops *ops = NULL;
+
+                                    if (rec->flags & FTRACE_FL_CALL_OPS_EN) {
+                                        ops = ftrace_find_unique_ops(rec) {
+                                            struct ftrace_ops *op, *found = NULL;
+                                            unsigned long ip = rec->ip;
+
+                                            do_for_each_ftrace_op(op, ftrace_ops_list) {
+
+                                                if (hash_contains_ip(ip, op->func_hash)) {
+                                                    if (found)
+                                                        return NULL;
+                                                    found = op;
+                                                }
+
+                                            } while_for_each_ftrace_op(op);
+
+                                            return found;
+                                        }
+                                        WARN_ON_ONCE(!ops);
+                                    }
+
+                                    if (!ops)
+                                        ops = &ftrace_list_ops; /* searh all ftrace_ops in the list */
+
+                                    return ops;
+                                }
+
+                                return ftrace_rec_set_ops(rec, ops) {
+                                    unsigned long literal = ALIGN_DOWN(rec->ip - 12, 8);
+                                    return aarch64_insn_write_literal_u64((void *)literal, (unsigned long)ops) {
+                                        u64 *waddr;
+                                        unsigned long flags;
+                                        int ret;
+
+                                        raw_spin_lock_irqsave(&patch_lock, flags);
+                                        waddr = patch_map(addr, FIX_TEXT_POKE0);
+
+                                        ret = copy_to_kernel_nofault(waddr, &val, sizeof(val));
+
+                                        patch_unmap(FIX_TEXT_POKE0);
+                                        raw_spin_unlock_irqrestore(&patch_lock, flags);
+
+                                        return ret;
+                                    }
+                                }
+                            }
+                            if (ret)
+                                return ret;
+
+                            if (!ftrace_find_callable_addr(rec, NULL, &addr))
+                                return -EINVAL;
+
+                            old = aarch64_insn_gen_nop();
+                            new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK) {
+                                /* BL ftrace_caller */
+                            }
+
+                            /* 2. patch `BL ftrace_caller` after litral pool */
+                            return ftrace_modify_code(pc, old, new, true) {
+                                aarch64_insn_patch_text_nosync((void *)pc, new);
+                            }
+                        }
+
+                    case FTRACE_UPDATE_MAKE_NOP:
+                        ftrace_bug_type = FTRACE_BUG_NOP;
+                        return ftrace_make_nop(NULL, rec, ftrace_old_addr);
+
+                    case FTRACE_UPDATE_MODIFY_CALL:
+                        ftrace_bug_type = FTRACE_BUG_UPDATE;
+                        return ftrace_modify_call(rec, ftrace_old_addr, ftrace_addr) {
+                            unsigned long pc = rec->ip;
+                            u32 old, new;
+                            int ret;
+
+                            ret = ftrace_rec_set_ops(rec, arm64_rec_get_ops(rec));
+                            if (ret)
+                                return ret;
+
+                            if (!ftrace_find_callable_addr(rec, NULL, &old_addr))
+                                return -EINVAL;
+                            if (!ftrace_find_callable_addr(rec, NULL, &addr))
+                                return -EINVAL;
+
+                            old = aarch64_insn_gen_branch_imm(pc, old_addr, AARCH64_INSN_BRANCH_LINK);
+                            new = aarch64_insn_gen_branch_imm(pc, addr, AARCH64_INSN_BRANCH_LINK);
+
+                            return ftrace_modify_code(pc, old, new, true) {
+                                aarch64_insn_patch_text_nosync((void *)pc, new) {
+                                    --->
+                                }
+                            }
+                        }
+                    }
+
+                    return -1; /* unknown ftrace bug */
+                }
+
+                if (schedulable)
+                    cond_resched();
+            } while_for_each_ftrace_rec();
+        }
+    }
+
+    if (update && ftrace_trace_function != ftrace_ops_list_func) {
+        function_trace_op = set_function_trace_op;
+        smp_wmb();
+        /* If irqs are disabled, we are in stop machine */
+        if (!irqs_disabled())
+            smp_call_function(ftrace_sync_ipi, NULL, 1);
+
+        err = update_ftrace_func(ftrace_trace_function/*func*/) {
+            static ftrace_func_t save_func;
+
+            /* Avoid updating if it hasn't changed */
+            if (func == save_func)
+                return 0;
+
+            save_func = func;
+
+            /* Replace tracer function in ftrace_caller() */
+            return ftrace_update_ftrace_func(func) {
+                unsigned long pc;
+                u32 new;
+
+                /* When using CALL_OPS, the function to call is associated with the
+                    * call site, and we don't have a global function pointer to update. */
+                if (IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
+                    return 0;
+
+                pc = (unsigned long)ftrace_call;
+                new = aarch64_insn_gen_branch_imm(
+                    pc,
+                    (unsigned long)func,
+                    AARCH64_INSN_BRANCH_LINK
+                );
+
+                return ftrace_modify_code(pc, 0, new, false);
+            }
+        }
+        if (FTRACE_WARN_ON(err))
+            return;
+    }
+
+    if (command & FTRACE_START_FUNC_RET)
+        err = ftrace_enable_ftrace_graph_caller();
+    else if (command & FTRACE_STOP_FUNC_RET)
+        err = ftrace_disable_ftrace_graph_caller();
+    FTRACE_WARN_ON(err);
 }
 ```
 
@@ -4777,8 +4779,7 @@ void arch_ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip)
             /* Stub functions don't need to be called nor tested */
             if (op->flags & FTRACE_OPS_FL_STUB)
                 continue;
-            if ((!(op->flags & FTRACE_OPS_FL_RCU) || rcu_is_watching())
-                && ftrace_ops_test(op, ip, regs)) {
+            if ((!(op->flags & FTRACE_OPS_FL_RCU) || rcu_is_watching()) && ftrace_ops_test(op, ip, regs)) {
                 if (FTRACE_WARN_ON(!op->func)) {
                     pr_warn("op=%p %pS\n", op, op);
                     goto out;
@@ -4817,6 +4818,15 @@ struct ftrace_hash {
     struct rcu_head     rcu;
 };
 ```
+
+Pattern example | type      | .search points to | Notes
+-|               -|                 -|  -|
+schedule,       | MATCH_FULL        | "schedule"    | exact match
+\*schedule*     | MATCH_MIDDLE_ONLY | "schedule"    | contains
+schedule*       | MATCH_FRONT_ONLY  | "schedule"    | prefix
+*schedule       | MATCH_END_ONLY    | "schedule"    | suffix
+^schedule       | special handling  |               | usually translated to index
+!something      | clear_filter      |               | clear instead of add
 
 ```c
 int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
@@ -4858,76 +4868,8 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
                 goto out_regex_unlock;
             }
 
-            ret = ftrace_match_records(hash, buf, len) {
-                return match_records(hash, buff, len, NULL/*mod*/) {
-                    struct ftrace_page *pg;
-                    struct dyn_ftrace *rec;
-                    struct ftrace_glob func_g = { .type = MATCH_FULL };
-                    struct ftrace_glob mod_g = { .type = MATCH_FULL };
-                    struct ftrace_glob {
-                        char *search;
-                        unsigned len;
-                        int type;
-                    } *mod_match = (mod) ? &mod_g : NULL;
+            ret = ftrace_match_records(hash, buf, len);
 
-                    int exclude_mod = 0;
-                    int found = 0;
-                    int ret;
-                    int clear_filter = 0;
-
-                    if (func) {
-                        func_g.type = filter_parse_regex(func, len, &func_g.search, &clear_filter);
-                        func_g.len = strlen(func_g.search);
-                    }
-
-                    if (mod) {
-                        mod_g.type = filter_parse_regex(mod, strlen(mod), &mod_g.search, &exclude_mod);
-                        mod_g.len = strlen(mod_g.search);
-                    }
-
-                    guard(mutex)(&ftrace_lock);
-
-                    if (unlikely(ftrace_disabled))
-                        return 0;
-
-                    if (func_g.type == MATCH_INDEX)
-                        return add_rec_by_index(hash, &func_g, clear_filter);
-
-                    /* search whole ftrace_pages records for matching functions */
-                    do_for_each_ftrace_rec(pg, rec) {
-                        if (rec->flags & FTRACE_FL_DISABLED)
-                            continue;
-
-                        if (ftrace_match_record(rec, &func_g, mod_match, exclude_mod)) {
-                            ret = enter_record(hash, rec, clear_filter) {
-                                struct ftrace_func_entry *entry;
-                                int ret = 0;
-
-                                entry = ftrace_lookup_ip(hash, rec->ip);
-                                if (clear_filter) { /* Do nothing if it doesn't exist */
-                                    if (!entry)
-                                        return 0;
-
-                                    free_hash_entry(hash, entry);
-                                } else {
-                                    if (entry) /* Do nothing if it exists */
-                                        return 0;
-                                    /* add ip into ftrace_ops hash table */
-                                    if (add_hash_entry(hash, rec->ip) == NULL)
-                                        ret = -ENOMEM;
-                                }
-                                return ret;
-                            }
-                            if (ret < 0)
-                                return ret;
-                            found = 1;
-                        }
-                        cond_resched();
-                    } while_for_each_ftrace_rec();
-
-                    return found;
-                }
-            }
             if (buf && !ret) {
                 ret = -EINVAL;
                 goto out_regex_unlock;
@@ -4939,61 +4881,8 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
             }
 
             mutex_lock(&ftrace_lock);
-            ret = ftrace_hash_move_and_update_ops(ops, orig_hash, hash, enable) {
-                if (ops->flags & FTRACE_OPS_FL_SUBOP) {
-                    /* ... */
-                }
-
-                return __ftrace_hash_move_and_update_ops(ops, orig_hash, hash, enable) {
-                    struct ftrace_ops_hash old_hash_ops;
-                    struct ftrace_hash *old_hash;
-                    int ret;
-
-                    old_hash = *orig_hash;
-                    old_hash_ops.filter_hash = ops->func_hash->filter_hash;
-                    old_hash_ops.notrace_hash = ops->func_hash->notrace_hash;
-                    ret = ftrace_hash_move(ops, enable, orig_hash, hash) {
-                        struct ftrace_hash *new_hash;
-                        int ret;
-
-                        /* Reject setting notrace hash on IPMODIFY ftrace_ops */
-                        if (ops->flags & FTRACE_OPS_FL_IPMODIFY && !enable)
-                            return -EINVAL;
-
-                        /* Move the @src entries to a newly allocated hash */
-                        new_hash = __ftrace_hash_move(src);
-                        if (!new_hash)
-                            return -ENOMEM;
-
-                        /* Make sure this can be applied if it is IPMODIFY ftrace_ops */
-                        if (enable) {
-                            /* IPMODIFY should be updated only when filter_hash updating */
-                            ret = ftrace_hash_ipmodify_update(ops, new_hash) {
-                                /* ---> */
-                            }
-                            if (ret < 0) {
-                                free_ftrace_hash(new_hash);
-                                return ret;
-                            }
-                        }
-
-                        /* Remove the current set, update the hash and add
-                         * them back. */
-                        ftrace_hash_rec_disable_modify(ops);
-
-                        rcu_assign_pointer(*dst, new_hash);
-
-                        ftrace_hash_rec_enable_modify(ops);
-
-                        return 0;
-                    }
-                    if (!ret) {
-                        ftrace_ops_update_code(ops, &old_hash_ops);
-                        free_ftrace_hash_rcu(old_hash);
-                    }
-                    return ret;
-                }
-            }
+            ret = ftrace_hash_move_and_update_ops(ops, orig_hash, hash, enable);
+                --->
             mutex_unlock(&ftrace_lock);
 
         out_regex_unlock:
@@ -5005,6 +4894,7 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
     }
 }
 ```
+
 ### ftrace_fn.ko
 
 ```c
@@ -5608,6 +5498,9 @@ core_initcall(init_branch_tracer);
 ### register_tracer
 
 ```c
+/* trace_types holds a link list of available tracers. */
+static struct tracer		*trace_types __read_mostly;
+
 register_tracer(struct tracer *type)
 {
     struct trace_array *tr;
@@ -7976,6 +7869,310 @@ bool rb_watermark_hit(struct trace_buffer *buffer, int cpu, int full)
 }
 ```
 
+### ring_buffer_peek
+
+```c
+struct ring_buffer_event *
+ring_buffer_peek(struct trace_buffer *buffer, int cpu, u64 *ts,
+         unsigned long *lost_events)
+{
+    struct ring_buffer_per_cpu *cpu_buffer = buffer->buffers[cpu];
+    struct ring_buffer_event *event;
+    unsigned long flags;
+    bool dolock;
+
+    if (!cpumask_test_cpu(cpu, buffer->cpumask))
+        return NULL;
+
+ again:
+    local_irq_save(flags);
+    dolock = rb_reader_lock(cpu_buffer);
+    event = rb_buffer_peek(cpu_buffer, ts, lost_events);
+    if (event && event->type_len == RINGBUF_TYPE_PADDING)
+        rb_advance_reader(cpu_buffer);
+    rb_reader_unlock(cpu_buffer, dolock);
+    local_irq_restore(flags);
+
+    if (event && event->type_len == RINGBUF_TYPE_PADDING)
+        goto again;
+
+    return event;
+}
+
+static struct ring_buffer_event *
+rb_buffer_peek(struct ring_buffer_per_cpu *cpu_buffer, u64 *ts,
+           unsigned long *lost_events)
+{
+    struct ring_buffer_event *event;
+    struct buffer_page *reader;
+    int nr_loops = 0;
+
+    if (ts)
+        *ts = 0;
+ again:
+    /* We repeat when a time extend is encountered.
+     * Since the time extend is always attached to a data event,
+     * we should never loop more than once.
+     * (We never hit the following condition more than twice). */
+    if (RB_WARN_ON(cpu_buffer, ++nr_loops > 2))
+        return NULL;
+
+    reader = rb_get_reader_page(cpu_buffer);
+    if (!reader)
+        return NULL;
+
+    event = rb_reader_event(cpu_buffer) {
+        return __rb_page_index(cpu_buffer->reader_page, cpu_buffer->reader_page->read) {
+            return bpage->page->data + index;
+        }
+    }
+
+    switch (event->type_len) {
+    case RINGBUF_TYPE_PADDING:
+        if (rb_null_event(event))
+            RB_WARN_ON(cpu_buffer, 1);
+        /* Because the writer could be discarding every
+         * event it creates (which would probably be bad)
+         * if we were to go back to "again" then we may never
+         * catch up, and will trigger the warn on, or lock
+         * the box. Return the padding, and we will release
+         * the current locks, and try again. */
+        return event;
+
+    case RINGBUF_TYPE_TIME_EXTEND:
+        /* Internal data, OK to advance */
+        rb_advance_reader(cpu_buffer);
+        goto again;
+
+    case RINGBUF_TYPE_TIME_STAMP:
+        if (ts) {
+            *ts = rb_event_time_stamp(event);
+            *ts = rb_fix_abs_ts(*ts, reader->page->time_stamp);
+            ring_buffer_normalize_time_stamp(cpu_buffer->buffer, cpu_buffer->cpu, ts);
+        }
+        /* Internal data, OK to advance */
+        rb_advance_reader(cpu_buffer);
+        goto again;
+
+    case RINGBUF_TYPE_DATA:
+        if (ts && !(*ts)) {
+            *ts = cpu_buffer->read_stamp + event->time_delta;
+            ring_buffer_normalize_time_stamp(cpu_buffer->buffer, cpu_buffer->cpu, ts);
+        }
+        if (lost_events)
+            *lost_events = rb_lost_events(cpu_buffer);
+        return event;
+
+    default:
+        RB_WARN_ON(cpu_buffer, 1);
+    }
+
+    return NULL;
+}
+```
+
+### rb_get_reader_page
+
+```c
+static struct buffer_page *
+rb_get_reader_page(struct ring_buffer_per_cpu *cpu_buffer)
+{
+    struct buffer_page *reader = NULL;
+    unsigned long bsize = READ_ONCE(cpu_buffer->buffer->subbuf_size);
+    unsigned long overwrite;
+    unsigned long flags;
+    int nr_loops = 0;
+    bool ret;
+
+    local_irq_save(flags);
+    arch_spin_lock(&cpu_buffer->lock);
+
+ again:
+    /* This should normally only loop twice. But because the
+     * start of the reader inserts an empty page, it causes
+     * a case where we will loop three times. There should be no
+     * reason to loop four times (that I know of). */
+    if (RB_WARN_ON(cpu_buffer, ++nr_loops > 3)) {
+        reader = NULL;
+        goto out;
+    }
+
+    reader = cpu_buffer->reader_page;
+
+    /* If there's more to read, return this page */
+    if (cpu_buffer->reader_page->read < rb_page_size(reader))
+        goto out;
+
+    /* Never should we have an index greater than the size */
+    if (RB_WARN_ON(cpu_buffer, cpu_buffer->reader_page->read > rb_page_size(reader)))
+        goto out;
+
+    /* check if we caught up to the tail */
+    reader = NULL;
+    if (cpu_buffer->commit_page == cpu_buffer->reader_page)
+        goto out;
+
+    /* Don't bother swapping if the ring buffer is empty */
+    if (rb_num_of_entries(cpu_buffer) == 0)
+        goto out;
+
+    /* Reset the reader page to size zero. */
+    local_set(&cpu_buffer->reader_page->write, 0);
+    local_set(&cpu_buffer->reader_page->entries, 0);
+    cpu_buffer->reader_page->real_end = 0;
+
+ spin:
+    /* Splice the empty reader page into the list around the head. */
+    reader = rb_set_head_page(cpu_buffer) {
+        struct buffer_page *head;
+        struct buffer_page *page;
+        struct list_head *list;
+        int i;
+
+        if (RB_WARN_ON(cpu_buffer, !cpu_buffer->head_page))
+            return NULL;
+
+        /* sanity check */
+        list = cpu_buffer->pages;
+        if (RB_WARN_ON(cpu_buffer, rb_list_head(list->prev->next) != list))
+            return NULL;
+
+        page = head = cpu_buffer->head_page;
+        /* It is possible that the writer moves the header behind
+        * where we started, and we miss in one loop.
+        * A second loop should grab the header, but we'll do
+        * three loops just because I'm paranoid. */
+        for (i = 0; i < 3; i++) {
+            do {
+                if (rb_is_head_page(page, page->list.prev)) {
+                    cpu_buffer->head_page = page;
+                    return page;
+                }
+                rb_inc_page(&page);
+            } while (page != head);
+        }
+
+        RB_WARN_ON(cpu_buffer, 1);
+
+        return NULL;
+    }
+
+    if (!reader)
+        goto out;
+    cpu_buffer->reader_page->list.next = rb_list_head(reader->list.next);
+    cpu_buffer->reader_page->list.prev = reader->list.prev;
+
+    /* cpu_buffer->pages just needs to point to the buffer, it
+     *  has no specific buffer page to point to. Lets move it out
+     *  of our way so we don't accidentally swap it. */
+    cpu_buffer->pages = reader->list.prev;
+
+    /* The reader page will be pointing to the new head */
+    rb_set_list_to_head(&cpu_buffer->reader_page->list) {
+        unsigned long *ptr;
+
+        ptr = (unsigned long *)&list->next;
+        *ptr |= RB_PAGE_HEAD;
+        *ptr &= ~RB_PAGE_UPDATE;
+    }
+
+    /* We want to make sure we read the overruns after we set up our
+     * pointers to the next object. The writer side does a
+     * cmpxchg to cross pages which acts as the mb on the writer
+     * side. Note, the reader will constantly fail the swap
+     * while the writer is updating the pointers, so this
+     * guarantees that the overwrite recorded here is the one we
+     * want to compare with the last_overrun. */
+    smp_mb();
+    overwrite = local_read(&(cpu_buffer->overrun));
+
+    /* Here's the tricky part.
+     *
+     * We need to move the pointer past the header page.
+     * But we can only do that if a writer is not currently
+     * moving it. The page before the header page has the
+     * flag bit '1' set if it is pointing to the page we want.
+     * but if the writer is in the process of moving it
+     * then it will be '2' or already moved '0'. */
+
+    ret = rb_head_page_replace(reader, cpu_buffer->reader_page) {
+        unsigned long *ptr = (unsigned long *)&old->list.prev->next;
+        unsigned long val;
+
+        val = *ptr & ~RB_FLAG_MASK;
+        val |= RB_PAGE_HEAD;
+
+        return try_cmpxchg(ptr, &val, (unsigned long)&new->list);
+    }
+
+    /* If we did not convert it, then we must try again. */
+    if (!ret)
+        goto spin;
+
+    if (cpu_buffer->ring_meta)
+        rb_update_meta_reader(cpu_buffer, reader);
+
+    /* Yay! We succeeded in replacing the page.
+     *
+     * Now make the new head point back to the reader page. */
+    rb_list_head(reader->list.next)->prev = &cpu_buffer->reader_page->list;
+    rb_inc_page(&cpu_buffer->head_page);
+
+    cpu_buffer->cnt++;
+    local_inc(&cpu_buffer->pages_read);
+
+    /* Finally update the reader page to the new head */
+    cpu_buffer->reader_page = reader;
+    cpu_buffer->reader_page->read = 0;
+
+    if (overwrite != cpu_buffer->last_overrun) {
+        cpu_buffer->lost_events = overwrite - cpu_buffer->last_overrun;
+        cpu_buffer->last_overrun = overwrite;
+    }
+
+    goto again;
+
+ out:
+    /* Update the read_stamp on the first event */
+    if (reader && reader->read == 0)
+        cpu_buffer->read_stamp = reader->page->time_stamp;
+
+    arch_spin_unlock(&cpu_buffer->lock);
+    local_irq_restore(flags);
+
+    /* The writer has preempt disable, wait for it. But not forever
+     * Although, 1 second is pretty much "forever" */
+#define USECS_WAIT    1000000
+        for (nr_loops = 0; nr_loops < USECS_WAIT; nr_loops++) {
+        /* If the write is past the end of page, a writer is still updating it */
+        if (likely(!reader || rb_page_write(reader) <= bsize))
+            break;
+
+        udelay(1);
+
+        /* Get the latest version of the reader write value */
+        smp_rmb();
+    }
+
+    /* The writer is not moving forward? Something is wrong */
+    if (RB_WARN_ON(cpu_buffer, nr_loops == USECS_WAIT))
+        reader = NULL;
+
+    /* Make sure we see any padding after the write update
+     * (see rb_reset_tail()).
+     *
+     * In addition, a writer may be writing on the reader page
+     * if the page has not been fully filled, so the read barrier
+     * is also needed to make sure we see the content of what is
+     * committed by the writer (see rb_set_commit_to_write()). */
+    smp_rmb();
+
+
+    return reader;
+}
+```
+
+
 ## tracer_init_tracefs
 
 ```c
@@ -8438,104 +8635,105 @@ static int
 ftrace_filter_open(struct inode *inode, struct file *file)
 {
     /* the trace_array's ops */
-	struct ftrace_ops *ops = inode->i_private;
+    struct ftrace_ops *ops = inode->i_private;
 
-	/* Checks for tracefs lockdown */
-	return ftrace_regex_open(ops,
-			FTRACE_ITER_FILTER | FTRACE_ITER_DO_PROBES,
-			inode, file);
+    /* Checks for tracefs lockdown */
+    return ftrace_regex_open(ops,
+            FTRACE_ITER_FILTER | FTRACE_ITER_DO_PROBES,
+            inode, file);
 }
 
 int
 ftrace_regex_open(struct ftrace_ops *ops, int flag,
-		  struct inode *inode, struct file *file)
+          struct inode *inode, struct file *file)
 {
-	struct ftrace_iterator *iter;
-	struct ftrace_hash *hash;
-	struct list_head *mod_head;
-	struct trace_array *tr = ops->private;
-	int ret = -ENOMEM;
+    struct ftrace_iterator *iter;
+    struct ftrace_hash *hash;
+    struct list_head *mod_head;
+    struct trace_array *tr = ops->private;
+    int ret = -ENOMEM;
 
-	ftrace_ops_init(ops);
+    ftrace_ops_init(ops);
 
-	if (unlikely(ftrace_disabled))
-		return -ENODEV;
+    if (unlikely(ftrace_disabled))
+        return -ENODEV;
 
-	if (tracing_check_open_get_tr(tr))
-		return -ENODEV;
+    if (tracing_check_open_get_tr(tr))
+        return -ENODEV;
 
-	iter = kzalloc(sizeof(*iter), GFP_KERNEL);
-	if (!iter)
-		goto out;
+    iter = kzalloc(sizeof(*iter), GFP_KERNEL);
+    if (!iter)
+        goto out;
 
-	if (trace_parser_get_init(&iter->parser, FTRACE_BUFF_MAX))
-		goto out;
+    if (trace_parser_get_init(&iter->parser, FTRACE_BUFF_MAX))
+        goto out;
 
-	iter->ops = ops;
-	iter->flags = flag;
-	iter->tr = tr;
+    iter->ops = ops;
+    iter->flags = flag;
+    iter->tr = tr;
 
-	mutex_lock(&ops->func_hash->regex_lock);
+    mutex_lock(&ops->func_hash->regex_lock);
 
-	if (flag & FTRACE_ITER_NOTRACE) {
-		hash = ops->func_hash->notrace_hash;
-		mod_head = tr ? &tr->mod_notrace : NULL;
-	} else {
-		hash = ops->func_hash->filter_hash;
-		mod_head = tr ? &tr->mod_trace : NULL;
-	}
+    if (flag & FTRACE_ITER_NOTRACE) {
+        hash = ops->func_hash->notrace_hash;
+        mod_head = tr ? &tr->mod_notrace : NULL;
+    } else {
+        hash = ops->func_hash->filter_hash;
+        mod_head = tr ? &tr->mod_trace : NULL;
+    }
 
-	iter->mod_list = mod_head;
+    iter->mod_list = mod_head;
 
-	if (file->f_mode & FMODE_WRITE) {
-		const int size_bits = FTRACE_HASH_DEFAULT_BITS;
+    /* iter->hash: make a local copy of, update it back when release file */
+    if (file->f_mode & FMODE_WRITE) {
+        const int size_bits = FTRACE_HASH_DEFAULT_BITS;
 
-		if (file->f_flags & O_TRUNC) {
-			iter->hash = alloc_ftrace_hash(size_bits);
-			clear_ftrace_mod_list(mod_head);
-	        } else {
-			iter->hash = alloc_and_copy_ftrace_hash(size_bits, hash);
-		}
-	} else {
-		if (hash)
-			iter->hash = alloc_and_copy_ftrace_hash(hash->size_bits, hash);
-		else
-			iter->hash = EMPTY_HASH;
-	}
+        if (file->f_flags & O_TRUNC) {
+            iter->hash = alloc_ftrace_hash(size_bits);
+            clear_ftrace_mod_list(mod_head);
+        } else {
+            iter->hash = alloc_and_copy_ftrace_hash(size_bits, hash);
+        }
+    } else {
+        if (hash)
+            iter->hash = alloc_and_copy_ftrace_hash(hash->size_bits, hash);
+        else
+            iter->hash = EMPTY_HASH;
+    }
 
-	if (!iter->hash) {
-		trace_parser_put(&iter->parser);
-		goto out_unlock;
-	}
+    if (!iter->hash) {
+        trace_parser_put(&iter->parser);
+        goto out_unlock;
+    }
 
-	ret = 0;
+    ret = 0;
 
-	if (file->f_mode & FMODE_READ) {
-		iter->pg = ftrace_pages_start;
+    if (file->f_mode & FMODE_READ) {
+        iter->pg = ftrace_pages_start;
 
-		ret = seq_open(file, &show_ftrace_seq_ops);
-		if (!ret) {
-			struct seq_file *m = file->private_data;
-			m->private = iter;
-		} else {
-			/* Failed */
-			free_ftrace_hash(iter->hash);
-			trace_parser_put(&iter->parser);
-		}
-	} else
-		file->private_data = iter;
+        ret = seq_open(file, &show_ftrace_seq_ops);
+        if (!ret) {
+            struct seq_file *m = file->private_data;
+            m->private = iter;
+        } else {
+            /* Failed */
+            free_ftrace_hash(iter->hash);
+            trace_parser_put(&iter->parser);
+        }
+    } else
+        file->private_data = iter;
 
  out_unlock:
-	mutex_unlock(&ops->func_hash->regex_lock);
+    mutex_unlock(&ops->func_hash->regex_lock);
 
  out:
-	if (ret) {
-		kfree(iter);
-		if (tr)
-			trace_array_put(tr);
-	}
+    if (ret) {
+        kfree(iter);
+        if (tr)
+            trace_array_put(tr);
+    }
 
-	return ret;
+    return ret;
 }
 ```
 
@@ -8621,6 +8819,395 @@ int ftrace_process_regex(struct ftrace_iterator *iter,
 }
 ```
 
+##### ftrace_match_records
+
+```c
+static int
+ftrace_match_records(struct ftrace_hash *hash, char *buff, int len)
+{
+    return match_records(hash, buff/*func*/, len, NULL/*mod*/) {
+        struct ftrace_page *pg;
+        struct dyn_ftrace *rec;
+
+        /* func and module glob */
+        struct ftrace_glob func_g = { .type = MATCH_FULL };
+        struct ftrace_glob mod_g = { .type = MATCH_FULL };
+        struct ftrace_glob {
+            char        *search;
+            unsigned    len;
+            int         type;
+        } *mod_match = (mod) ? &mod_g : NULL;
+
+        int exclude_mod = 0;
+        int found = 0;
+        int ret;
+        int clear_filter = 0;
+
+        if (func) {
+            func_g.type = filter_parse_regex(func, len, &func_g.search, &clear_filter);
+            func_g.len = strlen(func_g.search);
+        }
+
+        if (mod) {
+            mod_g.type = filter_parse_regex(mod, strlen(mod), &mod_g.search, &exclude_mod);
+            mod_g.len = strlen(mod_g.search);
+        }
+
+        guard(mutex)(&ftrace_lock);
+
+        if (unlikely(ftrace_disabled))
+            return 0;
+
+        if (func_g.type == MATCH_INDEX) {
+            /* used for special syntax like ^function_name
+                * (direct kallsyms index lookup). Skips full scan. */
+            return add_rec_by_index(hash, &func_g, clear_filter);
+        }
+
+        /* search whole ftrace_pages records for matching functions */
+        do_for_each_ftrace_rec(pg, rec) {
+            if (rec->flags & FTRACE_FL_DISABLED)
+                continue;
+
+            if (ftrace_match_record(rec, &func_g, mod_match, exclude_mod)) {
+                /* free or add hash entry */
+                ret = enter_record(hash, rec, clear_filter) {
+                    struct ftrace_func_entry *entry;
+                    int ret = 0;
+
+                    entry = ftrace_lookup_ip(hash, rec->ip);
+                    if (clear_filter) { /* Do nothing if it doesn't exist */
+                        if (!entry)
+                            return 0;
+                        free_hash_entry(hash, entry);
+                    } else {
+                        if (entry) /* Do nothing if it exists */
+                            return 0;
+                        /* add ip into ftrace_ops hash table */
+                        if (add_hash_entry(hash, rec->ip) == NULL)
+                            ret = -ENOMEM;
+                    }
+                    return ret;
+                }
+                if (ret < 0)
+                    return ret;
+                found = 1;
+            }
+            cond_resched();
+        } while_for_each_ftrace_rec();
+
+        return found;
+    }
+}
+
+static int
+ftrace_match_record(struct dyn_ftrace *rec, struct ftrace_glob *func_g,
+        struct ftrace_glob *mod_g, int exclude_mod)
+{
+    char str[KSYM_SYMBOL_LEN];
+    char *modname;
+
+    if (lookup_ip(rec->ip, &modname, str)) {
+        /* This should only happen when a rec is disabled */
+        WARN_ON_ONCE(system_state == SYSTEM_RUNNING && !(rec->flags & FTRACE_FL_DISABLED));
+        return 0;
+    }
+
+    if (mod_g) {
+        int mod_matches = (modname) ? ftrace_match(modname, mod_g) : 0;
+
+        /* blank module name to match all modules */
+        if (!mod_g->len) {
+            /* blank module globbing: modname xor exclude_mod */
+            if (!exclude_mod != !modname)
+                goto func_match;
+            return 0;
+        }
+
+        /* exclude_mod is set to trace everything but the given
+         * module. If it is set and the module matches, then
+         * return 0. If it is not set, and the module doesn't match
+         * also return 0. Otherwise, check the function to see if
+         * that matches. */
+        if (!mod_matches == !exclude_mod)
+            return 0;
+func_match:
+        /* blank search means to match all funcs in the mod */
+        if (!func_g->len)
+            return 1;
+    }
+
+    return ftrace_match(str, func_g);
+}
+
+int ftrace_match(char *str, struct ftrace_glob *g)
+{
+    int matched = 0;
+    int slen;
+
+    str = arch_ftrace_match_adjust(str, g->search);
+
+    switch (g->type) {
+    case MATCH_FULL:
+        if (strcmp(str, g->search) == 0)
+            matched = 1;
+        break;
+    case MATCH_FRONT_ONLY:
+        if (strncmp(str, g->search, g->len) == 0)
+            matched = 1;
+        break;
+    case MATCH_MIDDLE_ONLY:
+        if (strstr(str, g->search))
+            matched = 1;
+        break;
+    case MATCH_END_ONLY:
+        slen = strlen(str);
+        if (slen >= g->len &&
+            memcmp(str + slen - g->len, g->search, g->len) == 0)
+            matched = 1;
+        break;
+    case MATCH_GLOB:
+        if (glob_match(g->search, str))
+            matched = 1;
+        break;
+    }
+
+    return matched;
+}
+```
+
+#### ftrace_regex_release
+
+```c
+int ftrace_regex_release(struct inode *inode, struct file *file)
+{
+    struct seq_file *m = (struct seq_file *)file->private_data;
+    struct ftrace_iterator *iter;
+    struct ftrace_hash **orig_hash;
+    struct trace_parser *parser;
+    int filter_hash;
+
+    if (file->f_mode & FMODE_READ) {
+        iter = m->private;
+        seq_release(inode, file);
+    } else
+        iter = file->private_data;
+
+    parser = &iter->parser;
+    if (trace_parser_loaded(parser)) {
+        int enable = !(iter->flags & FTRACE_ITER_NOTRACE);
+
+        ftrace_process_regex(iter, parser->buffer, parser->idx, enable);
+    }
+
+    trace_parser_put(parser);
+
+    mutex_lock(&iter->ops->func_hash->regex_lock);
+
+    if (file->f_mode & FMODE_WRITE) {
+        filter_hash = !!(iter->flags & FTRACE_ITER_FILTER);
+
+        if (filter_hash) {
+            orig_hash = &iter->ops->func_hash->filter_hash;
+            if (iter->tr) {
+                if (list_empty(&iter->tr->mod_trace))
+                    iter->hash->flags &= ~FTRACE_HASH_FL_MOD;
+                else
+                    iter->hash->flags |= FTRACE_HASH_FL_MOD;
+            }
+        } else
+            orig_hash = &iter->ops->func_hash->notrace_hash;
+
+        mutex_lock(&ftrace_lock);
+        ftrace_hash_move_and_update_ops(iter->ops, orig_hash, iter->hash, filter_hash);
+            --->
+        mutex_unlock(&ftrace_lock);
+    }
+
+    mutex_unlock(&iter->ops->func_hash->regex_lock);
+    free_ftrace_hash(iter->hash);
+    if (iter->tr)
+        trace_array_put(iter->tr);
+    kfree(iter);
+
+    return 0;
+}
+```
+
+##### ftrace_hash_move_and_update_ops
+
+```c
+static int ftrace_hash_move_and_update_ops(struct ftrace_ops *ops,
+                       struct ftrace_hash **orig_hash,
+                       struct ftrace_hash *hash,
+                       int enable)
+{
+    if (ops->flags & FTRACE_OPS_FL_SUBOP) {
+        return ftrace_hash_move_and_update_subops(ops, orig_hash, hash);
+    }
+
+    if (!(ops->flags & FTRACE_OPS_FL_ENABLED)) {
+        struct ftrace_ops *op;
+
+        /* Check if any other manager subops maps to this hash */
+        do_for_each_ftrace_op(op, ftrace_ops_list) {
+            struct ftrace_ops *subops;
+
+            list_for_each_entry(subops, &op->subop_list, list) {
+                if ((subops->flags & FTRACE_OPS_FL_ENABLED) &&
+                     subops->func_hash == ops->func_hash) {
+                    return ftrace_hash_move_and_update_subops(subops, orig_hash, hash);
+                }
+            }
+        } while_for_each_ftrace_op(op);
+    }
+
+    return __ftrace_hash_move_and_update_ops(ops, orig_hash, hash, enable) {
+        struct ftrace_ops_hash old_hash_ops;
+        struct ftrace_hash *old_hash;
+        int ret;
+
+        old_hash = *orig_hash;
+        old_hash_ops.filter_hash = ops->func_hash->filter_hash;
+        old_hash_ops.notrace_hash = ops->func_hash->notrace_hash;
+
+        ret = ftrace_hash_move(ops, enable, orig_hash, hash) {
+            struct ftrace_hash *new_hash;
+            int ret;
+
+            /* Reject setting notrace hash on IPMODIFY ftrace_ops */
+            if (ops->flags & FTRACE_OPS_FL_IPMODIFY && !enable)
+                return -EINVAL;
+
+            /* Move the @src entries to a newly allocated hash */
+            new_hash = __ftrace_hash_move(src);
+            if (!new_hash)
+                return -ENOMEM;
+
+            /* Make sure this can be applied if it is IPMODIFY ftrace_ops */
+            if (enable) {
+                /* IPMODIFY should be updated only when filter_hash updating */
+                ret = ftrace_hash_ipmodify_update(ops, new_hash) {
+                    struct ftrace_hash *old_hash = ops->func_hash->filter_hash;
+
+                    if (ftrace_hash_empty(old_hash))
+                        old_hash = NULL;
+
+                    if (ftrace_hash_empty(new_hash))
+                        new_hash = NULL;
+
+                    return __ftrace_hash_update_ipmodify(ops, old_hash, new_hash, false);
+                        --->
+                }
+                if (ret < 0) {
+                    free_ftrace_hash(new_hash);
+                    return ret;
+                }
+            }
+
+            /* Remove the current set, update the hash and add
+             * them back. */
+            ftrace_hash_rec_disable_modify(ops);
+            rcu_assign_pointer(*dst, new_hash);
+            ftrace_hash_rec_enable_modify(ops) {
+                ftrace_hash_rec_update_modify(ops, true) {
+                    struct ftrace_ops *op;
+
+                    __ftrace_hash_rec_update(ops, inc);
+                        --->
+
+                    if (ops->func_hash != &global_ops.local_hash)
+                        return;
+
+                    /* If the ops shares the global_ops hash, then we need to update
+                    * all ops that are enabled and use this hash. */
+                    do_for_each_ftrace_op(op, ftrace_ops_list) {
+                        /* Already done */
+                        if (op == ops)
+                            continue;
+                        if (op->func_hash == &global_ops.local_hash)
+                            __ftrace_hash_rec_update(op, inc);
+                    } while_for_each_ftrace_op(op);
+                }
+            }
+
+            return 0;
+        }
+        if (!ret) {
+            ftrace_ops_update_code(ops, &old_hash_ops);
+                --->
+            free_ftrace_hash_rcu(old_hash) {
+                if (!hash || hash == EMPTY_HASH)
+                    return;
+                call_rcu(&hash->rcu, __free_ftrace_hash_rcu);
+            }
+        }
+        return ret;
+    }
+}
+```
+
+##### ftrace_ops_update_code
+
+```c
+void ftrace_ops_update_code(struct ftrace_ops *ops,
+                   struct ftrace_ops_hash *old_hash)
+{
+    struct ftrace_ops *op;
+
+    if (!ftrace_enabled)
+        return;
+
+    if (ops->flags & FTRACE_OPS_FL_ENABLED) {
+        ftrace_run_modify_code(ops, FTRACE_UPDATE_CALLS, old_hash);
+        return;
+    }
+
+    /* If this is the shared global_ops filter, then we need to
+     * check if there is another ops that shares it, is enabled.
+     * If so, we still need to run the modify code. */
+    if (ops->func_hash != &global_ops.local_hash)
+        return;
+
+    do_for_each_ftrace_op(op, ftrace_ops_list) {
+        if (op->func_hash == &global_ops.local_hash &&
+            op->flags & FTRACE_OPS_FL_ENABLED) {
+            ftrace_run_modify_code(op, FTRACE_UPDATE_CALLS, old_hash);
+            /* Only need to do this once */
+            return;
+        }
+    } while_for_each_ftrace_op(op);
+}
+
+static void ftrace_run_modify_code(struct ftrace_ops *ops, int command,
+                   struct ftrace_ops_hash *old_hash)
+{
+    ops->flags |= FTRACE_OPS_FL_MODIFYING;
+    ops->old_hash.filter_hash = old_hash->filter_hash;
+    ops->old_hash.notrace_hash = old_hash->notrace_hash;
+
+    ftrace_run_update_code(command) {
+        ftrace_arch_code_modify_prepare();
+
+        /* By default we use stop_machine() to modify the code.
+        * But archs can do what ever they want as long as it
+        * is safe. The stop_machine() is the safest, but also
+        * produces the most overhead. */
+        arch_ftrace_update_code(command) {
+            ommand |= FTRACE_MAY_SLEEP;
+            ftrace_modify_all_code(command);
+                --->
+        }
+
+        ftrace_arch_code_modify_post_process();
+    }
+
+    ops->old_hash.filter_hash = NULL;
+    ops->old_hash.notrace_hash = NULL;
+    ops->flags &= ~FTRACE_OPS_FL_MODIFYING;
+}
+```
+
 ### /sys/kernel/tracing/tracing_on
 
 ```c
@@ -8697,144 +9284,149 @@ static const struct file_operations tracing_fops = {
     .llseek         = tracing_lseek,
     .release        = tracing_release,
 };
+```
 
-ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
+#### tracing_open
+
+```c
+int tracing_open(struct inode *inode, struct file *file)
 {
-    struct iovec iov = { .iov_base = buf, .iov_len = size};
-    struct kiocb kiocb;
-    struct iov_iter iter;
-    ssize_t ret;
+    struct trace_array *tr = inode->i_private;
+    struct trace_iterator *iter;
+    int ret;
 
-    init_sync_kiocb(&kiocb, file);
-    iov_iter_init(&iter, ITER_DEST, &iov, 1, size);
+    ret = tracing_check_open_get_tr(tr);
+    if (ret)
+        return ret;
 
-    kiocb.ki_pos = *ppos;
-    ret = seq_read_iter(&kiocb, &iter) {
-        struct seq_file *m = iocb->ki_filp->private_data;
-        size_t copied = 0;
-        size_t n;
-        void *p;
-        int err = 0;
+    /* If this file was open for write, then erase contents */
+    if ((file->f_mode & FMODE_WRITE) && (file->f_flags & O_TRUNC)) {
+        int cpu = tracing_get_cpu(inode);
+        struct array_buffer *trace_buf = &tr->array_buffer;
 
-        if (!iov_iter_count(iter))
-            return 0;
+#ifdef CONFIG_TRACER_MAX_TRACE
+        if (tr->current_trace->print_max)
+            trace_buf = &tr->max_buffer;
+#endif
 
-        mutex_lock(&m->lock);
-
-        /* if request is to read from zero offset, reset iterator to first
-        * record as it might have been already advanced by previous requests */
-        if (iocb->ki_pos == 0) {
-            m->index = 0;
-            m->count = 0;
-        }
-
-        /* Don't assume ki_pos is where we left it */
-        if (unlikely(iocb->ki_pos != m->read_pos)) {
-            while ((err = traverse(m, iocb->ki_pos)) == -EAGAIN)
-                ;
-            if (err) {
-                /* With prejudice... */
-                m->read_pos = 0;
-                m->index = 0;
-                m->count = 0;
-                goto Done;
-            } else {
-                m->read_pos = iocb->ki_pos;
-            }
-        }
-
-        /* grab buffer if we didn't have one */
-        if (!m->buf) {
-            m->buf = seq_buf_alloc(m->size = PAGE_SIZE);
-            if (!m->buf)
-                goto Enomem;
-        }
-        // something left in the buffer - copy it out first
-        if (m->count) {
-            n = copy_to_iter(m->buf + m->from, m->count, iter);
-            m->count -= n;
-            m->from += n;
-            copied += n;
-            if (m->count)    // hadn't managed to copy everything
-                goto Done;
-        }
-        // get a non-empty record in the buffer
-        m->from = 0;
-        p = m->op->start(m, &m->index);
-        while (1) {
-            err = PTR_ERR(p);
-            if (!p || IS_ERR(p))    // EOF or an error
-                break;
-            err = m->op->show(m, p);
-            if (err < 0)        // hard error
-                break;
-            if (unlikely(err))    // ->show() says "skip it"
-                m->count = 0;
-            if (unlikely(!m->count)) { // empty record
-                p = m->op->next(m, p, &m->index);
-                continue;
-            }
-            if (!seq_has_overflowed(m)) // got it
-                goto Fill;
-            // need a bigger buffer
-            m->op->stop(m, p);
-            kvfree(m->buf);
-            m->count = 0;
-            m->buf = seq_buf_alloc(m->size <<= 1);
-            if (!m->buf)
-                goto Enomem;
-            p = m->op->start(m, &m->index);
-        }
-        // EOF or an error
-        m->op->stop(m, p);
-        m->count = 0;
-        goto Done;
-    Fill:
-        // one non-empty record is in the buffer; if they want more,
-        // try to fit more in, but in any case we need to advance
-        // the iterator once for every record shown.
-        while (1) {
-            size_t offs = m->count;
-            loff_t pos = m->index;
-
-            p = m->op->next(m, p, &m->index);
-            if (pos == m->index) {
-                pr_info_ratelimited("buggy .next function %ps did not update position index\n",
-                            m->op->next);
-                m->index++;
-            }
-            if (!p || IS_ERR(p))    // no next record for us
-                break;
-            if (m->count >= iov_iter_count(iter))
-                break;
-            err = m->op->show(m, p);
-            if (err > 0) {        // ->show() says "skip it"
-                m->count = offs;
-            } else if (err || seq_has_overflowed(m)) {
-                m->count = offs;
-                break;
-            }
-        }
-        m->op->stop(m, p);
-        n = copy_to_iter(m->buf, m->count, iter);
-        copied += n;
-        m->count -= n;
-        m->from = n;
-    Done:
-        if (unlikely(!copied)) {
-            copied = m->count ? -EFAULT : err;
-        } else {
-            iocb->ki_pos += copied;
-            m->read_pos += copied;
-        }
-        mutex_unlock(&m->lock);
-        return copied;
-    Enomem:
-        err = -ENOMEM;
-        goto Done;
+        if (cpu == RING_BUFFER_ALL_CPUS)
+            tracing_reset_online_cpus(trace_buf);
+        else
+            tracing_reset_cpu(trace_buf, cpu);
     }
-    *ppos = kiocb.ki_pos;
+
+    if (file->f_mode & FMODE_READ) {
+        iter = __tracing_open(inode, file, false);
+        if (IS_ERR(iter))
+            ret = PTR_ERR(iter);
+        else if (tr->trace_flags & TRACE_ITER(LATENCY_FMT))
+            iter->iter_flags |= TRACE_FILE_LAT_FMT;
+    }
+
+    if (ret < 0)
+        trace_array_put(tr);
+
     return ret;
+}
+
+static struct trace_iterator *
+__tracing_open(struct inode *inode, struct file *file, bool snapshot)
+{
+    struct trace_array *tr = inode->i_private;
+    struct trace_iterator *iter;
+    int cpu;
+
+    if (tracing_disabled)
+        return ERR_PTR(-ENODEV);
+
+    iter = __seq_open_private(file, &tracer_seq_ops, sizeof(*iter));
+    if (!iter)
+        return ERR_PTR(-ENOMEM);
+
+    iter->buffer_iter = kcalloc(nr_cpu_ids, sizeof(*iter->buffer_iter), GFP_KERNEL);
+    if (!iter->buffer_iter)
+        goto release;
+
+    /* trace_find_next_entry() may need to save off iter->ent.
+     * It will place it into the iter->temp buffer. As most
+     * events are less than 128, allocate a buffer of that size.
+     * If one is greater, then trace_find_next_entry() will
+     * allocate a new buffer to adjust for the bigger iter->ent.
+     * It's not critical if it fails to get allocated here. */
+    iter->temp = kmalloc(128, GFP_KERNEL);
+    if (iter->temp)
+        iter->temp_size = 128;
+
+    /* trace_event_printf() may need to modify given format
+     * string to replace %p with %px so that it shows real address
+     * instead of hash value. However, that is only for the event
+     * tracing, other tracer may not need. Defer the allocation
+     * until it is needed. */
+    iter->fmt = NULL;
+    iter->fmt_size = 0;
+
+    mutex_lock(&trace_types_lock);
+    iter->trace = tr->current_trace;
+
+    if (!zalloc_cpumask_var(&iter->started, GFP_KERNEL))
+        goto fail;
+
+    iter->tr = tr;
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+    /* Currently only the top directory has a snapshot */
+    if (tr->current_trace->print_max || snapshot)
+        iter->array_buffer = &tr->max_buffer;
+    else
+#endif
+        iter->array_buffer = &tr->array_buffer;
+    iter->snapshot = snapshot;
+    iter->pos = -1;
+    iter->cpu_file = tracing_get_cpu(inode);
+    mutex_init(&iter->mutex);
+
+    /* Notify the tracer early; before we stop tracing. */
+    if (iter->trace->open)
+        iter->trace->open(iter);
+
+    /* Annotate start of buffers if we had overruns */
+    if (ring_buffer_overruns(iter->array_buffer->buffer))
+        iter->iter_flags |= TRACE_FILE_ANNOTATE;
+
+    /* Output in nanoseconds only if we are using a clock in nanoseconds. */
+    if (trace_clocks[tr->clock_id].in_ns)
+        iter->iter_flags |= TRACE_FILE_TIME_IN_NS;
+
+    /* If pause-on-trace is enabled, then stop the trace while
+     * dumping, unless this is the "snapshot" file */
+    if (!iter->snapshot && (tr->trace_flags & TRACE_ITER(PAUSE_ON_TRACE))) {
+        iter->iter_flags |= TRACE_FILE_PAUSE;
+        tracing_stop_tr(tr);
+    }
+
+    if (iter->cpu_file == RING_BUFFER_ALL_CPUS) {
+        for_each_tracing_cpu(cpu) {
+            iter->buffer_iter[cpu] =
+                ring_buffer_read_start(iter->array_buffer->buffer, cpu, GFP_KERNEL);
+            tracing_iter_reset(iter, cpu);
+        }
+    } else {
+        cpu = iter->cpu_file;
+        iter->buffer_iter[cpu] =
+            ring_buffer_read_start(iter->array_buffer->buffer, cpu, GFP_KERNEL);
+        tracing_iter_reset(iter, cpu);
+    }
+
+    mutex_unlock(&trace_types_lock);
+
+    return iter;
+
+ fail:
+    mutex_unlock(&trace_types_lock);
+    free_trace_iter_content(iter);
+release:
+    seq_release_private(inode, file);
+    return ERR_PTR(-ENOMEM);
 }
 ```
 
@@ -8847,7 +9439,73 @@ static const struct seq_operations tracer_seq_ops = {
     .stop           = s_stop,
     .show           = s_show,
 };
+```
 
+##### s_start
+
+```c
+static void *s_start(struct seq_file *m, loff_t *pos)
+{
+    struct trace_iterator *iter = m->private;
+    struct trace_array *tr = iter->tr;
+    int cpu_file = iter->cpu_file;
+    void *p = NULL;
+    loff_t l = 0;
+    int cpu;
+
+    mutex_lock(&trace_types_lock);
+    if (unlikely(tr->current_trace != iter->trace)) {
+        /* Close iter->trace before switching to the new current tracer */
+        if (iter->trace->close)
+            iter->trace->close(iter);
+        iter->trace = tr->current_trace;
+        /* Reopen the new current tracer */
+        if (iter->trace->open)
+            iter->trace->open(iter);
+    }
+    mutex_unlock(&trace_types_lock);
+
+#ifdef CONFIG_TRACER_MAX_TRACE
+    if (iter->snapshot && iter->trace->use_max_tr)
+        return ERR_PTR(-EBUSY);
+#endif
+
+    if (*pos != iter->pos) {
+        iter->ent = NULL;
+        iter->cpu = 0;
+        iter->idx = -1;
+
+        if (cpu_file == RING_BUFFER_ALL_CPUS) {
+            for_each_tracing_cpu(cpu)
+                tracing_iter_reset(iter, cpu);
+        } else
+            tracing_iter_reset(iter, cpu_file);
+
+        iter->leftover = 0;
+        for (p = iter; p && l < *pos; p = s_next(m, p, &l))
+            ;
+
+    } else {
+        /* If we overflowed the seq_file before, then we want
+         * to just reuse the trace_seq buffer again. */
+        if (iter->leftover)
+            p = iter;
+        else {
+            l = *pos - 1;
+            p = s_next(m, p, &l);
+        }
+    }
+
+    trace_event_read_lock();
+    trace_access_lock(cpu_file);
+    return p;
+}
+```
+
+
+##### s_next
+
+```c
 void *s_next(struct seq_file *m, void *v, loff_t *pos)
 {
     struct trace_iterator *iter = m->private;
@@ -8922,35 +9580,21 @@ __find_next_entry(struct trace_iterator *iter, int *ent_cpu,
                     *lost_events = ring_buffer_iter_dropped(buf_iter) ?
                         (unsigned long)-1 : 0;
             } else {
-                event = ring_buffer_peek(iter->array_buffer->buffer, cpu, ts,
-                            lost_events) {
-                    struct ring_buffer_per_cpu *cpu_buffer = buffer->buffers[cpu];
-                    struct ring_buffer_event *event;
-                    unsigned long flags;
-                    bool dolock;
-
-                    if (!cpumask_test_cpu(cpu, buffer->cpumask))
-                        return NULL;
-
-                again:
-                    local_irq_save(flags);
-                    dolock = rb_reader_lock(cpu_buffer);
-                    event = rb_buffer_peek(cpu_buffer, ts, lost_events);
-                    if (event && event->type_len == RINGBUF_TYPE_PADDING)
-                        rb_advance_reader(cpu_buffer);
-                    rb_reader_unlock(cpu_buffer, dolock);
-                    local_irq_restore(flags);
-
-                    if (event && event->type_len == RINGBUF_TYPE_PADDING)
-                        goto again;
-
-                    return event;
-                }
+                event = ring_buffer_peek(iter->array_buffer->buffer, cpu, ts, lost_events);
             }
 
             if (event) {
                 iter->ent_size = ring_buffer_event_length(event);
-                return ring_buffer_event_data(event);
+                return ring_buffer_event_data(event) {
+                    if (extended_time(event))
+                        event = skip_time_extend(event);
+                    WARN_ON_ONCE(event->type_len > RINGBUF_TYPE_DATA_TYPE_LEN_MAX);
+                    /* If length is in len field, then array[0] has the data */
+                    if (event->type_len)
+                        return (void *)&event->array[0];
+                    /* Otherwise length is in array[0] and array[1] has the data */
+                    return (void *)&event->array[1];
+                }
             }
             iter->ent_size = 0;
             return NULL;
@@ -8978,275 +9622,6 @@ __find_next_entry(struct trace_iterator *iter, int *ent_cpu,
         *missing_events = next_lost;
 
     return next;
-}
-```
-
-##### rb_buffer_peak
-
-```c
-static struct ring_buffer_event *
-rb_buffer_peek(struct ring_buffer_per_cpu *cpu_buffer, u64 *ts,
-           unsigned long *lost_events)
-{
-    struct ring_buffer_event *event;
-    struct buffer_page *reader;
-    int nr_loops = 0;
-
-    if (ts)
-        *ts = 0;
- again:
-    /* We repeat when a time extend is encountered.
-     * Since the time extend is always attached to a data event,
-     * we should never loop more than once.
-     * (We never hit the following condition more than twice). */
-    if (RB_WARN_ON(cpu_buffer, ++nr_loops > 2))
-        return NULL;
-
-    reader = rb_get_reader_page(cpu_buffer);
-    if (!reader)
-        return NULL;
-
-    event = rb_reader_event(cpu_buffer) {
-        return __rb_page_index(cpu_buffer->reader_page, cpu_buffer->reader_page->read) {
-            return bpage->page->data + index;
-        }
-    }
-
-    switch (event->type_len) {
-    case RINGBUF_TYPE_PADDING:
-        if (rb_null_event(event))
-            RB_WARN_ON(cpu_buffer, 1);
-        /* Because the writer could be discarding every
-         * event it creates (which would probably be bad)
-         * if we were to go back to "again" then we may never
-         * catch up, and will trigger the warn on, or lock
-         * the box. Return the padding, and we will release
-         * the current locks, and try again. */
-        return event;
-
-    case RINGBUF_TYPE_TIME_EXTEND:
-        /* Internal data, OK to advance */
-        rb_advance_reader(cpu_buffer);
-        goto again;
-
-    case RINGBUF_TYPE_TIME_STAMP:
-        if (ts) {
-            *ts = rb_event_time_stamp(event);
-            *ts = rb_fix_abs_ts(*ts, reader->page->time_stamp);
-            ring_buffer_normalize_time_stamp(cpu_buffer->buffer,
-                             cpu_buffer->cpu, ts);
-        }
-        /* Internal data, OK to advance */
-        rb_advance_reader(cpu_buffer);
-        goto again;
-
-    case RINGBUF_TYPE_DATA:
-        if (ts && !(*ts)) {
-            *ts = cpu_buffer->read_stamp + event->time_delta;
-            ring_buffer_normalize_time_stamp(cpu_buffer->buffer, cpu_buffer->cpu, ts);
-        }
-        if (lost_events)
-            *lost_events = rb_lost_events(cpu_buffer);
-        return event;
-
-    default:
-        RB_WARN_ON(cpu_buffer, 1);
-    }
-
-    return NULL;
-}
-```
-
-##### rb_get_reader_page
-
-```c
-static struct buffer_page *
-rb_get_reader_page(struct ring_buffer_per_cpu *cpu_buffer)
-{
-    struct buffer_page *reader = NULL;
-    unsigned long bsize = READ_ONCE(cpu_buffer->buffer->subbuf_size);
-    unsigned long overwrite;
-    unsigned long flags;
-    int nr_loops = 0;
-    bool ret;
-
-    local_irq_save(flags);
-    arch_spin_lock(&cpu_buffer->lock);
-
- again:
-    /* This should normally only loop twice. But because the
-     * start of the reader inserts an empty page, it causes
-     * a case where we will loop three times. There should be no
-     * reason to loop four times (that I know of). */
-    if (RB_WARN_ON(cpu_buffer, ++nr_loops > 3)) {
-        reader = NULL;
-        goto out;
-    }
-
-    reader = cpu_buffer->reader_page;
-
-    /* If there's more to read, return this page */
-    if (cpu_buffer->reader_page->read < rb_page_size(reader))
-        goto out;
-
-    /* Never should we have an index greater than the size */
-    if (RB_WARN_ON(cpu_buffer, cpu_buffer->reader_page->read > rb_page_size(reader)))
-        goto out;
-
-    /* check if we caught up to the tail */
-    reader = NULL;
-    if (cpu_buffer->commit_page == cpu_buffer->reader_page)
-        goto out;
-
-    /* Don't bother swapping if the ring buffer is empty */
-    if (rb_num_of_entries(cpu_buffer) == 0)
-        goto out;
-
-    /* Reset the reader page to size zero. */
-    local_set(&cpu_buffer->reader_page->write, 0);
-    local_set(&cpu_buffer->reader_page->entries, 0);
-    cpu_buffer->reader_page->real_end = 0;
-
- spin:
-    /* Splice the empty reader page into the list around the head. */
-    reader = rb_set_head_page(cpu_buffer) {
-        struct buffer_page *head;
-        struct buffer_page *page;
-        struct list_head *list;
-        int i;
-
-        if (RB_WARN_ON(cpu_buffer, !cpu_buffer->head_page))
-            return NULL;
-
-        /* sanity check */
-        list = cpu_buffer->pages;
-        if (RB_WARN_ON(cpu_buffer, rb_list_head(list->prev->next) != list))
-            return NULL;
-
-        page = head = cpu_buffer->head_page;
-        /* It is possible that the writer moves the header behind
-        * where we started, and we miss in one loop.
-        * A second loop should grab the header, but we'll do
-        * three loops just because I'm paranoid. */
-        for (i = 0; i < 3; i++) {
-            do {
-                if (rb_is_head_page(page, page->list.prev)) {
-                    cpu_buffer->head_page = page;
-                    return page;
-                }
-                rb_inc_page(&page);
-            } while (page != head);
-        }
-
-        RB_WARN_ON(cpu_buffer, 1);
-
-        return NULL;
-    }
-
-    if (!reader)
-        goto out;
-    cpu_buffer->reader_page->list.next = rb_list_head(reader->list.next);
-    cpu_buffer->reader_page->list.prev = reader->list.prev;
-
-    /* cpu_buffer->pages just needs to point to the buffer, it
-     *  has no specific buffer page to point to. Lets move it out
-     *  of our way so we don't accidentally swap it. */
-    cpu_buffer->pages = reader->list.prev;
-
-    /* The reader page will be pointing to the new head */
-    rb_set_list_to_head(&cpu_buffer->reader_page->list) {
-        unsigned long *ptr;
-
-        ptr = (unsigned long *)&list->next;
-        *ptr |= RB_PAGE_HEAD;
-        *ptr &= ~RB_PAGE_UPDATE;
-    }
-
-    /* We want to make sure we read the overruns after we set up our
-     * pointers to the next object. The writer side does a
-     * cmpxchg to cross pages which acts as the mb on the writer
-     * side. Note, the reader will constantly fail the swap
-     * while the writer is updating the pointers, so this
-     * guarantees that the overwrite recorded here is the one we
-     * want to compare with the last_overrun. */
-    smp_mb();
-    overwrite = local_read(&(cpu_buffer->overrun));
-
-    /* Here's the tricky part.
-     *
-     * We need to move the pointer past the header page.
-     * But we can only do that if a writer is not currently
-     * moving it. The page before the header page has the
-     * flag bit '1' set if it is pointing to the page we want.
-     * but if the writer is in the process of moving it
-     * then it will be '2' or already moved '0'. */
-
-    ret = rb_head_page_replace(reader, cpu_buffer->reader_page);
-
-    /* If we did not convert it, then we must try again. */
-    if (!ret)
-        goto spin;
-
-    if (cpu_buffer->ring_meta)
-        rb_update_meta_reader(cpu_buffer, reader);
-
-    /* Yay! We succeeded in replacing the page.
-     *
-     * Now make the new head point back to the reader page. */
-    rb_list_head(reader->list.next)->prev = &cpu_buffer->reader_page->list;
-    rb_inc_page(&cpu_buffer->head_page);
-
-    cpu_buffer->cnt++;
-    local_inc(&cpu_buffer->pages_read);
-
-    /* Finally update the reader page to the new head */
-    cpu_buffer->reader_page = reader;
-    cpu_buffer->reader_page->read = 0;
-
-    if (overwrite != cpu_buffer->last_overrun) {
-        cpu_buffer->lost_events = overwrite - cpu_buffer->last_overrun;
-        cpu_buffer->last_overrun = overwrite;
-    }
-
-    goto again;
-
- out:
-    /* Update the read_stamp on the first event */
-    if (reader && reader->read == 0)
-        cpu_buffer->read_stamp = reader->page->time_stamp;
-
-    arch_spin_unlock(&cpu_buffer->lock);
-    local_irq_restore(flags);
-
-    /* The writer has preempt disable, wait for it. But not forever
-     * Although, 1 second is pretty much "forever" */
-#define USECS_WAIT    1000000
-        for (nr_loops = 0; nr_loops < USECS_WAIT; nr_loops++) {
-        /* If the write is past the end of page, a writer is still updating it */
-        if (likely(!reader || rb_page_write(reader) <= bsize))
-            break;
-
-        udelay(1);
-
-        /* Get the latest version of the reader write value */
-        smp_rmb();
-    }
-
-    /* The writer is not moving forward? Something is wrong */
-    if (RB_WARN_ON(cpu_buffer, nr_loops == USECS_WAIT))
-        reader = NULL;
-
-    /* Make sure we see any padding after the write update
-     * (see rb_reset_tail()).
-     *
-     * In addition, a writer may be writing on the reader page
-     * if the page has not been fully filled, so the read barrier
-     * is also needed to make sure we see the content of what is
-     * committed by the writer (see rb_set_commit_to_write()). */
-    smp_rmb();
-
-
-    return reader;
 }
 ```
 
