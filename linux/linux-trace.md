@@ -2877,15 +2877,49 @@ FETCHARGS      : Arguments. Each probe can have up to 128 args.
  (\*4) "u" means user-space dereference. See :ref:`user_mem_access`.
 ```
 
+```sh
+echo 'r:vfs_read_ret vfs_read ret=$retval' > /sys/kernel/tracing/kprobe_events
+
+echo 1 > /sys/kernel/tracing/events/kprobes/vfs_read_ret/enable
+
+cat /sys/kernel/tracing/trace
+
+/sys/kernel/tracing/events/kprobes
+├── enable
+├── filter
+└── vfs_read_ret
+    ├── enable
+    ├── filter
+    ├── format
+    ├── hist
+    ├── id
+    └── trigger
+```
+
 ```c
-static const struct file_operations kprobe_events_ops = {
-    .owner          = THIS_MODULE,
-    .open           = probes_open,
-    .read           = seq_read,
-    .llseek         = seq_lseek,
-    .release        = seq_release,
-    .write          = probes_write,
-};
+static __init int init_kprobe_trace_early(void)
+{
+    int ret;
+
+    ret = dyn_event_register(&trace_kprobe_ops) {
+        if (!ops || !ops->create || !ops->show || !ops->is_busy || !ops->free || !ops->match)
+            return -EINVAL;
+
+        INIT_LIST_HEAD(&ops->list);
+        mutex_lock(&dyn_event_ops_mutex);
+        list_add_tail(&ops->list, &dyn_event_ops_list);
+        mutex_unlock(&dyn_event_ops_mutex);
+        return 0;
+    }
+    if (ret)
+        return ret;
+
+    if (trace_kprobe_register_module_notifier())
+        return -EINVAL;
+
+    return 0;
+}
+core_initcall(init_kprobe_trace_early);
 
 static __init int init_kprobe_trace(void)
 {
@@ -2895,44 +2929,9 @@ static __init int init_kprobe_trace(void)
     if (ret)
         return 0;
 
-    /* Event list interface */
+    /* /sys/kernel/tracing/kprobe_events */
     trace_create_file("kprobe_events", TRACE_MODE_WRITE,
-        NULL, NULL, &kprobe_events_ops) {
-
-        tracefs_create_file(name, mode, parent, data, fops) {
-            struct tracefs_inode *ti;
-            struct dentry *dentry;
-            struct inode *inode;
-
-            if (security_locked_down(LOCKDOWN_TRACEFS))
-                return NULL;
-
-            if (!(mode & S_IFMT))
-                mode |= S_IFREG;
-            BUG_ON(!S_ISREG(mode));
-            dentry = tracefs_start_creating(name, parent);
-
-            if (IS_ERR(dentry))
-                return NULL;
-
-            inode = tracefs_get_inode(dentry->d_sb);
-            if (unlikely(!inode))
-                return tracefs_failed_creating(dentry);
-
-            ti = get_tracefs(inode);
-            ti->private = instance_inode(parent, inode);
-
-            inode->i_mode = mode;
-            inode->i_op = &tracefs_file_inode_operations;
-            inode->i_fop = fops ? fops : &tracefs_file_operations;
-            inode->i_private = data;
-            inode->i_uid = d_inode(dentry->d_parent)->i_uid;
-            inode->i_gid = d_inode(dentry->d_parent)->i_gid;
-            d_instantiate(dentry, inode);
-            fsnotify_create(d_inode(dentry->d_parent), dentry);
-            return tracefs_end_creating(dentry);
-        }
-    }
+        NULL, NULL, &kprobe_events_ops);
 
     /* Profile interface */
     trace_create_file("kprobe_profile", TRACE_MODE_READ,
@@ -2942,9 +2941,23 @@ static __init int init_kprobe_trace(void)
 
     return 0;
 }
+fs_initcall(init_kprobe_trace);
 ```
 
-## probes_open
+## kprobe_events_ops
+
+```c
+static const struct file_operations kprobe_events_ops = {
+    .owner          = THIS_MODULE,
+    .open           = probes_open,
+    .read           = seq_read,
+    .llseek         = seq_lseek,
+    .release        = seq_release,
+    .write          = probes_write,
+};
+```
+
+### probes_open
 
 ```c
 static int probes_open(struct inode *inode, struct file *file)
@@ -2988,9 +3001,16 @@ static int probes_open(struct inode *inode, struct file *file)
 
     return seq_open(file, &probes_seq_op);
 }
+
+static const struct seq_operations probes_seq_op = {
+    .start  = dyn_event_seq_start,
+    .next   = dyn_event_seq_next,
+    .stop   = dyn_event_seq_stop,
+    .show   = probes_seq_show
+};
 ```
 
-## probes_write
+### probes_write
 
 ```c
 static ssize_t probes_write(struct file *file, const char __user *buffer,
@@ -3007,14 +3027,20 @@ static int create_or_delete_trace_kprobe(const char *raw_command)
     if (raw_command[0] == '-')
         return dyn_event_release(raw_command, &trace_kprobe_ops);
 
-    ret = trace_kprobe_create(raw_command) {
+    ret = dyn_event_create(raw_command, &trace_kprobe_ops) {
+        int ret;
 
+        mutex_lock(&dyn_event_ops_mutex);
+        ret = type->create(raw_command);
+        mutex_unlock(&dyn_event_ops_mutex);
+        return ret;
     }
+
     return ret == -ECANCELED ? -EINVAL : ret;
 }
 ```
 
-## trace_kprobe_create
+## trace_kprobe_ops
 
 ```c
 static struct dyn_event_operations trace_kprobe_ops = {
@@ -3026,146 +3052,496 @@ static struct dyn_event_operations trace_kprobe_ops = {
     .free       = trace_kprobe_release,
     .match      = trace_kprobe_match,
 };
-
-struct trace_kprobe {
-    struct dyn_event {
-        struct list_head            list;
-        struct dyn_event_operations {
-            struct list_head    list;
-            int (*create)(const char *raw_command);
-            int (*show)(struct seq_file *m, struct dyn_event *ev);
-            bool (*is_busy)(struct dyn_event *ev);
-            int (*free)(struct dyn_event *ev);
-            bool (*match)(const char *system, const char *event)
-        } *ops;
-    } devent;
-
-    struct kretprobe    rp;         /* Use rp.kp for kprobe use */
-    unsigned long __percpu *nhit;
-    const char          *symbol;    /* symbol name */
-
-    struct trace_probe  tp;
-};
-
-struct trace_probe {
-    struct list_heat            list;
-    struct trace_probe_event    *event;
-
-    ssize_t                     size; /* trace entry size */
-    unsigned int                nr_args;
-
-    struct probe_entry_arg {
-        struct fetch_insn   *code;
-        unsigned int        size;
-    } *entry_arg; /* This is only for return probe */
-
-    struct probe_arg {
-        struct fetch_insn {
-            enum fetch_op op;
-            union {
-                unsigned int param;
-                struct {
-                    unsigned int size;
-                    int offset;
-                };
-                struct {
-                    unsigned char basesize;
-                    unsigned char lshift;
-                    unsigned char rshift;
-                };
-                unsigned long immediate;
-                void *data;
-            };
-        } *code;
-
-        bool                dynamic;/* Dynamic array (string) is used */
-        unsigned int        offset; /* Offset from argument entry */
-        unsigned int        count; /* Array count */
-        const char          *name; /* Name of this argument */
-        const char          *comm; /* Command of this argument */
-        char                *fmt; /* Format string if needed */
-        const struct fetch_type *type; /* Type of this argument */
-    } args[];
-};
-
-struct trace_probe_event {
-    unsigned int                flags; /* For TP_FLAG_* */
-    struct trace_event_class {
-        const char      *system;
-        void            *probe;
-        void            *perf_probe;
-        int (*reg)(struct trace_event_call *event, enum trace_reg type, void *data);
-
-        struct trace_event_fields {
-            const char *type;
-            union {
-                struct {
-                    const char *name;
-                    const int  size;
-                    const int  align;
-                    const unsigned int is_signed:1;
-                    unsigned int needs_test:1;
-                    const int  filter_type;
-                    const int  len;
-                };
-                int (*define_fields)(struct trace_event_call *);
-            };
-        } *fields_array;
-
-        struct list_head    *(*get_fields)(struct trace_event_call *);
-        struct list_head    fields;
-        int (*raw_init)(struct trace_event_call *);
-    } class;
-
-    struct trace_event_call {
-        struct list_head            list;
-        struct trace_event_class    *class;
-        union {
-            const char              *name;
-            /* Set TRACE_EVENT_FL_TRACEPOINT flag when using "tp" */
-            struct tracepoint       *tp;
-        };
-
-        struct trace_event {
-            struct hlist_node       node;
-            int                     type;
-            struct trace_event_functions {
-                trace_print_func    trace;
-                trace_print_func    raw;
-                trace_print_func    hex;
-                trace_print_func    binary;
-            } *funcs;
-        } event;
-
-        char                        *print_fmt;
-
-        union {
-            void        *module;
-            atomic_t    refcnt;
-        };
-        void            *data;
-
-        /* See the TRACE_EVENT_FL_* flags above */
-        int             flags; /* static flags of different events */
-    } call;
-
-    struct list_head            files;
-    struct list_head            probes;
-    struct trace_uprobe_filter {
-        rwlock_t            rwlock;
-        int                 nr_systemwide;
-        struct list_head    perf_events;
-    } filter[];
-};
 ```
 
 ```c
 static int trace_kprobe_create(const char *raw_command)
 {
-    return trace_probe_create(raw_command, __trace_kprobe_create);
+    return trace_probe_create(raw_command, trace_kprobe_create_cb);
 }
 
-static int __trace_kprobe_create(int argc, const char *argv[])
+int trace_kprobe_create_cb(int argc, const char *argv[])
+{
+        struct traceprobe_parse_context {
+        struct trace_event_call     *event;
+        /* BTF related parameters */
+        const char                  *funcname;  /* Function name in BTF */
+        const struct btf_type       *proto;        /* Prototype of the function */
+        const struct btf_param      *params;    /* Parameter of the function */
+        s32                         nr_params;  /* The number of the parameters */
+        struct btf                  *btf;        /* The BTF to be used */
+        const struct btf_type       *last_type;    /* Saved type */
+        u32                         last_bitoffs;   /* Saved bitoffs */
+        u32                         last_bitsize;   /* Saved bitsize */
+        struct trace_probe          *tp;
+        unsigned int                flags;
+        int                         offset;
+    } *ctx __free(traceprobe_parse_context) = NULL;
+    int ret;
+
+    ctx = kzalloc_obj(*ctx);
+    if (!ctx)
+        return -ENOMEM;
+    ctx->flags = TPARG_FL_KERNEL;
+
+    trace_probe_log_init("trace_kprobe", argc, argv);
+
+    ret = trace_kprobe_create_internal(argc, argv, ctx);
+
+    trace_probe_log_clear();
+    return ret;
+}
+
+int trace_kprobe_create_internal(int argc, const char *argv[],
+                    struct traceprobe_parse_context *ctx)
+{
+    /* Argument syntax:
+     *  - Add kprobe:
+     *      p[:[GRP/][EVENT]] [MOD:]KSYM[+OFFS]|KADDR [FETCHARGS]
+     *  - Add kretprobe:
+     *      r[MAXACTIVE][:[GRP/][EVENT]] [MOD:]KSYM[+0] [FETCHARGS]
+     *    Or
+     *      p[:[GRP/][EVENT]] [MOD:]KSYM[+0]%return [FETCHARGS]
+     *
+     * Fetch args:
+     *  $retval    : fetch return value
+     *  $stack    : fetch stack address
+     *  $stackN    : fetch Nth of stack (N:0-)
+     *  $comm       : fetch current task comm
+     *  @ADDR    : fetch memory at ADDR (ADDR should be in kernel)
+     *  @SYM[+|-offs] : fetch memory at SYM +|- offs (SYM is a data symbol)
+     *  %REG    : fetch register REG
+     * Dereferencing memory fetch:
+     *  +|-offs(ARG) : fetch memory at ARG +|- offs address.
+     * Alias name of args:
+     *  NAME=FETCHARG : set NAME as alias of FETCHARG.
+     * Type of args:
+     *  FETCHARG:TYPE : use TYPE instead of unsigned long. */
+    struct trace_kprobe *tk __free(free_trace_kprobe) = NULL;
+    const char *event = NULL, *group = KPROBE_EVENT_SYSTEM;
+    const char **new_argv __free(kfree) = NULL;
+    int i, len, new_argc = 0, ret = 0;
+    char *symbol __free(kfree) = NULL;
+    char *ebuf __free(kfree) = NULL;
+    char *gbuf __free(kfree) = NULL;
+    char *abuf __free(kfree) = NULL;
+    char *dbuf __free(kfree) = NULL;
+    enum probe_print_type ptype;
+    bool is_return = false;
+    int maxactive = 0;
+    void *addr = NULL;
+    char *tmp = NULL;
+    long offset = 0;
+
+/* 1. parse command line */
+    switch (argv[0][0]) {
+    case 'r':
+        is_return = true;
+        break;
+    case 'p':
+        break;
+    default:
+        return -ECANCELED;
+    }
+    if (argc < 2)
+        return -ECANCELED;
+
+    event = strchr(&argv[0][1], ':');
+    if (event)
+        event++;
+
+    if (isdigit(argv[0][1])) {
+        char *buf __free(kfree) = NULL;
+
+        if (!is_return) {
+            trace_probe_log_err(1, BAD_MAXACT_TYPE);
+            return -EINVAL;
+        }
+        if (event)
+            len = event - &argv[0][1] - 1;
+        else
+            len = strlen(&argv[0][1]);
+        if (len > MAX_EVENT_NAME_LEN - 1) {
+            trace_probe_log_err(1, BAD_MAXACT);
+            return -EINVAL;
+        }
+        buf = kmemdup(&argv[0][1], len + 1, GFP_KERNEL);
+        if (!buf)
+            return -ENOMEM;
+        buf[len] = '\0';
+        ret = kstrtouint(buf, 0, &maxactive);
+        if (ret || !maxactive) {
+            trace_probe_log_err(1, BAD_MAXACT);
+            return -EINVAL;
+        }
+        /* kretprobes instances are iterated over via a list. The
+         * maximum should stay reasonable. */
+        if (maxactive > KRETPROBE_MAXACTIVE_MAX) {
+            trace_probe_log_err(1, MAXACT_TOO_BIG);
+            return -EINVAL;
+        }
+    }
+
+    /* try to parse an address. if that fails, try to read the
+     * input as a symbol. */
+    if (kstrtoul(argv[1], 0, (unsigned long *)&addr)) {
+        trace_probe_log_set_index(1);
+        /* Check whether uprobe event specified */
+        if (strchr(argv[1], '/') && strchr(argv[1], ':'))
+            return -ECANCELED;
+
+        /* a symbol specified */
+        symbol = kstrdup(argv[1], GFP_KERNEL);
+        if (!symbol)
+            return -ENOMEM;
+
+        tmp = strchr(symbol, '%');
+        if (tmp) {
+            if (!strcmp(tmp, "%return")) {
+                *tmp = '\0';
+                is_return = true;
+            } else {
+                trace_probe_log_err(tmp - symbol, BAD_ADDR_SUFFIX);
+                return -EINVAL;
+            }
+        }
+
+        /* TODO: support .init module functions */
+        ret = traceprobe_split_symbol_offset(symbol, &offset);
+        if (ret || offset < 0 || offset > UINT_MAX) {
+            trace_probe_log_err(0, BAD_PROBE_ADDR);
+            return -EINVAL;
+        }
+        ret = validate_probe_symbol(symbol);
+        if (ret) {
+            if (ret == -EADDRNOTAVAIL)
+                trace_probe_log_err(0, NON_UNIQ_SYMBOL);
+            else
+                trace_probe_log_err(0, BAD_PROBE_ADDR);
+            return -EINVAL;
+        }
+        if (is_return)
+            ctx->flags |= TPARG_FL_RETURN;
+        ret = kprobe_on_func_entry(NULL, symbol, offset);
+        if (ret == 0 && !is_return)
+            ctx->flags |= TPARG_FL_FENTRY;
+        /* Defer the ENOENT case until register kprobe */
+        if (ret == -EINVAL && is_return) {
+            trace_probe_log_err(0, BAD_RETPROBE);
+            return -EINVAL;
+        }
+    }
+
+    trace_probe_log_set_index(0);
+    if (event) {
+        gbuf = kmalloc(MAX_EVENT_NAME_LEN, GFP_KERNEL);
+        if (!gbuf)
+            return -ENOMEM;
+        ret = traceprobe_parse_event_name(&event, &group, gbuf, event - argv[0]);
+        if (ret)
+            return ret;
+    }
+
+    if (!event) {
+        /* Make a new event name */
+        ebuf = kmalloc(MAX_EVENT_NAME_LEN, GFP_KERNEL);
+        if (!ebuf)
+            return -ENOMEM;
+        if (symbol)
+            snprintf(ebuf, MAX_EVENT_NAME_LEN, "%c_%s_%ld",
+                 is_return ? 'r' : 'p', symbol, offset);
+        else
+            snprintf(ebuf, MAX_EVENT_NAME_LEN, "%c_0x%p",
+                 is_return ? 'r' : 'p', addr);
+        sanitize_event_name(ebuf);
+        event = ebuf;
+    }
+
+    abuf = kmalloc(MAX_BTF_ARGS_LEN, GFP_KERNEL);
+    if (!abuf)
+        return -ENOMEM;
+    argc -= 2; argv += 2;
+    ctx->funcname = symbol;
+    new_argv = traceprobe_expand_meta_args(argc, argv, &new_argc, abuf, MAX_BTF_ARGS_LEN, ctx);
+    if (IS_ERR(new_argv)) {
+        ret = PTR_ERR(new_argv);
+        new_argv = NULL;
+        return ret;
+    }
+    if (new_argv) {
+        argc = new_argc;
+        argv = new_argv;
+    }
+    if (argc > MAX_TRACE_ARGS) {
+        trace_probe_log_set_index(2);
+        trace_probe_log_err(0, TOO_MANY_ARGS);
+        return -E2BIG;
+    }
+
+    ret = traceprobe_expand_dentry_args(argc, argv, &dbuf);
+    if (ret)
+        return ret;
+
+/* 2. alloc a probe */
+    tk = alloc_trace_kprobe(group, event, addr, symbol, offset, maxactive, argc, is_return);
+    if (IS_ERR(tk)) {
+        ret = PTR_ERR(tk);
+        /* This must return -ENOMEM, else there is a bug */
+        WARN_ON_ONCE(ret != -ENOMEM);
+        return ret;    /* We know tk is not allocated */
+    }
+
+    /* parse arguments */
+    for (i = 0; i < argc; i++) {
+        trace_probe_log_set_index(i + 2);
+        ctx->offset = 0;
+        ret = traceprobe_parse_probe_arg(&tk->tp, i, argv[i], ctx);
+        if (ret)
+            return ret;    /* This can be -ENOMEM */
+    }
+    /* entry handler for kretprobe */
+    if (is_return && tk->tp.entry_arg) {
+        tk->rp.entry_handler = trace_kprobe_entry_handler;
+        tk->rp.data_size = traceprobe_get_entry_data_size(&tk->tp);
+    }
+
+    ptype = is_return ? PROBE_PRINT_RETURN : PROBE_PRINT_NORMAL;
+    ret = traceprobe_set_print_fmt(&tk->tp, ptype);
+    if (ret < 0)
+        return ret;
+
+/* 3. register trace kprobe */
+    ret = register_trace_kprobe(tk);
+    if (ret) {
+        trace_probe_log_set_index(1);
+        if (ret == -EILSEQ)
+            trace_probe_log_err(0, BAD_INSN_BNDRY);
+        else if (ret == -ENOENT)
+            trace_probe_log_err(0, BAD_PROBE_ADDR);
+        else if (ret != -ENOMEM && ret != -EEXIST)
+            trace_probe_log_err(0, FAIL_REG_PROBE);
+        return ret;
+    }
+    /* Here, 'tk' has been registered to the list successfully,
+     * so we don't need to free it. */
+    tk = NULL;
+
+    return 0;
+}
+```
+
+### register_trace_kprobe
+
+```c
+int register_trace_kprobe(struct trace_kprobe *tk) {
+    struct trace_kprobe *old_tk;
+    int ret;
+
+    mutex_lock(&event_mutex);
+
+    old_tk = find_trace_kprobe(trace_probe_name(&tk->tp),
+        trace_probe_group_name(&tk->tp)) {
+
+        struct dyn_event *pos;
+        struct trace_kprobe *tk;
+
+        for_each_trace_kprobe(tk, pos)
+            if (strcmp(trace_probe_name(&tk->tp), event) == 0 &&
+                strcmp(trace_probe_group_name(&tk->tp), group) == 0)
+                return tk;
+        return NULL;
+    }
+    if (old_tk) {
+        if (trace_kprobe_is_return(tk) != trace_kprobe_is_return(old_tk)) {
+			trace_probe_log_set_index(0);
+			trace_probe_log_err(0, DIFF_PROBE_TYPE);
+			return -EEXIST;
+		}
+		return append_trace_kprobe(tk, old_tk);
+    }
+
+/* 3.1 Register new event */
+    ret = register_kprobe_event(tk) {
+        init_trace_event_call(tk) {
+            struct trace_event_call *call = trace_probe_event_call(&tk->tp);
+
+            if (trace_kprobe_is_return(tk)) {
+                call->event.funcs = &kretprobe_funcs = {
+                    .trace  = print_kretprobe_event
+                };
+                call->class->fields_array = kretprobe_fields_array;
+            } else {
+                call->event.funcs = &kprobe_funcs = {
+                    .trace  = print_kprobe_event
+                };
+                call->class->fields_array = kprobe_fields_array {
+                    {
+                        .type = TRACE_FUNCTION_TYPE,
+                        .define_fields = kprobe_event_define_fields(struct trace_event_call *event_call) {
+                            int ret;
+                            struct kprobe_trace_entry_head field;
+                            struct trace_probe *tp;
+
+                            tp = trace_probe_primary_from_call(event_call);
+                            if (WARN_ON_ONCE(!tp))
+                                return -ENOENT;
+
+                            DEFINE_FIELD(unsigned long, ip, FIELD_STRING_IP, 0);
+
+                            return traceprobe_define_arg_fields(event_call, sizeof(field), tp) {
+                                for (i = 0; i < tp->nr_args; i++) {
+                                    struct probe_arg *parg = &tp->args[i];
+                                    const char *fmt = parg->type->fmttype;
+                                    int size = parg->type->size;
+
+                                    if (parg->fmt)
+                                        fmt = parg->fmt;
+                                    if (parg->count)
+                                        size *= parg->count;
+                                    ret = trace_define_field(event_call, fmt, parg->name,
+                                                offset + parg->offset, size,
+                                                parg->type->is_signed,
+                                                FILTER_OTHER) {
+
+                                        head = trace_get_fields(call);
+                                        return __trace_define_field(head, type, name, offset, size,
+                                                        is_signed, filter_type, 0, 0) {
+                                            struct ftrace_event_field {
+                                                struct list_head    link;
+                                                const char          *name;
+                                                const char          *type;
+                                                int                 filter_type;
+                                                int                 offset;
+                                                int                 size;
+                                                unsigned int        is_signed:1;
+                                                unsigned int        needs_test:1;
+                                                int                 len;
+                                            } *field;
+
+                                            field = kmem_cache_alloc(field_cachep, GFP_TRACE);
+                                            if (!field)
+                                                return -ENOMEM;
+
+                                            field->name = name;
+                                            field->type = type;
+
+                                            if (filter_type == FILTER_OTHER)
+                                                field->filter_type = filter_assign_type(type);
+                                            else
+                                                field->filter_type = filter_type;
+
+                                            field->offset = offset;
+                                            field->size = size;
+                                            field->is_signed = is_signed;
+                                            field->needs_test = need_test;
+                                            field->len = len;
+
+                                            list_add(&field->link, head);
+
+                                            return 0;
+                                        }
+                                    }
+                                    if (ret)
+                                        return ret;
+                                }
+                            }
+                        }
+                    },
+                    {}
+                };
+            }
+
+            call->flags = TRACE_EVENT_FL_KPROBE;
+            call->class->reg = kprobe_register;
+        }
+
+        return trace_probe_register_event_call(&tk->tp) {
+            struct trace_event_call *call = trace_probe_event_call(tp);
+            int ret;
+
+            lockdep_assert_held(&event_mutex);
+
+            if (find_trace_event_call(trace_probe_group_name(tp),
+                        trace_probe_name(tp)))
+                return -EEXIST;
+
+            ret = register_trace_event(&call->event) {
+                if (event->funcs->trace == NULL)
+                    event->funcs->trace = trace_nop_print;
+                if (event->funcs->raw == NULL)
+                    event->funcs->raw = trace_nop_print;
+                if (event->funcs->hex == NULL)
+                    event->funcs->hex = trace_nop_print;
+                if (event->funcs->binary == NULL)
+                    event->funcs->binary = trace_nop_print;
+
+                hash_add(event_hash, &event->node, event->type);
+
+                ret = event->type;
+            }
+            if (!ret)
+                return -ENODEV;
+
+            ret = trace_add_event_call(call);
+            if (ret)
+                unregister_trace_event(&call->event);
+
+            return ret;
+        }
+    }
+
+/* 3.2 Register k*probe */
+    ret = __register_trace_kprobe(tk) {
+        int i, ret;
+
+        ret = security_locked_down(LOCKDOWN_KPROBES);
+        if (ret)
+            return ret;
+
+        if (trace_kprobe_is_registered(tk))
+            return -EINVAL;
+
+        if (within_notrace_func(tk)) {
+            return -EINVAL;
+        }
+
+        for (i = 0; i < tk->tp.nr_args; i++) {
+            ret = traceprobe_update_arg(&tk->tp.args[i]);
+            if (ret)
+                return ret;
+        }
+
+        /* Set/clear disabled flag according to tp->flag */
+        if (trace_probe_is_enabled(&tk->tp))
+            tk->rp.kp.flags &= ~KPROBE_FLAG_DISABLED;
+        else
+            tk->rp.kp.flags |= KPROBE_FLAG_DISABLED;
+
+        if (trace_kprobe_is_return(tk))
+            ret = register_kretprobe(&tk->rp);
+        else
+            ret = register_kprobe(&tk->rp.kp);
+
+        return ret;
+    }
+
+    if (ret < 0) {
+        unregister_kprobe_event(tk);
+    } else {
+        dyn_event_add(&tk->devent, trace_probe_event_call(&tk->tp)) {
+            call->flags |= TRACE_EVENT_FL_DYNAMIC;
+            list_add_tail(&ev->list, &dyn_event_list);
+        }
+    }
+
+end:
+    mutex_unlock(&event_mutex);
+    return ret;
+}
+```
+
+```c
+static int trace_kprobe_create_internal(int argc, const char *argv[])
 {
     /* Argument syntax:
     *  - Add kprobe:
@@ -3532,35 +3908,14 @@ static int __trace_kprobe_create(int argc, const char *argv[])
                     if (event->funcs->binary == NULL)
                         event->funcs->binary = trace_nop_print;
 
-                    key = event->type & (EVENT_HASHSIZE - 1);
+                    hash_add(event_hash, &event->node, event->type);
 
-                    hlist_add_head(&event->node, &event_hash[key]);
+                    ret = event->type;
                 }
                 if (!ret)
                     return -ENODEV;
 
-                ret = trace_add_event_call(call) {
-                    ret = __register_event(call, NULL) {
-                        ret = event_init(call) {
-                            name = trace_event_name(call);
-                            if (call->class->raw_init) {
-                                ret = call->class->raw_init(call);
-                            }
-                        }
-                        list_add(&call->list, &ftrace_events);
-                        if (call->flags & TRACE_EVENT_FL_DYNAMIC)
-                            atomic_set(&call->refcnt, 0);
-                        else
-                            call->module = mod;
-                    }
-                    if (ret >= 0) {
-                        __add_event_to_tracers(call) {
-                            struct trace_array *tr;
-                            list_for_each_entry(tr, &ftrace_trace_arrays, list)
-                                __trace_add_new_event(call, tr);
-                        }
-                    }
-                }
+                ret = trace_add_event_call(call);
                 if (ret)
                     unregister_trace_event(&call->event);
 
@@ -3631,6 +3986,11 @@ error:
     free_trace_kprobe(tk);
     goto out;
 }
+```
+
+# dyn_event
+
+```c
 ```
 
 # ftrace
@@ -3785,22 +4145,26 @@ Direct Call After Tracers | FREGS_DIRECT_TRAMP (trampoline) | MOV X9, LR; BL ftr
 ```c
 #ifdef CONFIG_DYNAMIC_FTRACE_WITH_ARGS
 
+bic x11, x30, 0x7
+ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)]
+
 SYM_CODE_START(ftrace_caller)
     bti    c
 {
     #ifdef CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS
-/* 1. calc ftrace_ops addr
-        * aligns the LR value (x30) to the nearest 8-byte boundary by clearing the lower 3 bits. */
+/* 1. calc `ftrace_ops` addr
+        * aligns the LR value (x30) to the nearest 8-byte boundary
+        * by clearing the lower 3 bits. */
         bic x11, x30, 0x7
         /* subtracts 4 * AARCH64_INSN_SIZE (typically 4 * 4 = 16 bytes)
-        * from x11 to locate the ftrace_ops pointer.
-        * The ftrace_ops pointer is stored 16 bytes before the aligned LR. */
+        * from x11 to locate the `ftrace_ops` pointer in literal pool.
+        * The `ftrace_ops` pointer is stored 16 bytes before the aligned LR. */
         ldr x11, [x11, #-(4 * AARCH64_INSN_SIZE)]        // op
 
         #ifdef CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
             /* If the op has a direct call, handle it immediately without
              * saving/restoring registers. */
-            ldr    x17, [x11, #FTRACE_OPS_DIRECT_CALL]        // op->direct_call
+            ldr     x17, [x11, #FTRACE_OPS_DIRECT_CALL]        // op->direct_call
             cbnz    x17, ftrace_caller_direct
         #endif
     #endif
@@ -3860,7 +4224,7 @@ SYM_CODE_START(ftrace_caller)
     #else
         ldr_l   x2, function_trace_op       // op
 
-    /* update at update_ftrace_func(ftrace_ops_list_func) */
+    /* update at update_ftrace_func() */
     SYM_INNER_LABEL(ftrace_call, SYM_L_GLOBAL)
         bl      ftrace_stub                 // func(ip, parent_ip, op, regs)
     #endif
@@ -4054,82 +4418,328 @@ void __init ftrace_fn_init(void)
 failed:
     ftrace_disabled = 1;
 }
-```
 
-### init_function_trace
-
-```c
-__init int init_function_trace(void)
+int ftrace_process_locs(struct module *mod,
+                   unsigned long *start,
+                   unsigned long *end)
 {
-    init_func_cmd_traceon();
-    return register_tracer(&function_trace);
+    struct ftrace_page *pg_unuse = NULL;
+    struct ftrace_page *start_pg;
+    struct ftrace_page *pg;
+    struct dyn_ftrace *rec;
+    unsigned long skipped = 0;
+    unsigned long count;
+    unsigned long *p;
+    unsigned long addr;
+    unsigned long flags = 0; /* Shut up gcc */
+    unsigned long pages;
+    int ret = -ENOMEM;
+
+    count = end - start;
+
+    if (!count)
+        return 0;
+
+    /* Sorting mcount in vmlinux at build time depend on
+     * CONFIG_BUILDTIME_MCOUNT_SORT, while mcount loc in
+     * modules can not be sorted at build time. */
+    if (!IS_ENABLED(CONFIG_BUILDTIME_MCOUNT_SORT) || mod) {
+        sort(start, count, sizeof(*start),
+             ftrace_cmp_ips, NULL);
+    } else {
+        test_is_sorted(start, count);
+    }
+
+    start_pg = ftrace_allocate_pages(count, &pages);
+    if (!start_pg)
+        return -ENOMEM;
+
+    mutex_lock(&ftrace_lock);
+
+    /* Core and each module needs their own pages, as
+     * modules will free them when they are removed.
+     * Force a new page to be allocated for modules. */
+    if (!mod) {
+        WARN_ON(ftrace_pages || ftrace_pages_start);
+        /* First initialization */
+        ftrace_pages = ftrace_pages_start = start_pg;
+    } else {
+        if (!ftrace_pages)
+            goto out;
+
+        if (WARN_ON(ftrace_pages->next)) {
+            /* Hmm, we have free pages? */
+            while (ftrace_pages->next)
+                ftrace_pages = ftrace_pages->next;
+        }
+
+        ftrace_pages->next = start_pg;
+    }
+
+    p = start;
+    pg = start_pg;
+    while (p < end) {
+        unsigned long end_offset;
+
+        addr = *p++;
+
+        /* Some architecture linkers will pad between
+         * the different mcount_loc sections of different
+         * object files to satisfy alignments.
+         * Skip any NULL pointers. */
+        if (!addr) {
+            skipped++;
+            continue;
+        }
+
+        /* If this is core kernel, make sure the address is in core
+         * or inittext, as weak functions get zeroed and KASLR can
+         * move them to something other than zero. It just will not
+         * move it to an area where kernel text is. */
+        if (!mod && !(is_kernel_text(addr) || is_kernel_inittext(addr))) {
+            skipped++;
+            continue;
+        }
+
+        addr = ftrace_call_adjust(addr);
+
+        end_offset = (pg->index+1) * sizeof(pg->records[0]);
+        if (end_offset > PAGE_SIZE << pg->order) {
+            /* We should have allocated enough */
+            if (WARN_ON(!pg->next))
+                break;
+            pg = pg->next;
+        }
+
+        rec = &pg->records[pg->index++];
+        rec->ip = addr;
+    }
+
+    if (pg->next) {
+        pg_unuse = pg->next;
+        pg->next = NULL;
+    }
+
+    /* Assign the last page to ftrace_pages */
+    ftrace_pages = pg;
+
+    /* We only need to disable interrupts on start up
+     * because we are modifying code that an interrupt
+     * may execute, and the modification is not atomic.
+     * But for modules, nothing runs the code we modify
+     * until we are finished with it, and there's no
+     * reason to cause large interrupt latencies while we do it. */
+    if (!mod)
+        local_irq_save(flags);
+    ftrace_update_code(mod, start_pg);
+    if (!mod)
+        local_irq_restore(flags);
+    ret = 0;
+ out:
+    mutex_unlock(&ftrace_lock);
+
+    /* We should have used all pages unless we skipped some */
+    if (pg_unuse) {
+        unsigned long pg_remaining, remaining = 0;
+        long skip;
+
+        /* Count the number of entries unused and compare it to skipped. */
+        pg_remaining = ENTRIES_PER_PAGE_GROUP(pg->order) - pg->index;
+
+        if (!WARN(skipped < pg_remaining, "Extra allocated pages for ftrace")) {
+
+            skip = skipped - pg_remaining;
+
+            for (pg = pg_unuse; pg && skip > 0; pg = pg->next) {
+                remaining += 1 << pg->order;
+                skip -= ENTRIES_PER_PAGE_GROUP(pg->order);
+            }
+
+            pages -= remaining;
+
+            /* Check to see if the number of pages remaining would
+             * just fit the number of entries skipped. */
+            WARN(pg || skip > 0, "Extra allocated pages for ftrace: %lu with %lu skipped",
+                 remaining, skipped);
+        }
+        /* Need to synchronize with ftrace_location_range() */
+        synchronize_rcu();
+        ftrace_free_pages(pg_unuse);
+    }
+
+    if (!mod) {
+        count -= skipped;
+        pr_info("ftrace: allocating %ld entries in %ld pages\n",
+            count, pages);
+    }
+
+    return ret;
 }
 
-int __init init_func_cmd_traceon(void)
+unsigned long ftrace_call_adjust(unsigned long addr)
+{
+    /* When using mcount, addr is the address of the mcount call
+     * instruction, and no adjustment is necessary. */
+    if (!IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_ARGS))
+        return addr;
+
+    /* When using patchable-function-entry without pre-function NOPS, addr
+     * is the address of the first NOP after the function entry point.
+     *
+     * The compiler has either generated:
+     *
+     * addr+00:    func:    NOP        // To be patched to MOV X9, LR
+     * addr+04:        NOP        // To be patched to BL <caller>
+     *
+     * Or:
+     *
+     * addr-04:        BTI    C
+     * addr+00:    func:    NOP        // To be patched to MOV X9, LR
+     * addr+04:        NOP        // To be patched to BL <caller>
+     *
+     * We must adjust addr to the address of the NOP which will be patched
+     * to `BL <caller>`, which is at `addr + 4` bytes in either case.
+     * */
+    if (!IS_ENABLED(CONFIG_DYNAMIC_FTRACE_WITH_CALL_OPS))
+        return addr + AARCH64_INSN_SIZE;
+
+    /* When using patchable-function-entry with pre-function NOPs, addr is
+     * the address of the first pre-function NOP.
+     *
+     * Starting from an 8-byte aligned base, the compiler has either
+     * generated:
+     *
+     * addr+00:        NOP        // Literal (first 32 bits)
+     * addr+04:        NOP        // Literal (last 32 bits)
+     * addr+08:    func:    NOP        // To be patched to MOV X9, LR
+     * addr+12:        NOP        // To be patched to BL <caller>
+     *
+     * Or:
+     *
+     * addr+00:        NOP        // Literal (first 32 bits)
+     * addr+04:        NOP        // Literal (last 32 bits)
+     * addr+08:    func:    BTI    C
+     * addr+12:        NOP        // To be patched to MOV X9, LR
+     * addr+16:        NOP        // To be patched to BL <caller>
+     *
+     * We must adjust addr to the address of the NOP which will be patched
+     * to `BL <caller>`, which is at either addr+12 or addr+16 depending on
+     * whether there is a BTI. */
+
+    if (!IS_ALIGNED(addr, sizeof(unsigned long))) {
+        WARN_RATELIMIT(1, "Misaligned patch-site %pS\n",
+                   (void *)(addr + 8));
+        return 0;
+    }
+
+    /* Skip the NOPs placed before the function entry point */
+    addr += 2 * AARCH64_INSN_SIZE;
+
+    /* Skip any BTI */
+    if (IS_ENABLED(CONFIG_ARM64_BTI_KERNEL)) {
+        u32 insn = le32_to_cpu(*(__le32 *)addr);
+
+        if (aarch64_insn_is_bti(insn)) {
+            addr += AARCH64_INSN_SIZE;
+        } else if (insn != aarch64_insn_gen_nop()) {
+            WARN_RATELIMIT(1, "unexpected insn in patch-site %pS: 0x%08x\n",
+                       (void *)addr, insn);
+        }
+    }
+
+    /* Skip the first NOP after function entry */
+    addr += AARCH64_INSN_SIZE;
+
+    return addr;
+}
+
+int ftrace_update_code(struct module *mod, struct ftrace_page *new_pgs)
+{
+    bool init_nop = ftrace_need_init_nop();
+    struct ftrace_page *pg;
+    struct dyn_ftrace *p;
+    u64 start, stop, update_time;
+    unsigned long update_cnt = 0;
+    unsigned long rec_flags = 0;
+    int i;
+
+    start = ftrace_now(raw_smp_processor_id());
+
+    /* When a module is loaded, this function is called to convert
+     * the calls to mcount in its text to nops, and also to create
+     * an entry in the ftrace data. Now, if ftrace is activated
+     * after this call, but before the module sets its text to
+     * read-only, the modification of enabling ftrace can fail if
+     * the read-only is done while ftrace is converting the calls.
+     * To prevent this, the module's records are set as disabled
+     * and will be enabled after the call to set the module's text
+     * to read-only. */
+    if (mod)
+        rec_flags |= FTRACE_FL_DISABLED;
+
+    for (pg = new_pgs; pg; pg = pg->next) {
+
+        for (i = 0; i < pg->index; i++) {
+
+            /* If something went wrong, bail without enabling anything */
+            if (unlikely(ftrace_disabled))
+                return -1;
+
+            p = &pg->records[i];
+            p->flags = rec_flags;
+
+            /* Do the initial record conversion from mcount jump
+             * to the NOP instructions. */
+            if (init_nop && !ftrace_nop_initialize(mod, p))
+                break;
+
+            update_cnt++;
+        }
+    }
+
+    stop = ftrace_now(raw_smp_processor_id());
+    update_time = stop - start;
+    if (mod)
+        ftrace_total_mod_time += update_time;
+    else
+        ftrace_update_time = update_time;
+    ftrace_update_tot_cnt += update_cnt;
+
+    return 0;
+}
+
+static int
+ftrace_nop_initialize(struct module *mod, struct dyn_ftrace *rec)
 {
     int ret;
 
-    ret = register_ftrace_command(&ftrace_traceoff_cmd);
-    if (ret)
-        return ret;
+    if (unlikely(ftrace_disabled))
+        return 0;
 
-    ret = register_ftrace_command(&ftrace_traceon_cmd);
-    if (ret)
-        goto out_free_traceoff;
+    ret = ftrace_init_nop(mod, rec) {
+        unsigned long pc = rec->ip - AARCH64_INSN_SIZE;
+        u32 old, new;
+        int ret;
 
-    ret = register_ftrace_command(&ftrace_stacktrace_cmd);
-    if (ret)
-        goto out_free_traceon;
+        ret = ftrace_rec_set_nop_ops(rec) {
+            return ftrace_rec_set_ops(rec, &ftrace_nop_ops);
+        }
+        if (ret)
+            return ret;
 
-    ret = register_ftrace_command(&ftrace_dump_cmd);
-    if (ret)
-        goto out_free_stacktrace;
-
-    ret = register_ftrace_command(&ftrace_cpudump_cmd);
-    if (ret)
-        goto out_free_dump;
-
-    return 0;
-}
-
-__init int register_ftrace_command(struct ftrace_func_command *cmd)
-{
-    struct ftrace_func_command *p;
-
-    guard(mutex)(&ftrace_cmd_mutex);
-    list_for_each_entry(p, &ftrace_commands, list) {
-        if (strcmp(cmd->name, p->name) == 0)
-            return -EBUSY;
+        old = aarch64_insn_gen_nop();
+        new = aarch64_insn_gen_move_reg(AARCH64_INSN_REG_9,
+                        AARCH64_INSN_REG_LR,
+                        AARCH64_INSN_VARIANT_64BIT);
+        return ftrace_modify_code(pc, old, new, true);
     }
-    list_add(&cmd->list, &ftrace_commands);
-
-    return 0;
+    if (ret) {
+        ftrace_bug_type = FTRACE_BUG_INIT;
+        ftrace_bug(ret, rec);
+        return 0;
+    }
+    return 1;
 }
-
-static struct ftrace_func_command ftrace_traceon_cmd = {
-    .name            = "traceon",
-    .func            = ftrace_trace_onoff_callback,
-};
-
-static struct ftrace_func_command ftrace_traceoff_cmd = {
-    .name            = "traceoff",
-    .func            = ftrace_trace_onoff_callback,
-};
-
-static struct ftrace_func_command ftrace_stacktrace_cmd = {
-    .name            = "stacktrace",
-    .func            = ftrace_stacktrace_callback,
-};
-
-static struct ftrace_func_command ftrace_dump_cmd = {
-    .name            = "dump",
-    .func            = ftrace_dump_callback,
-};
-
-static struct ftrace_func_command ftrace_cpudump_cmd = {
-    .name            = "cpudump",
-    .func            = ftrace_cpudump_callback,
-};
 ```
 
 ### register_ftrace_function
@@ -4731,14 +5341,27 @@ void ftrace_modify_all_code(int command) {
 **Which ftrace_ops Is Placed in the Literal Table?**
 * **Single** ftrace_ops: the literal table contains a pointer to that specific ftrace_ops structure.
 * **Multiple** ftrace_ops: the literal table contains a pointer to a consolidated ftrace_ops (e.g., `ftrace_list_ops` or a dynamically allocated ftrace_ops). This ftrace_ops has a tracer function (e.g., `ftrace_list_func`) that iterates over the `ftrace_ops_list` to invoke all registered tracers.
-* **Direct** Call Case (with `CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`): If a direct call trampoline is registered (i.e., op->direct_call is non-zero), the ftrace_ops in the literal table may still be a consolidated ftrace_ops, but ftrace_caller checks the FTRACE_OPS_DIRECT_CALL field and jumps to the direct trampoline if present, potentially bypassing the list iteration.
+* **Direct** Call Case (with `CONFIG_DYNAMIC_FTRACE_WITH_DIRECT_CALLS`): If a direct call trampoline is registered (i.e., op->direct_call is non-zero), the ftrace_ops in the literal table may still be a consolidated ftrace_ops, but ftrace_caller checks the `FTRACE_OPS_DIRECT_CALL` field and jumps to the direct trampoline if present, potentially bypassing the list iteration.
 
 ---
 
 ```c
+/* currently active function tracer operations structure */
+struct ftrace_ops *function_trace_op = &ftrace_list_end;
+
+/* temporary staging pointer used during safe updates of function_trace_op. */
+static struct ftrace_ops *set_function_trace_op;
+```
+
+```c
 /* serves as the default callback for basic function tracing
  * when a **single** ftrace_ops is registered or when no filtering is needed. */
-ftrace_func_t ftrace_trace_function __read_mostly = ftrace_stub;
+ftrace_func_t ftrace_trace_function = ftrace_stub;
+```
+
+```c
+/* global list to link all registered ftrace_ops */
+struct ftrace_ops __rcu *ftrace_ops_list = (struct ftrace_ops __rcu *)&ftrace_list_end;
 
 /* dispatches tracing callbacks for all ftrace_ops registered to trace a function,
  * supporting **multiple** tracers and complex filtering. */
@@ -4750,6 +5373,9 @@ const struct ftrace_ops ftrace_list_ops = {
     .func   = ftrace_ops_list_func,
     .flags  = FTRACE_OPS_FL_STUB,
 };
+
+struct ftrace_ops global_ops;
+```
 
 ```c
 /* include/asm-generic/vmlinux.lds.h */
@@ -4790,6 +5416,30 @@ void arch_ftrace_ops_list_func(unsigned long ip, unsigned long parent_ip)
     out:
         trace_clear_recursion(bit);
     }
+}
+
+int ftrace_ops_test(struct ftrace_ops *ops, unsigned long ip, void *regs)
+{
+    struct ftrace_ops_hash hash;
+    int ret;
+
+#ifdef CONFIG_DYNAMIC_FTRACE_WITH_REGS
+    /* There's a small race when adding ops that the ftrace handler
+     * that wants regs, may be called without them. We can not
+     * allow that handler to be called if regs is NULL. */
+    if (regs == NULL && (ops->flags & FTRACE_OPS_FL_SAVE_REGS))
+        return 0;
+#endif
+
+    rcu_assign_pointer(hash.filter_hash, ops->func_hash->filter_hash);
+    rcu_assign_pointer(hash.notrace_hash, ops->func_hash->notrace_hash);
+
+    if (hash_contains_ip(ip, &hash))
+        ret = 1;
+    else
+        ret = 0;
+
+    return ret;
 }
 ```
 
@@ -4894,6 +5544,329 @@ int ftrace_set_filter(struct ftrace_ops *ops, unsigned char *buf,
     }
 }
 ```
+
+### ftrace_func_command
+
+```c
+__init int init_function_trace(void)
+{
+    init_func_cmd_traceon();
+    return register_tracer(&function_trace);
+}
+
+int __init init_func_cmd_traceon(void)
+{
+    int ret;
+
+    ret = register_ftrace_command(&ftrace_traceoff_cmd);
+    if (ret)
+        return ret;
+
+    ret = register_ftrace_command(&ftrace_traceon_cmd);
+    if (ret)
+        goto out_free_traceoff;
+
+    ret = register_ftrace_command(&ftrace_stacktrace_cmd);
+    if (ret)
+        goto out_free_traceon;
+
+    ret = register_ftrace_command(&ftrace_dump_cmd);
+    if (ret)
+        goto out_free_stacktrace;
+
+    ret = register_ftrace_command(&ftrace_cpudump_cmd);
+    if (ret)
+        goto out_free_dump;
+
+    return 0;
+}
+
+__init int register_ftrace_command(struct ftrace_func_command *cmd)
+{
+    struct ftrace_func_command *p;
+
+    guard(mutex)(&ftrace_cmd_mutex);
+    list_for_each_entry(p, &ftrace_commands, list) {
+        if (strcmp(cmd->name, p->name) == 0)
+            return -EBUSY;
+    }
+    list_add(&cmd->list, &ftrace_commands);
+
+    return 0;
+}
+
+static struct ftrace_func_command ftrace_traceon_cmd = {
+    .name            = "traceon",
+    .func            = ftrace_trace_onoff_callback,
+};
+
+static struct ftrace_func_command ftrace_traceoff_cmd = {
+    .name            = "traceoff",
+    .func            = ftrace_trace_onoff_callback,
+};
+
+static struct ftrace_func_command ftrace_stacktrace_cmd = {
+    .name            = "stacktrace",
+    .func            = ftrace_stacktrace_callback,
+};
+
+static struct ftrace_func_command ftrace_dump_cmd = {
+    .name            = "dump",
+    .func            = ftrace_dump_callback,
+};
+
+static struct ftrace_func_command ftrace_cpudump_cmd = {
+    .name            = "cpudump",
+    .func            = ftrace_cpudump_callback,
+};
+```
+
+#### register_ftrace_function_probe
+
+```c
+int
+register_ftrace_function_probe(char *glob, struct trace_array *tr,
+                   struct ftrace_probe_ops *probe_ops,
+                   void *data)
+{
+    struct ftrace_func_probe *probe = NULL, *iter;
+    struct ftrace_func_entry *entry;
+    struct ftrace_hash **orig_hash;
+    struct ftrace_hash *old_hash;
+    struct ftrace_hash *hash;
+    int count = 0;
+    int size;
+    int ret;
+    int i;
+
+    if (WARN_ON(!tr))
+        return -EINVAL;
+
+    /* We do not support '!' for function probes */
+    if (WARN_ON(glob[0] == '!'))
+        return -EINVAL;
+
+
+    mutex_lock(&ftrace_lock);
+    /* Check if the probe_ops is already registered */
+    list_for_each_entry(iter, &tr->func_probes, list) {
+        if (iter->probe_ops == probe_ops) {
+            probe = iter;
+            break;
+        }
+    }
+    if (!probe) {
+        probe = kzalloc_obj(*probe);
+        if (!probe) {
+            mutex_unlock(&ftrace_lock);
+            return -ENOMEM;
+        }
+        probe->probe_ops = probe_ops;
+        probe->ops.func = function_trace_probe_call =() {
+            struct ftrace_probe_ops *probe_ops;
+            struct ftrace_func_probe *probe;
+
+            probe = container_of(op, struct ftrace_func_probe, ops);
+            probe_ops = probe->probe_ops;
+
+            /* Disable preemption for these calls to prevent a RCU grace
+            * period. This syncs the hash iteration and freeing of items
+            * on the hash. rcu_read_lock is too dangerous here. */
+            preempt_disable_notrace();
+            probe_ops->func(ip, parent_ip, probe->tr, probe_ops, probe->data);
+            preempt_enable_notrace();
+        }
+        probe->tr = tr;
+        ftrace_ops_init(&probe->ops);
+        list_add(&probe->list, &tr->func_probes);
+    }
+
+    acquire_probe_locked(probe);
+
+    mutex_unlock(&ftrace_lock);
+
+    /* Note, there's a small window here that the func_hash->filter_hash
+     * may be NULL or empty. Need to be careful when reading the loop. */
+    mutex_lock(&probe->ops.func_hash->regex_lock);
+
+    orig_hash = &probe->ops.func_hash->filter_hash;
+    old_hash = *orig_hash;
+    hash = alloc_and_copy_ftrace_hash(FTRACE_HASH_DEFAULT_BITS, old_hash);
+
+    if (!hash) {
+        ret = -ENOMEM;
+        goto out;
+    }
+
+    ret = ftrace_match_records(hash, glob, strlen(glob));
+
+    /* Nothing found? */
+    if (!ret)
+        ret = -EINVAL;
+
+    if (ret < 0)
+        goto out;
+
+    size = 1 << hash->size_bits;
+    for (i = 0; i < size; i++) {
+        hlist_for_each_entry(entry, &hash->buckets[i], hlist) {
+            if (ftrace_lookup_ip(old_hash, entry->ip))
+                continue;
+            /* The caller might want to do something special
+             * for each function we find. We call the callback
+             * to give the caller an opportunity to do so. */
+            if (probe_ops->init) {
+                ret = probe_ops->init(probe_ops, tr, entry->ip, data, &probe->data);
+                if (ret < 0) {
+                    if (probe_ops->free && count)
+                        probe_ops->free(probe_ops, tr, 0, probe->data);
+                    probe->data = NULL;
+                    goto out;
+                }
+            }
+            count++;
+        }
+    }
+
+    mutex_lock(&ftrace_lock);
+
+    if (!count) {
+        /* Nothing was added? */
+        ret = -EINVAL;
+        goto out_unlock;
+    }
+
+    ret = ftrace_hash_move_and_update_ops(&probe->ops, orig_hash, hash, 1);
+    if (ret < 0)
+        goto err_unlock;
+
+    /* One ref for each new function traced */
+    probe->ref += count;
+
+    if (!(probe->ops.flags & FTRACE_OPS_FL_ENABLED))
+        ret = ftrace_startup(&probe->ops, 0);
+
+ out_unlock:
+    mutex_unlock(&ftrace_lock);
+
+    if (!ret)
+        ret = count;
+ out:
+    mutex_unlock(&probe->ops.func_hash->regex_lock);
+    free_ftrace_hash(hash);
+
+    release_probe(probe);
+
+    return ret;
+
+ err_unlock:
+    if (!probe_ops->free || !count)
+        goto out_unlock;
+
+    /* Failed to do the move, need to call the free functions */
+    for (i = 0; i < size; i++) {
+        hlist_for_each_entry(entry, &hash->buckets[i], hlist) {
+            if (ftrace_lookup_ip(old_hash, entry->ip))
+                continue;
+            probe_ops->free(probe_ops, tr, entry->ip, probe->data);
+        }
+    }
+    goto out_unlock;
+}
+```
+
+#### ftrace_trace_onoff_callback
+
+```c
+static int
+ftrace_trace_onoff_callback(struct trace_array *tr, struct ftrace_hash *hash,
+                char *glob, char *cmd, char *param, int enable)
+{
+    struct ftrace_probe_ops *ops;
+
+    if (!tr)
+        return -ENODEV;
+
+    /* we register both traceon and traceoff to this callback */
+    if (strcmp(cmd, "traceon") == 0)
+        ops = param ? &traceon_count_probe_ops : &traceon_probe_ops;
+    else
+        ops = param ? &traceoff_count_probe_ops : &traceoff_probe_ops;
+
+    return ftrace_trace_probe_callback(tr, ops, hash, glob, cmd, param, enable) {
+        void *count = (void *)-1;
+        char *number;
+        int ret;
+
+        /* hash funcs only work with set_ftrace_filter */
+        if (!enable)
+            return -EINVAL;
+
+        if (glob[0] == '!')
+            return unregister_ftrace_function_probe_func(glob+1, tr, ops);
+
+        if (!param)
+            goto out_reg;
+
+        number = strsep(&param, ":");
+
+        if (!strlen(number))
+            goto out_reg;
+
+        /* We use the callback data field (which is a pointer)
+        * as our counter. */
+        ret = kstrtoul(number, 0, (unsigned long *)&count);
+        if (ret)
+            return ret;
+
+    out_reg:
+        ret = register_ftrace_function_probe(glob, tr, ops, count);
+            --->
+
+        return ret < 0 ? ret : 0;
+    }
+}
+```
+
+#### traceo_probe_ops
+
+```c
+static struct ftrace_probe_ops traceon_probe_ops = {
+    .func               = ftrace_traceon,
+    .print              = ftrace_traceon_print,
+};
+
+static void
+ftrace_traceon(unsigned long ip, unsigned long parent_ip,
+           struct trace_array *tr, struct ftrace_probe_ops *ops,
+           void *data)
+{
+    if (tracer_tracing_is_on(tr))
+        return;
+
+    tracer_tracing_on(tr) {
+        if (tr->array_buffer.buffer) {
+            ring_buffer_record_on(tr->array_buffer.buffer) {
+                unsigned int rd;
+                unsigned int new_rd;
+
+                rd = atomic_read(&buffer->record_disabled);
+                do {
+                    new_rd = rd & ~RB_BUFFER_OFF;
+                } while (!atomic_try_cmpxchg(&buffer->record_disabled, &rd, new_rd));
+            }
+        }
+        /* This flag is looked at when buffers haven't been allocated
+        * yet, or by some tracers (like irqsoff), that just want to
+        * know if the ring buffer has been disabled, but it can handle
+        * races of where it gets disabled but we still do a record.
+        * As the check is in the fast path of the tracers, it is more
+        * important to be fast than accurate. */
+        tr->buffer_disabled = 0;
+    }
+}
+```
+
 
 ### ftrace_fn.ko
 
@@ -5466,18 +6439,336 @@ discard:
 }
 ```
 
+### event_trace_add_tracer
+
+```c
+int event_trace_add_tracer(struct dentry *parent, struct trace_array *tr)
+{
+    int ret;
+
+    lockdep_assert_held(&event_mutex);
+
+    ret = create_event_toplevel_files(parent, tr) {
+        struct eventfs_inode *e_events;
+        struct dentry *entry;
+        int nr_entries;
+        static struct eventfs_entry events_entries[] = {
+            {
+                .name        = "enable",
+                .callback    = events_callback,
+            },
+            {
+                .name        = "header_page",
+                .callback    = events_callback,
+            },
+            {
+                .name        = "header_event",
+                .callback    = events_callback,
+            },
+        };
+
+        entry = trace_create_file("set_event", TRACE_MODE_WRITE, parent,
+                    tr, &ftrace_set_event_fops);
+        if (!entry)
+            return -ENOMEM;
+
+        trace_create_file("show_event_filters", TRACE_MODE_READ, parent, tr,
+                &ftrace_show_event_filters_fops);
+
+        trace_create_file("show_event_triggers", TRACE_MODE_READ, parent, tr,
+                &ftrace_show_event_triggers_fops);
+
+        nr_entries = ARRAY_SIZE(events_entries);
+
+        e_events = eventfs_create_events_dir("events", parent, events_entries,
+                            nr_entries, tr);
+        if (IS_ERR(e_events)) {
+            pr_warn("Could not create tracefs 'events' directory\n");
+            return -ENOMEM;
+        }
+
+        /* There are not as crucial, just warn if they are not created */
+
+        trace_create_file("set_event_pid", TRACE_MODE_WRITE, parent,
+                tr, &ftrace_set_event_pid_fops);
+
+        trace_create_file("set_event_notrace_pid",
+                TRACE_MODE_WRITE, parent, tr,
+                &ftrace_set_event_notrace_pid_fops);
+
+        tr->event_dir = e_events;
+
+        return 0;
+    }
+    if (ret)
+        goto out;
+
+    down_write(&trace_event_sem);
+    /* If tr already has the event list, it is initialized in early boot. */
+    if (unlikely(!list_empty(&tr->events)))
+        __trace_early_add_event_dirs(tr);
+    else
+        __trace_add_event_dirs(tr);
+    up_write(&trace_event_sem);
+
+ out:
+    return ret;
+}
+```
+
+### trace_add_event_call
+
+```c
+LIST_HEAD(ftrace_events);
+static LIST_HEAD(ftrace_generic_fields);
+static LIST_HEAD(ftrace_common_fields);
+static bool eventdir_initialized;
+
+
+int trace_add_event_call(struct trace_event_call *call)
+{
+    int ret;
+    lockdep_assert_held(&event_mutex);
+
+    guard(mutex)(&trace_types_lock);
+
+    ret = __register_event(call, NULL) {
+        int ret;
+
+        ret = event_init(call);
+        if (ret < 0)
+            return ret;
+
+        down_write(&trace_event_sem);
+        list_add(&call->list, &ftrace_events);
+        up_write(&trace_event_sem);
+
+        if (call->flags & TRACE_EVENT_FL_DYNAMIC)
+            atomic_set(&call->refcnt, 0);
+        else
+            call->module = mod;
+
+        return 0;
+    }
+    if (ret < 0)
+        return ret;
+
+    __add_event_to_tracers(call) {
+        struct trace_array *tr;
+
+        list_for_each_entry(tr, &ftrace_trace_arrays, list)
+            __trace_add_new_event(call, tr);
+    }
+    return ret;
+}
+
+static int __trace_add_new_event(struct trace_event_call *call, struct trace_array *tr)
+{
+    struct trace_event_file *file;
+
+    file = trace_create_new_event(call, tr);
+    /* trace_create_new_event() returns ERR_PTR(-ENOMEM) if failed
+     * allocation, or NULL if the event is not part of the tr->system_names.
+     * When the event is not part of the tr->system_names, return zero, not
+     * an error. */
+    if (!file)
+        return 0;
+
+    if (IS_ERR(file))
+        return PTR_ERR(file);
+
+    if (eventdir_initialized)
+        return event_create_dir(tr->event_dir, file);
+    else
+        return event_define_fields(call);
+}
+
+static int
+event_create_dir(struct eventfs_inode *parent, struct trace_event_file *file)
+{
+    struct trace_event_call *call = file->event_call;
+    struct trace_array *tr = file->tr;
+    struct eventfs_inode *e_events;
+    struct eventfs_inode *ei;
+    const char *name;
+    int nr_entries;
+    int ret;
+    static struct eventfs_entry event_entries[] = {
+        {
+            .name        = "enable",
+            .callback    = event_callback,
+            .release    = event_release,
+        },
+        {
+            .name        = "filter",
+            .callback    = event_callback,
+        },
+        {
+            .name        = "trigger",
+            .callback    = event_callback,
+        },
+        {
+            .name        = "format",
+            .callback    = event_callback,
+        },
+#ifdef CONFIG_PERF_EVENTS
+        {
+            .name        = "id",
+            .callback    = event_callback,
+        },
+#endif
+#ifdef CONFIG_HIST_TRIGGERS
+        {
+            .name        = "hist",
+            .callback    = event_callback,
+        },
+#endif
+#ifdef CONFIG_HIST_TRIGGERS_DEBUG
+        {
+            .name        = "hist_debug",
+            .callback    = event_callback,
+        },
+#endif
+#ifdef CONFIG_TRACE_EVENT_INJECT
+        {
+            .name        = "inject",
+            .callback    = event_callback,
+        },
+#endif
+    };
+
+    /* If the trace point header did not define TRACE_SYSTEM
+     * then the system would be called "TRACE_SYSTEM". This should
+     * never happen. */
+    if (WARN_ON_ONCE(strcmp(call->class->system, TRACE_SYSTEM) == 0))
+        return -ENODEV;
+
+    e_events = event_subsystem_dir(tr, call->class->system, file, parent);
+    if (!e_events)
+        return -ENOMEM;
+
+    nr_entries = ARRAY_SIZE(event_entries);
+
+    name = trace_event_name(call);
+    ei = eventfs_create_dir(name, e_events, event_entries, nr_entries, file);
+    if (IS_ERR(ei)) {
+        pr_warn("Could not create tracefs '%s' directory\n", name);
+        return -1;
+    }
+
+    file->ei = ei;
+
+    ret = event_define_fields(call);
+    if (ret < 0) {
+        pr_warn("Could not initialize trace point events/%s\n", name);
+        return ret;
+    }
+
+    /* Gets decremented on freeing of the "enable" file */
+    event_file_get(file);
+
+    return 0;
+}
+```
+
+### event_subsystem_dir
+
+```c
+static struct eventfs_inode *
+event_subsystem_dir(struct trace_array *tr, const char *name,
+            struct trace_event_file *file, struct eventfs_inode *parent)
+{
+    struct event_subsystem *system, *iter;
+    struct trace_subsystem_dir *dir;
+    struct eventfs_inode *ei;
+    int nr_entries;
+    static struct eventfs_entry system_entries[] = {
+        {
+            .name        = "filter",
+            .callback    = system_callback,
+        },
+        {
+            .name        = "enable",
+            .callback    = system_callback,
+        }
+    };
+
+    /* First see if we did not already create this dir */
+    list_for_each_entry(dir, &tr->systems, list) {
+        system = dir->subsystem;
+        if (strcmp(system->name, name) == 0) {
+            dir->nr_events++;
+            file->system = dir;
+            return dir->ei;
+        }
+    }
+
+    /* Now see if the system itself exists. */
+    system = NULL;
+    list_for_each_entry(iter, &event_subsystems, list) {
+        if (strcmp(iter->name, name) == 0) {
+            system = iter;
+            break;
+        }
+    }
+
+    dir = kmalloc_obj(*dir);
+    if (!dir)
+        goto out_fail;
+
+    if (!system) {
+        system = create_new_subsystem(name);
+        if (!system)
+            goto out_free;
+    } else
+        __get_system(system);
+
+    /* ftrace only has directories no files */
+    if (strcmp(name, "ftrace") == 0)
+        nr_entries = 0;
+    else
+        nr_entries = ARRAY_SIZE(system_entries);
+
+    ei = eventfs_create_dir(name, parent, system_entries, nr_entries, dir);
+    if (IS_ERR(ei)) {
+        pr_warn("Failed to create system directory %s\n", name);
+        __put_system(system);
+        goto out_free;
+    }
+
+    dir->ei = ei;
+    dir->tr = tr;
+    dir->ref_count = 1;
+    dir->nr_events = 1;
+    dir->subsystem = system;
+    file->system = dir;
+
+    list_add(&dir->list, &tr->systems);
+
+    return dir->ei;
+
+ out_free:
+    kfree(dir);
+ out_fail:
+    /* Only print this message if failed on memory allocation */
+    if (!dir || !system)
+        pr_warn("No memory to create event subsystem %s\n", name);
+    return NULL;
+}
+```
+
 ## tracer
 
 ```c
-static struct tracer branch_trace __read_mostly =
+static struct tracer branch_trace =
 {
-    .name        = "branch",
-    .init        = branch_trace_init,
-    .reset        = branch_trace_reset,
+    .name           = "branch",
+    .init           = branch_trace_init,
+    .reset          = branch_trace_reset,
 #ifdef CONFIG_FTRACE_SELFTEST
-    .selftest    = trace_selftest_startup_branch,
+    .selftest       = trace_selftest_startup_branch,
 #endif /* CONFIG_FTRACE_SELFTEST */
-    .print_header    = branch_print_header,
+    .print_header   = branch_print_header,
 };
 
 __init static int init_branch_tracer(void)
@@ -5499,7 +6790,7 @@ core_initcall(init_branch_tracer);
 
 ```c
 /* trace_types holds a link list of available tracers. */
-static struct tracer		*trace_types __read_mostly;
+static struct tracer        *trace_types __read_mostly;
 
 register_tracer(struct tracer *type)
 {
@@ -8439,6 +9730,30 @@ static __init void create_trace_instances(struct dentry *d_tracer)
                  "Failed to create instance directory\n"))
             return;
     }
+}
+
+int trace_array_create_dir(struct trace_array *tr)
+{
+    int ret;
+
+    tr->dir = tracefs_create_dir(tr->name, trace_instance_dir);
+    if (!tr->dir)
+        return -EINVAL;
+
+    ret = event_trace_add_tracer(tr->dir, tr);
+    if (ret) {
+        tracefs_remove(tr->dir);
+        return ret;
+    }
+
+    init_tracer_tracefs(tr, tr->dir);
+    ret = __update_tracer(tr);
+    if (ret) {
+        event_trace_del_tracer(tr);
+        tracefs_remove(tr->dir);
+        return ret;
+    }
+    return 0;
 }
 ```
 

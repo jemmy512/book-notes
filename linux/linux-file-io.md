@@ -1,55 +1,3 @@
-* [File Management](#File-Management)
-    * [inode](#inode)
-    * [extent](#extent)
-    * [block group](#block-group)
-    * [directory](#directory)
-    * [hard/symbolic link](#hardsymbolic-link)
-    * [vfs](#vfs)
-    * [mount](#mount)
-    * [alloc_file](#alloc_file)
-    * [open](#open)
-        * [link_path_walk](#link_path_walk)
-        * [open_last_lookups](#open_last_lookups)
-    * [read-write](#read-write)
-        * [direct_IO](#direct_IO)
-        * [buffered write](#buffered-write)
-            * [bdi_wq](#bdi_wq)
-        * [buffered read](#buffered-read)
-    * [writeback](#writeback)
-    * [coredump](#coredump)
-    * [alloc_fd](#alloc_fd)
-
-* [FS](#FS)
-    * [overlay](#overlay)
-    * [ex4](#ext4)
-    * [proc](#proc)
-
-* [IO](#IO)
-    * [kobject](#kobject)
-    * [char dev](#char-dev)
-        * [insmod char dev](#insmod-char-dev)
-        * [dev_fs_type](#dev_fs_type)
-        * [mount char dev](#mount-char-dev)
-        * [mknod char dev](#mknod-char-dev)
-        * [open char dev](#open-char-dev)
-        * [write char dev](#write-char-dev)
-        * [ioctl](#ioctl)
-    * [block dev](#block-dev)
-        * [inode_hashtable](#inode_hashtable)
-        * [mount blk dev](#mount-blk-dev)
-            * [ext4_get_tree](#ext4_get_tree)
-    * [direct io](#direct-iO)
-        * [dio_get_page](#dio_get_page)
-        * [get_more_blocks](#get_more_blocks)
-        * [submit_page_section](#submit_page_section)
-    * [wb_workfn](#wb_workfn)
-    * [submit_bio](#submit_bio)
-        * [make_request_fn](#make_request_fn)
-        * [request_fn](#request_fn)
-    * [init request_queue](#init-request_queue)
-    * [blk_plug](#blk_plug)
-    * [call graph](#call-graph-io)
-
 * [[译] Linux 异步 I/O 框架 io_uring: 基本原理, 程序示例与性能压测(2020)](http://arthurchiao.art/blog/intro-to-io-uring-zh/)
     * [An Introduction to the io_uring Asynchronous I/O Framework, Oracle, 2020](https://medium.com/oracledevs/an-introduction-to-the-io-uring-asynchronous-i-o-framework-fad002d7dfc1)
     * [How io_uring and eBPF Will Revolutionize Programming in Linux, ScyllaDB, 2020](https://thenewstack.io/how-io_uring-and-ebpf-will-revolutionize-programming-in-linux)
@@ -12270,6 +12218,45 @@ exit:
 }
 ```
 
+### sysfs_create_mount_point
+
+```c
+int sysfs_create_mount_point(struct kobject *parent_kobj, const char *name)
+{
+    struct kernfs_node *kn, *parent = parent_kobj->sd;
+
+    kn = kernfs_create_empty_dir(parent, name) {
+        struct kernfs_node *kn;
+        int rc;
+
+        /* allocate */
+        kn = kernfs_new_node(parent, name, S_IRUGO|S_IXUGO|S_IFDIR, GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, KERNFS_DIR);
+        if (!kn)
+            return ERR_PTR(-ENOMEM);
+
+        kn->flags |= KERNFS_EMPTY_DIR;
+        kn->dir.root = parent->dir.root;
+        kn->ns = NULL;
+        kn->priv = NULL;
+
+        /* link in */
+        rc = kernfs_add_one(kn);
+        if (!rc)
+            return kn;
+
+        kernfs_put(kn);
+        return ERR_PTR(rc);
+    }
+    if (IS_ERR(kn)) {
+        if (PTR_ERR(kn) == -EEXIST)
+            sysfs_warn_dup(parent, name);
+        return PTR_ERR(kn);
+    }
+
+    return 0;
+}
+```
+
 ### sysfs_add_file_mode_ns
 
 ```c
@@ -13465,13 +13452,13 @@ static const struct file_operations proc_dir_operations = {
 
 int proc_readdir(struct file *file, struct dir_context *ctx)
 {
-	struct inode *inode = file_inode(file);
-	struct proc_fs_info *fs_info = proc_sb_info(inode->i_sb);
+    struct inode *inode = file_inode(file);
+    struct proc_fs_info *fs_info = proc_sb_info(inode->i_sb);
 
-	if (fs_info->pidonly == PROC_PIDONLY_ON)
-		return 1;
+    if (fs_info->pidonly == PROC_PIDONLY_ON)
+        return 1;
 
-	return proc_readdir_de(file, ctx, PDE(inode));
+    return proc_readdir_de(file, ctx, PDE(inode));
 }
 ```
 
@@ -14330,5 +14317,656 @@ ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
     }
     *ppos = kiocb.ki_pos;
     return ret;
+}
+```
+
+## tracefs
+
+### tracefs_init
+
+```c
+tracefs_init(void)
+{
+    int retval;
+
+    tracefs_inode_cachep = kmem_cache_create("tracefs_inode_cache",
+                         sizeof(struct tracefs_inode),
+                         0, (SLAB_RECLAIM_ACCOUNT|
+                             SLAB_ACCOUNT),
+                         init_once);
+    if (!tracefs_inode_cachep)
+        return -ENOMEM;
+
+    retval = sysfs_create_mount_point(kernel_kobj, "tracing");
+        --->
+    if (retval)
+        return -EINVAL;
+
+    retval = register_filesystem(&trace_fs_type);
+    if (!retval)
+        tracefs_registered = true;
+
+    return retval;
+}
+
+static struct file_system_type trace_fs_type = {
+    .owner              = THIS_MODULE,
+    .name               = "tracefs",
+    .init_fs_context    = tracefs_init_fs_context,
+    .parameters         = tracefs_param_specs,
+    .kill_sb            = kill_anon_super,
+};
+
+static int tracefs_init_fs_context(struct fs_context *fc)
+{
+    struct tracefs_fs_info *fsi;
+
+    fsi = kzalloc_obj(struct tracefs_fs_info);
+    if (!fsi)
+        return -ENOMEM;
+
+    fsi->mode = TRACEFS_DEFAULT_MODE;
+
+    fc->s_fs_info = fsi;
+    fc->ops = &tracefs_context_ops;
+    return 0;
+}
+
+static const struct fs_context_operations tracefs_context_ops = {
+    .free           = tracefs_free_fc,
+    .parse_param    = tracefs_parse_param,
+    .get_tree       = tracefs_get_tree,
+    .reconfigure    = tracefs_reconfigure,
+};
+
+static int tracefs_get_tree(struct fs_context *fc)
+{
+    int err = get_tree_single(fc, tracefs_fill_super);
+
+    if (err)
+        return err;
+
+    return tracefs_reconfigure(fc);
+}
+
+static int tracefs_fill_super(struct super_block *sb, struct fs_context *fc)
+{
+    static const struct tree_descr trace_files[] = {{""}};
+    int err;
+
+    err = simple_fill_super(sb, TRACEFS_MAGIC, trace_files);
+    if (err)
+        return err;
+
+    sb->s_op = &tracefs_super_operations;
+    set_default_d_op(sb, &tracefs_dentry_operations);
+
+    return 0;
+}
+
+int simple_fill_super(struct super_block *s, unsigned long magic,
+              const struct tree_descr *files)
+{
+    struct inode *inode;
+    struct dentry *dentry;
+    int i;
+
+    s->s_blocksize = PAGE_SIZE;
+    s->s_blocksize_bits = PAGE_SHIFT;
+    s->s_magic = magic;
+    s->s_op = &simple_super_operations;
+    s->s_time_gran = 1;
+
+    inode = new_inode(s);
+    if (!inode)
+        return -ENOMEM;
+    /* because the root inode is 1, the files array must not contain an
+     * entry at index 1 */
+    inode->i_ino = 1;
+    inode->i_mode = S_IFDIR | 0755;
+    simple_inode_init_ts(inode);
+    inode->i_op = &simple_dir_inode_operations;
+    inode->i_fop = &simple_dir_operations;
+    set_nlink(inode, 2);
+    s->s_root = d_make_root(inode);
+    if (!s->s_root)
+        return -ENOMEM;
+    for (i = 0; !files->name || files->name[0]; i++, files++) {
+        if (!files->name)
+            continue;
+
+        /* warn if it tries to conflict with the root inode */
+        if (unlikely(i == 1))
+            printk(KERN_WARNING "%s: %s passed in a files array"
+                "with an index of 1!\n", __func__,
+                s->s_type->name);
+
+        dentry = d_alloc_name(s->s_root, files->name);
+        if (!dentry)
+            return -ENOMEM;
+        inode = new_inode(s);
+        if (!inode) {
+            dput(dentry);
+            return -ENOMEM;
+        }
+        inode->i_mode = S_IFREG | files->mode;
+        simple_inode_init_ts(inode);
+        inode->i_fop = files->ops;
+        inode->i_ino = i;
+        d_make_persistent(dentry, inode);
+        dput(dentry);
+    }
+    return 0;
+}
+```
+
+### tracefs_create_file
+
+```c
+struct dentry *trace_create_file(const char *name,
+                 umode_t mode,
+                 struct dentry *parent,
+                 void *data,
+                 const struct file_operations *fops)
+{
+    struct dentry *ret;
+
+    ret = tracefs_create_file(name, mode, parent, data, fops);
+    if (!ret)
+        pr_warn("Could not create tracefs '%s' entry\n", name);
+
+    return ret;
+}
+
+struct dentry *tracefs_create_file(const char *name, umode_t mode,
+                   struct dentry *parent, void *data,
+                   const struct file_operations *fops)
+{
+    struct tracefs_inode *ti;
+    struct dentry *dentry;
+    struct inode *inode;
+
+    if (security_locked_down(LOCKDOWN_TRACEFS))
+        return NULL;
+
+    if (!(mode & S_IFMT))
+        mode |= S_IFREG;
+    BUG_ON(!S_ISREG(mode));
+    dentry = tracefs_start_creating(name, parent)  {
+        struct dentry *dentry;
+        int error;
+
+        pr_debug("tracefs: creating file '%s'\n",name);
+
+        error = simple_pin_fs(&trace_fs_type, &tracefs_mount, &tracefs_mount_count) {
+            struct vfsmount *mnt = NULL;
+            spin_lock(&pin_fs_lock);
+            if (unlikely(!*mount)) {
+                spin_unlock(&pin_fs_lock);
+                mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
+                if (IS_ERR(mnt))
+                    return PTR_ERR(mnt);
+                spin_lock(&pin_fs_lock);
+                if (!*mount)
+                    *mount = mnt;
+            }
+            mntget(*mount);
+            ++*count;
+            spin_unlock(&pin_fs_lock);
+            mntput(mnt);
+            return 0;
+        }
+        if (error)
+            return ERR_PTR(error);
+
+        /* If the parent is not specified, we create it in the root.
+        * We need the root dentry to do this, which is in the super
+        * block. A pointer to that is in the struct vfsmount that we
+        * have around. */
+        if (!parent)
+            parent = tracefs_mount->mnt_root;
+
+        dentry = simple_start_creating(parent, name) {
+            struct qstr qname = QSTR(name);
+            int err;
+
+            err = lookup_noperm_common(&qname, parent);
+            if (err)
+                return ERR_PTR(err);
+            return start_dirop(parent, &qname, LOOKUP_CREATE | LOOKUP_EXCL);
+        }
+        if (IS_ERR(dentry))
+            simple_release_fs(&tracefs_mount, &tracefs_mount_count);
+
+        return dentry;
+    }
+
+    if (IS_ERR(dentry))
+        return NULL;
+
+    inode = tracefs_get_inode(dentry->d_sb) {
+        struct inode *inode = new_inode(sb);
+        if (inode) {
+            inode->i_ino = get_next_ino();
+            simple_inode_init_ts(inode) {
+                struct timespec64 ts = inode_set_ctime_current(inode);
+
+                inode_set_atime_to_ts(inode, ts);
+                inode_set_mtime_to_ts(inode, ts);
+                return ts;
+            }
+        }
+        return inode;
+    }
+    if (unlikely(!inode))
+        return tracefs_failed_creating(dentry);
+
+    ti = get_tracefs(inode);
+    ti->private = instance_inode(parent, inode);
+
+    inode->i_mode = mode;
+    inode->i_op = &tracefs_file_inode_operations;
+    inode->i_fop = fops ? fops : &tracefs_file_operations;
+    inode->i_private = data;
+    inode->i_uid = d_inode(dentry->d_parent)->i_uid;
+    inode->i_gid = d_inode(dentry->d_parent)->i_gid;
+    d_make_persistent(dentry, inode);
+    fsnotify_create(d_inode(dentry->d_parent), dentry);
+    return tracefs_end_creating(dentry);
+}
+```
+
+### eventfs_dir_inode_operations
+
+```c
+static const struct inode_operations eventfs_dir_inode_operations = {
+    .lookup         = eventfs_root_lookup,
+    .setattr        = eventfs_set_attr,
+};
+
+struct dentry *eventfs_root_lookup(struct inode *dir,
+                      struct dentry *dentry,
+                      unsigned int flags)
+{
+    struct eventfs_inode *ei_child;
+    struct tracefs_inode *ti;
+    struct eventfs_inode *ei;
+    const char *name = dentry->d_name.name;
+    struct dentry *result = NULL;
+
+    ti = get_tracefs(dir) {
+        return container_of(inode, struct tracefs_inode, vfs_inode);
+    }
+    if (WARN_ON_ONCE(!(ti->flags & TRACEFS_EVENT_INODE)))
+        return ERR_PTR(-EIO);
+
+    mutex_lock(&eventfs_mutex);
+
+    ei = ti->private;
+    if (!ei || ei->is_freed)
+        goto out;
+
+    list_for_each_entry(ei_child, &ei->children, list) {
+        if (strcmp(ei_child->name, name) != 0)
+            continue;
+        /* A child is freed and removed from the list at the same time */
+        if (WARN_ON_ONCE(ei_child->is_freed))
+            goto out;
+        result = lookup_dir_entry(dentry, ei, ei_child) {
+            struct inode *inode;
+            umode_t mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
+
+            inode = eventfs_get_inode(dentry, &ei->attr, mode, ei);
+                --->
+            if (unlikely(!inode))
+                return ERR_PTR(-ENOMEM);
+
+            inode->i_op = &eventfs_dir_inode_operations;
+            inode->i_fop = &eventfs_file_operations;
+
+            /* All directories will have the same inode number */
+            inode->i_ino = eventfs_dir_ino(ei);
+
+            dentry->d_fsdata = get_ei(ei);
+
+            d_add(dentry, inode);
+            return NULL;
+        }
+        goto out;
+    }
+
+    for (int i = 0; i < ei->nr_entries; i++) {
+        void *data;
+        umode_t mode;
+        const struct file_operations *fops;
+        const struct eventfs_entry *entry = &ei->entries[i];
+
+        if (strcmp(name, entry->name) != 0)
+            continue;
+
+        data = ei->data;
+
+        if (entry->callback(name, &mode, &data, &fops) <= 0)/* events_callback */
+            goto out;
+
+        result = lookup_file_dentry(dentry, ei, i, mode, data, fops) {
+            struct eventfs_attr *attr = NULL;
+
+            if (ei->entry_attrs)
+                attr = &ei->entry_attrs[idx];
+
+            return lookup_file(ei, dentry, mode, attr, data, fops) {
+                struct inode *inode;
+
+                if (!(mode & S_IFMT))
+                    mode |= S_IFREG;
+
+                if (WARN_ON_ONCE(!S_ISREG(mode)))
+                    return ERR_PTR(-EIO);
+
+                /* Only directories have ti->private set to an ei, not files */
+                inode = eventfs_get_inode(dentry, attr, mode, NULL);
+                if (unlikely(!inode))
+                    return ERR_PTR(-ENOMEM);
+
+                inode->i_op = &eventfs_file_inode_operations;
+                inode->i_fop = fop;
+                inode->i_private = data;
+
+                /* All files will have the same inode number */
+                inode->i_ino = EVENTFS_FILE_INODE_INO;
+
+                // Files have their parent's ei as their fsdata
+                dentry->d_fsdata = get_ei(parent_ei);
+
+                d_add(dentry, inode);
+
+                /* NULL on success */
+                return NULL;
+            }
+        }
+        goto out;
+    }
+ out:
+    mutex_unlock(&eventfs_mutex);
+    return result;
+}
+
+static int events_callback(const char *name, umode_t *mode, void **data,
+               const struct file_operations **fops)
+{
+    if (strcmp(name, "enable") == 0) {
+        *mode = TRACE_MODE_WRITE;
+        *fops = &ftrace_tr_enable_fops;
+        return 1;
+    }
+
+    if (strcmp(name, "header_page") == 0) {
+        *mode = TRACE_MODE_READ;
+        *fops = &ftrace_show_header_page_fops;
+
+    } else if (strcmp(name, "header_event") == 0) {
+        *mode = TRACE_MODE_READ;
+        *fops = &ftrace_show_header_event_fops;
+    } else
+        return 0;
+
+    return 1;
+}
+
+struct inode *eventfs_get_inode(struct dentry *dentry, struct eventfs_attr *attr,
+                       umode_t mode,  struct eventfs_inode *ei)
+{
+    struct eventfs_root_inode *rei;
+    struct eventfs_inode *pei;
+    struct tracefs_inode *ti;
+    struct inode *inode;
+
+    inode = tracefs_get_inode(dentry->d_sb);
+    if (!inode)
+        return NULL;
+
+    ti = get_tracefs(inode) {
+        return container_of(inode, struct tracefs_inode, vfs_inode);
+    }
+    ti->private = ei;
+    ti->flags |= TRACEFS_EVENT_INODE;
+
+    /* Find the top dentry that holds the "events" directory */
+    do {
+        dentry = dentry->d_parent;
+        /* Directories always have d_fsdata */
+        pei = dentry->d_fsdata;
+    } while (!pei->is_events);
+
+    rei = get_root_inode(pei) {
+        WARN_ON_ONCE(!ei->is_events);
+        return container_of(ei, struct eventfs_root_inode, ei);
+    }
+
+    update_inode_attr(inode, mode, attr, rei) {
+        if (attr && attr->mode & EVENTFS_SAVE_MODE)
+            inode->i_mode = attr->mode & EVENTFS_MODE_MASK;
+        else
+            inode->i_mode = mode;
+
+        if (attr && attr->mode & EVENTFS_SAVE_UID)
+            inode->i_uid = attr->uid;
+        else
+            inode->i_uid = rei->ei.attr.uid;
+
+        if (attr && attr->mode & EVENTFS_SAVE_GID)
+            inode->i_gid = attr->gid;
+        else
+            inode->i_gid = rei->ei.attr.gid;
+    }
+
+    return inode;
+}
+```
+
+### eventfs_create_events_dir
+
+```c
+struct eventfs_inode *eventfs_create_events_dir(const char *name, struct dentry *parent,
+                        const struct eventfs_entry *entries,
+                        int size, void *data)
+{
+    struct dentry *dentry;
+    struct eventfs_root_inode *rei;
+    struct eventfs_inode *ei;
+    struct tracefs_inode *ti;
+    struct inode *inode;
+    kuid_t uid;
+    kgid_t gid;
+
+    if (security_locked_down(LOCKDOWN_TRACEFS))
+        return NULL;
+
+    dentry = tracefs_start_creating(name, parent);
+    if (IS_ERR(dentry))
+        return ERR_CAST(dentry);
+
+    ei = alloc_root_ei(name) {
+        struct eventfs_root_inode *rei = kzalloc_obj(*rei);
+        struct eventfs_inode *ei;
+
+        if (!rei)
+            return NULL;
+
+        rei->ei.is_events = 1;
+        ei = init_ei(&rei->ei, name);
+        if (!ei)
+            kfree(rei);
+
+        return ei;
+    }
+    if (!ei)
+        goto fail;
+
+    inode = tracefs_get_inode(dentry->d_sb);
+    if (unlikely(!inode))
+        goto fail;
+
+    // Note: we have a ref to the dentry from tracefs_start_creating()
+    rei = get_root_inode(ei) {
+        WARN_ON_ONCE(!ei->is_events);
+         container_of(ei, struct eventfs_root_inode, ei);
+    }
+    rei->events_dir = dentry;
+
+    ei->entries = entries;
+    ei->nr_entries = size;
+    ei->data = data;
+
+    /* Save the ownership of this directory */
+    uid = d_inode(dentry->d_parent)->i_uid;
+    gid = d_inode(dentry->d_parent)->i_gid;
+
+    /* The ei->attr will be used as the default values for the
+     * files beneath this directory. */
+    ei->attr.uid = uid;
+    ei->attr.gid = gid;
+
+    INIT_LIST_HEAD(&ei->children);
+    INIT_LIST_HEAD(&ei->list);
+
+    ti = get_tracefs(inode) {
+        return container_of(inode, struct tracefs_inode, vfs_inode);
+    }
+    ti->flags |= TRACEFS_EVENT_INODE;
+    ti->private = ei;
+
+    inode->i_mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
+    inode->i_uid = uid;
+    inode->i_gid = gid;
+    inode->i_op = &eventfs_dir_inode_operations;
+    inode->i_fop = &eventfs_file_operations;
+
+    dentry->d_fsdata = get_ei(ei);
+
+    /* Keep all eventfs directories with i_nlink == 1.
+     * Due to the dynamic nature of the dentry creations and not
+     * wanting to add a pointer to the parent eventfs_inode in the
+     * eventfs_inode structure, keeping the i_nlink in sync with the
+     * number of directories would cause too much complexity for
+     * something not worth much. Keeping directory links at 1
+     * tells userspace not to trust the link number. */
+    d_make_persistent(dentry, inode) {
+        WARN_ON(!hlist_unhashed(&dentry->d_u.d_alias));
+        WARN_ON(!inode);
+        security_d_instantiate(dentry, inode);
+        spin_lock(&inode->i_lock);
+        spin_lock(&dentry->d_lock);
+        __d_instantiate(dentry, inode) {
+            unsigned add_flags = d_flags_for_inode(inode);
+            WARN_ON(d_in_lookup(dentry));
+
+            /* The negative counter only tracks dentries on the LRU. Don't dec if
+            * d_lru is on another list. */
+            if ((dentry->d_flags &
+                (DCACHE_LRU_LIST|DCACHE_SHRINK_LIST)) == DCACHE_LRU_LIST)
+                this_cpu_dec(nr_dentry_negative);
+            hlist_add_head(&dentry->d_u.d_alias, &inode->i_dentry);
+            raw_write_seqcount_begin(&dentry->d_seq);
+            __d_set_inode_and_type(dentry, inode, add_flags);
+            raw_write_seqcount_end(&dentry->d_seq);
+            fsnotify_update_flags(dentry);
+        }
+        dentry->d_flags |= DCACHE_PERSISTENT;
+        dget_dlock(dentry);
+
+        if (d_unhashed(dentry)) {
+            __d_rehash(dentry) {
+                struct hlist_bl_head *b = d_hash(entry->d_name.hash) {
+                    return runtime_const_ptr(dentry_hashtable) +
+                        runtime_const_shift_right_32(hashlen, d_hash_shift);
+                }
+
+                hlist_bl_lock(b);
+                hlist_bl_add_head_rcu(&entry->d_hash, b) {
+                    struct hlist_bl_node *first;
+
+                    /* don't need hlist_bl_first_rcu because we're under lock */
+                    first = hlist_bl_first(h);
+
+                    n->next = first;
+                    if (first)
+                        first->pprev = &n->next;
+                    n->pprev = &h->first;
+
+                    /* need _rcu because we can have concurrent lock free readers */
+                    hlist_bl_set_first_rcu(h, n) {
+                        rcu_assign_pointer(h->first,
+                            (struct hlist_bl_node *)((unsigned long)n | LIST_BL_LOCKMASK));
+                    }
+                }
+                hlist_bl_unlock(b);
+            }
+        }
+
+        spin_unlock(&dentry->d_lock);
+        spin_unlock(&inode->i_lock);
+        return dentry;
+    }
+    /* The dentry of the "events" parent does keep track though */
+    inc_nlink(dentry->d_parent->d_inode);
+    fsnotify_mkdir(dentry->d_parent->d_inode, dentry);
+    tracefs_end_creating(dentry);
+
+    return ei;
+
+ fail:
+    cleanup_ei(ei);
+    tracefs_failed_creating(dentry);
+    return ERR_PTR(-ENOMEM);
+}
+```
+
+### eventfs_create_dir
+
+```c
+struct eventfs_inode *eventfs_create_dir(const char *name, struct eventfs_inode *parent,
+                     const struct eventfs_entry *entries,
+                     int size, void *data)
+{
+    struct eventfs_inode *ei;
+
+    if (!parent)
+        return ERR_PTR(-EINVAL);
+
+    ei = alloc_ei(name) {
+        struct eventfs_inode *ei = kzalloc_obj(*ei);
+        struct eventfs_inode *result;
+
+        if (!ei)
+            return NULL;
+
+        result = init_ei(ei, name);
+        if (!result)
+            kfree(ei);
+
+        return result;
+    }
+    if (!ei)
+        return ERR_PTR(-ENOMEM);
+
+    ei->entries = entries;
+    ei->nr_entries = size;
+    ei->data = data;
+    INIT_LIST_HEAD(&ei->children);
+    INIT_LIST_HEAD(&ei->list);
+
+    mutex_lock(&eventfs_mutex);
+    if (!parent->is_freed)
+        list_add_tail(&ei->list, &parent->children);
+    mutex_unlock(&eventfs_mutex);
+
+    /* Was the parent freed? */
+    if (list_empty(&ei->list)) {
+        cleanup_ei(ei);
+        ei = ERR_PTR(-EBUSY);
+    }
+    return ei;
 }
 ```
