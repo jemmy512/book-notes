@@ -5600,10 +5600,10 @@ flush_remote:
 * [Kenel Index Slab - LWN](https://lwn.net/Kernel/Index/#Memory_management-Slab_allocators)
     * [The SLUB allocator ](https://lwn.net/Articles/229984/)
 * [Oracle Linux SLUB Allocator Internals and Debugging :one: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-1) ⊙ [:two: :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-2) ⊙ [:three: - KASan :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-3) ⊙ [:four: - KFENCE :link:](https://blogs.oracle.com/linux/post/linux-slub-allocator-internals-and-debugging-4)
-* [[PATCH v8 00/23] SLUB percpu sheaves](https://lore.kernel.org/all/20250910-slub-percpu-caches-v8-14-ca3099d8352c@suse.cz/)
+* [[PATCH v8 00/23] SLUB percpu sheaves](https://lore.kernel.org/20250910-slub-percpu-caches-v8-14-ca3099d8352c@suse.cz/)
     * [benchmarks](https://lore.kernel.org/lkml/20250913000935.1021068-1-sudarsanm@google.com)
     * [LWN - Slabs, sheaves, and barns](https://lwn.net/Articles/1010667/) ⊙ [Slab allocator: sheaves and any-context allocations](https://lwn.net/Articles/1016001/)
-    * [[PATCH v4 00/22] slab: replace cpu (partial) slabs with sheaves](https://lore.kernel.org/all/20260123-sheaves-for-all-v4-0-041323d506f7@suse.cz)
+    * [[PATCH v4 00/22] slab: replace cpu (partial) slabs with sheaves](https://lore.kernel.org/20260123-sheaves-for-all-v4-0-041323d506f7@suse.cz)
         * Old flow: Per-CPU active slab → per-CPU partial slabs (list) → node partial list → buddy allocator.
         * New flow: Per-CPU sheaf (array cache of objects from multiple slabs) → node partial list → buddy allocator.
         * :question: Why Performance Is Not Negatively Affected by the removing of CPU partial?
@@ -8684,7 +8684,7 @@ Q: how workingset works?
 ## lru
 
 * [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
-* [[PATCH 0/6 v4] sched/mm: LRU drain flush on nohz_full](https://lore.kernel.org/all/20250703140717.25703-1-frederic@kernel.org/)
+* [[PATCH 0/6 v4] sched/mm: LRU drain flush on nohz_full](https://lore.kernel.org/20250703140717.25703-1-frederic@kernel.org/)
 
 ```c
 enum pgdat_flags {
@@ -14468,6 +14468,8 @@ kswapd_try_sleep:
             goto kswapd_try_sleep;
     }
 
+
+
     tsk->flags &= ~(PF_MEMALLOC | PF_KSWAPD);
 
     return 0;
@@ -14480,11 +14482,11 @@ kswapd_try_sleep:
 
 ![](../images/kernel/mem-swap-arch.svg)
 
-* [[LSF/MM/BPF TOPIC] Integrate Swap Cache, Swap Maps with Swap Allocator](https://lore.kernel.org/all/CAMgjq7BvQ0ZXvyLGp2YP96+i+6COCBBJCYmjXHGBnfisCAb8VA@mail.gmail.com/)
+* [[LSF/MM/BPF TOPIC] Integrate Swap Cache, Swap Maps with Swap Allocator](https://lore.kernel.org/CAMgjq7BvQ0ZXvyLGp2YP96+i+6COCBBJCYmjXHGBnfisCAb8VA@mail.gmail.com/)
     * [[PATCH v4 00/13] mm, swap: rework of swap allocator locks](https://lore.kernel.org/linux-mm/20250113175732.48099-1-ryncsn@gmail.com/)
-    * [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/all/20250313165935.63303-1-ryncsn@gmail.com/)
+    * [[PATCH v3 0/7] mm, swap: remove swap slot cache Kairui Song](https://lore.kernel.org/20250313165935.63303-1-ryncsn@gmail.com/)
     * [[PATCH 00/28] mm, swap: introduce swap table](https://lore.kernel.org/linux-mm/20250514201729.48420-1-ryncsn@gmail.com/)
-    * [[PATCH 0/9] mm, swap: introduce swap table as swap cache (phase I)](https://lore.kernel.org/lkml/20250822192023.13477-1-ryncsn@gmail.com/)
+    * [[PATCH 0/9] mm, swap: introduce swap table as swap cache (phase I)](https://lore.kernel.org/20250822192023.13477-1-ryncsn@gmail.com/)
 
 ```md
 +-----------------------------------------------------+
@@ -17411,7 +17413,7 @@ int memory_block_online(struct memory_block *mem)
             }
 
             /* mark all involved sections as online */
-            online_mem_sections(start_pfn, end_pfn) {
+            owwnline_mem_sections(start_pfn, end_pfn) {
                 for (pfn = start_pfn; pfn < end_pfn; pfn += PAGES_PER_SECTION) {
                     unsigned long section_nr = pfn_to_section_nr(pfn);
                     struct mem_section *ms;
@@ -24532,8 +24534,8 @@ out_leak_pages:
     * [HugeTLB Pages](https://docs.kernel.org/admin-guide/mm/hugetlbpage.html)
     * [Transparent Hugepage Support](https://docs.kernel.org/admin-guide/mm/transhuge.html)
     * [Hugetlbfs Reservation](https://docs.kernel.org/mm/hugetlbfs_reserv.html)
-* [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/all/20210510030027.56044-1-songmuchun@bytedance.com/)
-* [[PATCH v10 0/8] Buddy allocator like (or non-uniform) folio split](https://lore.kernel.org/all/20250307174001.242794-1-ziy@nvidia.com/)
+* [[PATCH v23 0/9] Free some vmemmap pages of HugeTLB page](https://lore.kernel.org/20210510030027.56044-1-songmuchun@bytedance.com/)
+* [[PATCH v10 0/8] Buddy allocator like (or non-uniform) folio split](https://lore.kernel.org/20250307174001.242794-1-ziy@nvidia.com/)
 
 * [Linux mTHP 动态大页](https://mp.weixin.qq.com/s/B76XlGP7efmsfZR-ABAM1A)
 * [Leo - Linux内存管理之透明大页(THP)](https://mp.weixin.qq.com/s/xRxP4beYJ-5URA7MUW96eA)
@@ -25592,7 +25594,7 @@ int alloc_contig_range_noprof(unsigned long start, unsigned long end,
     if (ret && ret != -EBUSY)
         goto done;
 
-   /* https://lore.kernel.org/all/1734503588-16254-1-git-send-email-yangge1116@126.com/ */
+   /* https://lore.kernel.org/1734503588-16254-1-git-send-email-yangge1116@126.com/ */
     ret = replace_free_hugepage_folios(start, end) {
         struct folio *folio;
         int ret = 0;

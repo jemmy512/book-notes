@@ -5283,6 +5283,10 @@ out_unlock:
 }
 ```
 
+## dmem_cgrp
+
+* [[PATCH v2 0/7] kernel/cgroups: Add "dmem" memory accounting cgroup.](https://lore.kernel.org/20241204134410.1161769-1-dev@lankhorst.se)
+
 # namespace
 
 * [LWN - :one: namespaces overview](https://lwn.net/Articles/531114/)

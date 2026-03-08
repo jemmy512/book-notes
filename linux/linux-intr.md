@@ -2382,6 +2382,9 @@ void __tasklet_schedule_common(struct tasklet_struct *t,
 ```sh
 /proc/stat
 /proc/interrupts
+#         CPU0   CPU1   CPU2   CPU3  
+# 51:     100K       0       0       0   PCI-MSI  eth0-TxRx-0
+
 /proc/softirqs
 
 /proc/irq/<pid>

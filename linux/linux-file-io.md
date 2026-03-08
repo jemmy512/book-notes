@@ -2155,6 +2155,7 @@ finish_lookup:
 ![](../images/kernel/file-read-write.svg)
 
 * [Linux内核File cache机制 - 内核工匠]() [:one](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485235&idx=1&sn=d4174dc17c1f98b86aabc31860da42cb&chksm=9b508cdeac2705c8be4a006231aaad66dd6d7a0323e587ba9471a0f7cf8123fc584a13fd4775) ⊙ [:two:](https://mp.weixin.qq.com/s?__biz=MzAxMDM0NjExNA==&mid=2247485763&idx=1&sn=972fc269d021d94f04043d34c39aa164)
+* [[RFC v2 00/11] Add dmabuf read/write via io_uring](https://lore.kernel.org/all/cover.1763725387.git.asml.silence@gmail.com/)
 
 ### rw_call_stack
 
@@ -10632,6 +10633,272 @@ static const struct blk_mq_ops scsi_mq_ops = {
 10. How data flow: `wb_writeback_work` -> `writeback_control` -> `mpage_da_data` -> `buffer_head` -> `bio` works?
 
 
+## io_uring
+
+* [](https://mp.weixin.qq.com/s/7OKHIAOC54uPAWs46QeN2A)
+
+### io_uring_setup
+
+```c
+SYSCALL_DEFINE2(io_uring_setup, u32, entries,
+        struct io_uring_params __user *, params)
+{
+    int ret;
+
+    ret = io_uring_allowed();
+    if (ret)
+        return ret;
+
+    return io_uring_setup(entries, params) {
+        struct io_ctx_config config;
+
+        memset(&config, 0, sizeof(config));
+
+        if (copy_from_user(&config.p, params, sizeof(config.p)))
+            return -EFAULT;
+
+        if (!mem_is_zero(&config.p.resv, sizeof(config.p.resv)))
+            return -EINVAL;
+
+        config.p.sq_entries = entries;
+        config.uptr = params;
+
+        return io_uring_create(&config) {
+            struct io_uring_params *p = &config->p;
+            struct io_ring_ctx *ctx;
+            struct io_uring_task *tctx;
+            struct file *file;
+            int ret;
+
+            ret = io_prepare_config(config);
+            if (ret)
+                return ret;
+
+            ctx = io_ring_ctx_alloc(p);
+            if (!ctx)
+                return -ENOMEM;
+
+            ctx->clockid = CLOCK_MONOTONIC;
+            ctx->clock_offset = 0;
+
+            if (!(ctx->flags & IORING_SETUP_NO_SQARRAY))
+                static_branch_inc(&io_key_has_sqarray);
+
+            if ((ctx->flags & IORING_SETUP_DEFER_TASKRUN) &&
+                !(ctx->flags & IORING_SETUP_IOPOLL) &&
+                !(ctx->flags & IORING_SETUP_SQPOLL))
+                ctx->task_complete = true;
+
+            if (ctx->task_complete || (ctx->flags & IORING_SETUP_IOPOLL))
+                ctx->lockless_cq = true;
+
+            /* lazy poll_wq activation relies on ->task_complete for synchronisation
+            * purposes, see io_activate_pollwq() */
+            if (!ctx->task_complete)
+                ctx->poll_activated = true;
+
+            /* When SETUP_IOPOLL and SETUP_SQPOLL are both enabled, user
+            * space applications don't need to do io completion events
+            * polling again, they can rely on io_sq_thread to do polling
+            * work, which can reduce cpu usage and uring_lock contention. */
+            if (ctx->flags & IORING_SETUP_IOPOLL &&
+                !(ctx->flags & IORING_SETUP_SQPOLL))
+                ctx->syscall_iopoll = 1;
+
+            ctx->compat = in_compat_syscall();
+            if (!ns_capable_noaudit(&init_user_ns, CAP_IPC_LOCK))
+                ctx->user = get_uid(current_user());
+
+            /* For SQPOLL, we just need a wakeup, always. For !SQPOLL, if
+            * COOP_TASKRUN is set, then IPIs are never needed by the app. */
+            if (ctx->flags & (IORING_SETUP_SQPOLL|IORING_SETUP_COOP_TASKRUN))
+                ctx->notify_method = TWA_SIGNAL_NO_IPI;
+            else
+                ctx->notify_method = TWA_SIGNAL;
+
+            /* If the current task has restrictions enabled, then copy them to
+            * our newly created ring and mark it as registered. */
+            if (current->io_uring_restrict)
+                io_ctx_restriction_clone(ctx, current->io_uring_restrict);
+
+            /* This is just grabbed for accounting purposes. When a process exits,
+            * the mm is exited and dropped before the files, hence we need to hang
+            * on to this mm purely for the purposes of being able to unaccount
+            * memory (locked/pinned vm). It's not used for anything else. */
+            mmgrab(current->mm);
+            ctx->mm_account = current->mm;
+
+            ret = io_allocate_scq_urings(ctx, config);
+            if (ret)
+                goto err;
+
+            ret = io_sq_offload_create(ctx, p);
+            if (ret)
+                goto err;
+
+            p->features = IORING_FEAT_FLAGS;
+
+            if (copy_to_user(config->uptr, p, sizeof(*p))) {
+                ret = -EFAULT;
+                goto err;
+            }
+
+            if (ctx->flags & IORING_SETUP_SINGLE_ISSUER
+                && !(ctx->flags & IORING_SETUP_R_DISABLED))
+                ctx->submitter_task = get_task_struct(current);
+
+            file = io_uring_get_file(ctx);
+            if (IS_ERR(file)) {
+                ret = PTR_ERR(file);
+                goto err;
+            }
+
+            ret = __io_uring_add_tctx_node(ctx);
+            if (ret)
+                goto err_fput;
+            tctx = current->io_uring;
+
+            /* Install ring fd as the very last thing, so we don't risk someone
+            * having closed it before we finish setup */
+            if (p->flags & IORING_SETUP_REGISTERED_FD_ONLY)
+                ret = io_ring_add_registered_file(tctx, file, 0, IO_RINGFD_REG_MAX);
+            else
+                ret = io_uring_install_fd(file);
+            if (ret < 0)
+                goto err_fput;
+
+            trace_io_uring_create(ret, ctx, p->sq_entries, p->cq_entries, p->flags);
+            return ret;
+        err:
+            io_ring_ctx_wait_and_kill(ctx);
+            return ret;
+        err_fput:
+            fput(file);
+            return ret;
+        }
+    }
+}
+```
+
+### io_uring_enter
+
+```c
+SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
+        u32, min_complete, u32, flags, const void __user *, argp,
+        size_t, argsz)
+{
+    struct io_ring_ctx *ctx;
+    struct file *file;
+    long ret;
+
+    if (unlikely(flags & ~IORING_ENTER_FLAGS))
+        return -EINVAL;
+
+    /* Ring fd has been registered via IORING_REGISTER_RING_FDS, we
+     * need only dereference our task private array to find it. */
+    if (flags & IORING_ENTER_REGISTERED_RING) {
+        struct io_uring_task *tctx = current->io_uring;
+
+        if (unlikely(!tctx || fd >= IO_RINGFD_REG_MAX))
+            return -EINVAL;
+        fd = array_index_nospec(fd, IO_RINGFD_REG_MAX);
+        file = tctx->registered_rings[fd];
+        if (unlikely(!file))
+            return -EBADF;
+    } else {
+        file = fget(fd);
+        if (unlikely(!file))
+            return -EBADF;
+        ret = -EOPNOTSUPP;
+        if (unlikely(!io_is_uring_fops(file)))
+            goto out;
+    }
+
+    ctx = file->private_data;
+    ret = -EBADFD;
+    /* Keep IORING_SETUP_R_DISABLED check before submitter_task load
+     * in io_uring_add_tctx_node() -> __io_uring_add_tctx_node_from_submit() */
+    if (unlikely(smp_load_acquire(&ctx->flags) & IORING_SETUP_R_DISABLED))
+        goto out;
+
+    /* For SQ polling, the thread will do all submissions and completions.
+     * Just return the requested submit count, and wake the thread if
+     * we were asked to. */
+    ret = 0;
+    if (ctx->flags & IORING_SETUP_SQPOLL) {
+        if (unlikely(ctx->sq_data->thread == NULL)) {
+            ret = -EOWNERDEAD;
+            goto out;
+        }
+        if (flags & IORING_ENTER_SQ_WAKEUP)
+            wake_up(&ctx->sq_data->wait);
+        if (flags & IORING_ENTER_SQ_WAIT)
+            io_sqpoll_wait_sq(ctx);
+
+        ret = to_submit;
+    } else if (to_submit) {
+        ret = io_uring_add_tctx_node(ctx);
+        if (unlikely(ret))
+            goto out;
+
+        mutex_lock(&ctx->uring_lock);
+        ret = io_submit_sqes(ctx, to_submit);
+        if (ret != to_submit) {
+            mutex_unlock(&ctx->uring_lock);
+            goto out;
+        }
+        if (flags & IORING_ENTER_GETEVENTS) {
+            if (ctx->syscall_iopoll)
+                goto iopoll_locked;
+            /* Ignore errors, we'll soon call io_cqring_wait() and
+             * it should handle ownership problems if any. */
+            if (ctx->flags & IORING_SETUP_DEFER_TASKRUN)
+                (void)io_run_local_work_locked(ctx, min_complete);
+        }
+        mutex_unlock(&ctx->uring_lock);
+    }
+
+    if (flags & IORING_ENTER_GETEVENTS) {
+        int ret2;
+
+        if (ctx->syscall_iopoll) {
+            /* We disallow the app entering submit/complete with
+             * polling, but we still need to lock the ring to
+             * prevent racing with polled issue that got punted to
+             * a workqueue. */
+            mutex_lock(&ctx->uring_lock);
+iopoll_locked:
+            ret2 = io_validate_ext_arg(ctx, flags, argp, argsz);
+            if (likely(!ret2))
+                ret2 = io_iopoll_check(ctx, min_complete);
+            mutex_unlock(&ctx->uring_lock);
+        } else {
+            struct ext_arg ext_arg = { .argsz = argsz };
+
+            ret2 = io_get_ext_arg(ctx, flags, argp, &ext_arg);
+            if (likely(!ret2))
+                ret2 = io_cqring_wait(ctx, min_complete, flags,
+                              &ext_arg);
+        }
+
+        if (!ret) {
+            ret = ret2;
+
+            /* EBADR indicates that one or more CQE were dropped.
+             * Once the user has been informed we can clear the bit
+             * as they are obviously ok with those drops. */
+            if (unlikely(ret2 == -EBADR))
+                clear_bit(IO_CHECK_CQ_DROPPED_BIT,
+                      &ctx->check_cq);
+        }
+    }
+out:
+    if (!(flags & IORING_ENTER_REGISTERED_RING))
+        fput(file);
+    return ret;
+}
+```
+
 # Tuning
 
 ## Application Calls
@@ -11580,7 +11847,6 @@ done:
     init_flush_fput();
 }
 ```
-
 
 ## kobject
 

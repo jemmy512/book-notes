@@ -4200,6 +4200,7 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 
 * [Monitoring and Tuning the Linux Networking Stack: Sending Data](https://blog.packagecloud.io/monitoring-tuning-linux-networking-stack-sending-data/)
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
+* [[PATCH net-next v14 0/9] Device memory TCP TX](https://lore.kernel.org/20250508004830.4100853-1-almasrymina@google.com/)
 
 ![](../images/kernel/net-read-write-route-bridge.svg)
 
@@ -14307,6 +14308,25 @@ tcp_ack();
     tcp_xmit_recovery(rexmit);
 ```
 
+## bbr
+
+```c
+static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
+    .flags              = TCP_CONG_NON_RESTRICTED,
+    .name               = "bbr",
+    .owner              = THIS_MODULE,
+    .init               = bbr_init,
+    .cong_control       = bbr_main,
+    .sndbuf_expand      = bbr_sndbuf_expand,
+    .undo_cwnd          = bbr_undo_cwnd,
+    .cwnd_event         = bbr_cwnd_event,
+    .ssthresh           = bbr_ssthresh,
+    .min_tso_segs       = bbr_min_tso_segs,
+    .get_info           = bbr_get_info,
+    .set_state          = bbr_set_state,
+};
+```
+
 ## Refer
 * [RFC 8312 - CUBIC for Fast Long-Distance Networks](https://datatracker.ietf.org/doc/html/rfc8312)
 * [TCP’s Congestion Control Implementation in Linux Kernel.pdf](https://wiki.aalto.fi/download/attachments/69901948/TCP-CongestionControlFinal.pdf)
@@ -18100,13 +18120,11 @@ int do_poll(struct poll_list *list, struct poll_wqueues *wait,
             pfd_end = pfd + walk->len;
             for (; pfd != pfd_end; pfd++) {
                 __poll_t mask;
-                /*
-                * Fish for events. If we found one, record it
+                /* Fish for events. If we found one, record it
                 * and kill poll_table->_qproc, so we don't
                 * needlessly register any other waiters after
                 * this. They'll get immediately deregistered
-                * when we break out and return.
-                */
+                * when we break out and return. */
                 mask = do_pollfd(pfd, pt, &can_busy_loop, busy_flag) {
                     int fd = pollfd->fd;
                     __poll_t mask, filter;
@@ -18137,10 +18155,8 @@ int do_poll(struct poll_list *list, struct poll_wqueues *wait,
                 }
             }
         }
-        /*
-        * All waiters have already been registered, so don't provide
-        * a poll_table->_qproc to them on the next loop iteration.
-        */
+        /* All waiters have already been registered, so don't provide
+        * a poll_table->_qproc to them on the next loop iteration. */
         pt->_qproc = NULL;
         if (!count) {
             count = wait->error;
@@ -18161,11 +18177,9 @@ int do_poll(struct poll_list *list, struct poll_wqueues *wait,
         }
         busy_flag = 0;
 
-        /*
-        * If this is the first loop and we have a timeout
+        /* If this is the first loop and we have a timeout
         * given, then we convert to ktime_t and set the to
-        * pointer to the expiry value.
-        */
+        * pointer to the expiry value. */
         if (end_time && !to) {
             expire = timespec64_to_ktime(*end_time);
             to = &expire;

@@ -218,6 +218,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
     The **scheduling context** is essentially a task's position in the scheduler's run queue, while the **execution context** describes the task that actually runs when the scheduling context is selected for execution.
 
     The CPU time used by the execution context will be charged against the scheduling context — the proxy will burn a bit of the donor's time slice so that it can get its work done. But the total CPU time usage of the execution context should be increased to reflect the time it spends running in the proxy mode. That is the time value that is visible to user space; having it reflect the actual execution time of the task makes it clear that the task is, indeed, executing.
+* [[patch V6 00/11] rseq: Implement time slice extension mechanism](https://lore.kernel.org/lkml/20251215155615.870031952@linutronix.de)
 
 * [A complete guide to Linux process scheduling.pdf](https://trepo.tuni.fi/bitstream/handle/10024/96864/GRADU-1428493916.pdf)
 * [Linux kernel scheduler](https://helix979.github.io/jkoo/post/os-scheduler/)
@@ -10205,6 +10206,8 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 # SCHED_EXT
 
 * [[PATCHSET v12 sched_ext/for-6.20] Add a deadline server for sched_ext tasks](https://lore.kernel.org/all/20260126100050.3854740-1-arighi@nvidia.com/)
+
+* [[PATCHSET v1 sched_ext/for-6.20] sched_ext: Implement cgroup sub-scheduler support](https://lore.kernel.org/lkml/20260121231140.832332-1-tj@kernel.org/)
 
 ```c
 DEFINE_SCHED_CLASS(ext) = {
