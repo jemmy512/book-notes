@@ -3384,81 +3384,7 @@ int register_trace_kprobe(struct trace_kprobe *tk) {
                 call->event.funcs = &kprobe_funcs = {
                     .trace  = print_kprobe_event
                 };
-                call->class->fields_array = kprobe_fields_array {
-                    {
-                        .type = TRACE_FUNCTION_TYPE,
-                        .define_fields = kprobe_event_define_fields(struct trace_event_call *event_call) {
-                            int ret;
-                            struct kprobe_trace_entry_head field;
-                            struct trace_probe *tp;
-
-                            tp = trace_probe_primary_from_call(event_call);
-                            if (WARN_ON_ONCE(!tp))
-                                return -ENOENT;
-
-                            DEFINE_FIELD(unsigned long, ip, FIELD_STRING_IP, 0);
-
-                            return traceprobe_define_arg_fields(event_call, sizeof(field), tp) {
-                                for (i = 0; i < tp->nr_args; i++) {
-                                    struct probe_arg *parg = &tp->args[i];
-                                    const char *fmt = parg->type->fmttype;
-                                    int size = parg->type->size;
-
-                                    if (parg->fmt)
-                                        fmt = parg->fmt;
-                                    if (parg->count)
-                                        size *= parg->count;
-                                    ret = trace_define_field(event_call, fmt, parg->name,
-                                                offset + parg->offset, size,
-                                                parg->type->is_signed,
-                                                FILTER_OTHER) {
-
-                                        head = trace_get_fields(call);
-                                        return __trace_define_field(head, type, name, offset, size,
-                                                        is_signed, filter_type, 0, 0) {
-                                            struct ftrace_event_field {
-                                                struct list_head    link;
-                                                const char          *name;
-                                                const char          *type;
-                                                int                 filter_type;
-                                                int                 offset;
-                                                int                 size;
-                                                unsigned int        is_signed:1;
-                                                unsigned int        needs_test:1;
-                                                int                 len;
-                                            } *field;
-
-                                            field = kmem_cache_alloc(field_cachep, GFP_TRACE);
-                                            if (!field)
-                                                return -ENOMEM;
-
-                                            field->name = name;
-                                            field->type = type;
-
-                                            if (filter_type == FILTER_OTHER)
-                                                field->filter_type = filter_assign_type(type);
-                                            else
-                                                field->filter_type = filter_type;
-
-                                            field->offset = offset;
-                                            field->size = size;
-                                            field->is_signed = is_signed;
-                                            field->needs_test = need_test;
-                                            field->len = len;
-
-                                            list_add(&field->link, head);
-
-                                            return 0;
-                                        }
-                                    }
-                                    if (ret)
-                                        return ret;
-                                }
-                            }
-                        }
-                    },
-                    {}
-                };
+                call->class->fields_array = kprobe_fields_array;
             }
 
             call->flags = TRACE_EVENT_FL_KPROBE;
@@ -3534,44 +3460,124 @@ end:
 }
 
 static int __register_trace_kprobe(struct trace_kprobe *tk) {
-        int i, ret;
+    int i, ret;
 
-        ret = security_locked_down(LOCKDOWN_KPROBES);
+    ret = security_locked_down(LOCKDOWN_KPROBES);
+    if (ret)
+        return ret;
+
+    if (trace_kprobe_is_registered(tk))
+        return -EINVAL;
+
+    if (within_notrace_func(tk)) {
+        return -EINVAL;
+    }
+
+    for (i = 0; i < tk->tp.nr_args; i++) {
+        ret = traceprobe_update_arg(&tk->tp.args[i]);
         if (ret)
             return ret;
-
-        if (trace_kprobe_is_registered(tk))
-            return -EINVAL;
-
-        if (within_notrace_func(tk)) {
-            return -EINVAL;
-        }
-
-        for (i = 0; i < tk->tp.nr_args; i++) {
-            ret = traceprobe_update_arg(&tk->tp.args[i]);
-            if (ret)
-                return ret;
-        }
-
-        /* Set/clear disabled flag according to tp->flag */
-        if (trace_probe_is_enabled(&tk->tp))
-            tk->rp.kp.flags &= ~KPROBE_FLAG_DISABLED;
-        else
-            tk->rp.kp.flags |= KPROBE_FLAG_DISABLED;
-
-        if (trace_kprobe_is_return(tk))
-            ret = register_kretprobe(&tk->rp);
-        else
-            ret = register_kprobe(&tk->rp.kp);
-                --->
-
-        return ret;
     }
-    ```
 
-# dyn_event
+    /* Set/clear disabled flag according to tp->flag */
+    if (trace_probe_is_enabled(&tk->tp))
+        tk->rp.kp.flags &= ~KPROBE_FLAG_DISABLED;
+    else
+        tk->rp.kp.flags |= KPROBE_FLAG_DISABLED;
+
+    if (trace_kprobe_is_return(tk))
+        ret = register_kretprobe(&tk->rp);
+    else
+        ret = register_kprobe(&tk->rp.kp);
+            --->
+
+    return ret;
+}
+```
+
+#### kprobe_fields_array
 
 ```c
+static struct trace_event_fields kprobe_fields_array[] = {
+    .type = TRACE_FUNCTION_TYPE,
+    .define_fields = kprobe_event_define_fields(struct trace_event_call *event_call) {
+        int ret;
+        struct kprobe_trace_entry_head field;
+        struct trace_probe *tp;
+
+        tp = trace_probe_primary_from_call(event_call);
+        if (WARN_ON_ONCE(!tp))
+            return -ENOENT;
+
+        DEFINE_FIELD(unsigned long, ip, FIELD_STRING_IP, 0) {
+            do {								\
+                ret = trace_define_field(event_call, #type, name,	\
+                            offsetof(typeof(field), item),	\
+                            sizeof(field.item), is_signed, \
+                            FILTER_OTHER);			\
+                if (ret)						\
+                    return ret;					\
+            } while (0)
+        }
+
+        return traceprobe_define_arg_fields(event_call, sizeof(field), tp) {
+            for (i = 0; i < tp->nr_args; i++) {
+                struct probe_arg *parg = &tp->args[i];
+                const char *fmt = parg->type->fmttype;
+                int size = parg->type->size;
+
+                if (parg->fmt)
+                    fmt = parg->fmt;
+                if (parg->count)
+                    size *= parg->count;
+                ret = trace_define_field(event_call, fmt, parg->name,
+                            offset + parg->offset, size,
+                            parg->type->is_signed,
+                            FILTER_OTHER) {
+
+                    head = trace_get_fields(call);
+                    return __trace_define_field(head, type, name, offset, size, is_signed, filter_type, 0, 0) {
+                        struct ftrace_event_field {
+                            struct list_head    link;
+                            const char          *name;
+                            const char          *type;
+                            int                 filter_type;
+                            int                 offset;
+                            int                 size;
+                            unsigned int        is_signed:1;
+                            unsigned int        needs_test:1;
+                            int                 len;
+                        } *field;
+
+                        field = kmem_cache_alloc(field_cachep, GFP_TRACE);
+                        if (!field)
+                            return -ENOMEM;
+
+                        field->name = name;
+                        field->type = type;
+
+                        if (filter_type == FILTER_OTHER)
+                            field->filter_type = filter_assign_type(type);
+                        else
+                            field->filter_type = filter_type;
+
+                        field->offset = offset;
+                        field->size = size;
+                        field->is_signed = is_signed;
+                        field->needs_test = need_test;
+                        field->len = len;
+
+                        list_add(&field->link, head);
+
+                        return 0;
+                    }
+                }
+                if (ret)
+                    return ret;
+            }
+        }
+    }
+};
 ```
 
 # dyn_event
@@ -6328,6 +6334,7 @@ event_create_dir(struct eventfs_inode *parent, struct trace_event_file *file)
     file->ei = ei;
 
     ret = event_define_fields(call);
+        --->
     if (ret < 0) {
         pr_warn("Could not initialize trace point events/%s\n", name);
         return ret;
@@ -6337,6 +6344,51 @@ event_create_dir(struct eventfs_inode *parent, struct trace_event_file *file)
     event_file_get(file);
 
     return 0;
+}
+
+int event_define_fields(struct trace_event_call *call)
+{
+	struct list_head *head;
+	int ret = 0;
+
+	/*
+	 * Other events may have the same class. Only update
+	 * the fields if they are not already defined.
+	 */
+	head = trace_get_fields(call);
+	if (list_empty(head)) {
+		struct trace_event_fields *field = call->class->fields_array;
+		unsigned int offset = sizeof(struct trace_entry);
+
+		for (; field->type; field++) {
+			if (field->type == TRACE_FUNCTION_TYPE) {
+				field->define_fields(call);
+				break;
+			}
+
+			offset = ALIGN(offset, field->align);
+			ret = trace_define_field_ext(call, field->type, field->name,
+                offset, field->size,
+                field->is_signed, field->filter_type, field->len, field->needs_test) {
+                struct list_head *head;
+
+                if (WARN_ON(!call->class))
+                    return 0;
+
+                head = trace_get_fields(call);
+                return __trace_define_field(head, type, name, offset, size, is_signed, filter_type, len, need_test);
+                    --->
+            }
+			if (WARN_ON_ONCE(ret)) {
+				pr_err("error code is %d\n", ret);
+				break;
+			}
+
+			offset += field->size;
+		}
+	}
+
+	return ret;
 }
 ```
 

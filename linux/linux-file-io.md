@@ -1303,6 +1303,50 @@ anon_inode_getfile();
 
 ```
 
+## mkdir
+
+```c
+SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
+{
+	CLASS(filename, name)(pathname);
+	return filename_mkdirat(AT_FDCWD, name, mode);
+}
+
+int filename_mkdirat(int dfd, struct filename *name, umode_t mode)
+{
+	struct dentry *dentry;
+	struct path path;
+	int error;
+	unsigned int lookup_flags = LOOKUP_DIRECTORY;
+	struct delegated_inode delegated_inode = { };
+
+retry:
+	dentry = filename_create(dfd, name, &path, lookup_flags);
+	if (IS_ERR(dentry))
+		return PTR_ERR(dentry);
+
+	error = security_path_mkdir(&path, dentry,
+			mode_strip_umask(path.dentry->d_inode, mode));
+	if (!error) {
+		dentry = vfs_mkdir(mnt_idmap(path.mnt), path.dentry->d_inode,
+				   dentry, mode, &delegated_inode);
+		if (IS_ERR(dentry))
+			error = PTR_ERR(dentry);
+	}
+	end_creating_path(&path, dentry);
+	if (is_delegated(&delegated_inode)) {
+		error = break_deleg_wait(&delegated_inode);
+		if (!error)
+			goto retry;
+	}
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+```
+
 ## open
 
 ```c
@@ -14360,40 +14404,40 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
 ### register_sysctl_sz
 
 ```c
-#define register_sysctl_init(path, table)	\
-	__register_sysctl_init(path, table, #table, ARRAY_SIZE(table))
+#define register_sysctl_init(path, table)    \
+    __register_sysctl_init(path, table, #table, ARRAY_SIZE(table))
 
 void __init __register_sysctl_init(const char *path, const struct ctl_table *table,
-				 const char *table_name, size_t table_size)
+                 const char *table_name, size_t table_size)
 {
-	struct ctl_table_header *hdr = register_sysctl_sz(path, table, table_size) {
+    struct ctl_table_header *hdr = register_sysctl_sz(path, table, table_size) {
         return __register_sysctl_table(&sysctl_table_root.default_set, path, table, table_size);
     }
 
-	if (unlikely(!hdr)) {
-		pr_err("failed when register_sysctl_sz %s to %s\n", table_name, path);
-		return;
-	}
-	kmemleak_not_leak(hdr);
+    if (unlikely(!hdr)) {
+        pr_err("failed when register_sysctl_sz %s to %s\n", table_name, path);
+        return;
+    }
+    kmemleak_not_leak(hdr);
 }
 
 struct ctl_table_header *__register_sysctl_table(
-	struct ctl_table_set *set,
-	const char *path, const struct ctl_table *table, size_t table_size)
+    struct ctl_table_set *set,
+    const char *path, const struct ctl_table *table, size_t table_size)
 {
-	struct ctl_table_root *root = set->dir.header.root;
-	struct ctl_table_header *header;
-	struct ctl_dir *dir;
-	struct ctl_node *node;
+    struct ctl_table_root *root = set->dir.header.root;
+    struct ctl_table_header *header;
+    struct ctl_dir *dir;
+    struct ctl_node *node;
 
-	header = kzalloc(sizeof(struct ctl_table_header) +
-			 sizeof(struct ctl_node)*table_size, GFP_KERNEL_ACCOUNT);
-	if (!header)
-		return NULL;
+    header = kzalloc(sizeof(struct ctl_table_header) +
+             sizeof(struct ctl_node)*table_size, GFP_KERNEL_ACCOUNT);
+    if (!header)
+        return NULL;
 
-	node = (struct ctl_node *)(header + 1);
+    node = (struct ctl_node *)(header + 1);
 
-	init_header(header, root, set, node, table, table_size) {
+    init_header(header, root, set, node, table, table_size) {
         head->ctl_table = table;
         head->ctl_table_size = table_size;
         head->ctl_table_arg = table;
@@ -14417,33 +14461,33 @@ struct ctl_table_header *__register_sysctl_table(
         if (table == sysctl_mount_point)
             sysctl_set_perm_empty_ctl_header(head);
     }
-	if (sysctl_check_table(path, header))
-		goto fail;
+    if (sysctl_check_table(path, header))
+        goto fail;
 
-	spin_lock(&sysctl_lock);
-	dir = &set->dir;
-	/* Reference moved down the directory tree get_subdir */
-	dir->header.nreg++;
-	spin_unlock(&sysctl_lock);
+    spin_lock(&sysctl_lock);
+    dir = &set->dir;
+    /* Reference moved down the directory tree get_subdir */
+    dir->header.nreg++;
+    spin_unlock(&sysctl_lock);
 
-	dir = sysctl_mkdir_p(dir, path);
-	if (IS_ERR(dir))
-		goto fail;
-	spin_lock(&sysctl_lock);
-	if (insert_header(dir, header))
-		goto fail_put_dir_locked;
+    dir = sysctl_mkdir_p(dir, path);
+    if (IS_ERR(dir))
+        goto fail;
+    spin_lock(&sysctl_lock);
+    if (insert_header(dir, header))
+        goto fail_put_dir_locked;
 
-	drop_sysctl_table(&dir->header);
-	spin_unlock(&sysctl_lock);
+    drop_sysctl_table(&dir->header);
+    spin_unlock(&sysctl_lock);
 
-	return header;
+    return header;
 
 fail_put_dir_locked:
-	drop_sysctl_table(&dir->header);
-	spin_unlock(&sysctl_lock);
+    drop_sysctl_table(&dir->header);
+    spin_unlock(&sysctl_lock);
 fail:
-	kfree(header);
-	return NULL;
+    kfree(header);
+    return NULL;
 }
 ```
 
@@ -14452,41 +14496,39 @@ fail:
 ```c
 struct ctl_dir *sysctl_mkdir_p(struct ctl_dir *dir, const char *path)
 {
-	const char *name, *nextname;
+    const char *name, *nextname;
 
-	for (name = path; name; name = nextname) {
-		int namelen;
-		nextname = strchr(name, '/');
-		if (nextname) {
-			namelen = nextname - name;
-			nextname++;
-		} else {
-			namelen = strlen(name);
-		}
-		if (namelen == 0)
-			continue;
+    for (name = path; name; name = nextname) {
+        int namelen;
+        nextname = strchr(name, '/');
+        if (nextname) {
+            namelen = nextname - name;
+            nextname++;
+        } else {
+            namelen = strlen(name);
+        }
+        if (namelen == 0)
+            continue;
 
-		/*
-		 * namelen ensures if name is "foo/bar/yay" only foo is
-		 * registered first. We traverse as if using mkdir -p and
-		 * return a ctl_dir for the last directory entry.
-		 */
-		dir = get_subdir(dir, name, namelen);
-		if (IS_ERR(dir))
-			break;
-	}
-	return dir;
+        /* namelen ensures if name is "foo/bar/yay" only foo is
+         * registered first. We traverse as if using mkdir -p and
+         * return a ctl_dir for the last directory entry. */
+        dir = get_subdir(dir, name, namelen);
+        if (IS_ERR(dir))
+            break;
+    }
+    return dir;
 }
 
 struct ctl_dir *get_subdir(struct ctl_dir *dir,
-				  const char *name, int namelen)
+                  const char *name, int namelen)
 {
-	struct ctl_table_set *set = dir->header.set;
-	struct ctl_dir *subdir, *new = NULL;
-	int err;
+    struct ctl_table_set *set = dir->header.set;
+    struct ctl_dir *subdir, *new = NULL;
+    int err;
 
-	spin_lock(&sysctl_lock);
-	subdir = find_subdir(dir, name, namelen) {
+    spin_lock(&sysctl_lock);
+    subdir = find_subdir(dir, name, namelen) {
         struct ctl_table_header *head;
         const struct ctl_table *entry;
 
@@ -14526,13 +14568,13 @@ struct ctl_dir *get_subdir(struct ctl_dir *dir,
         return container_of(head, struct ctl_dir, header);
     }
 
-	if (!IS_ERR(subdir))
-		goto found;
-	if (PTR_ERR(subdir) != -ENOENT)
-		goto failed;
+    if (!IS_ERR(subdir))
+        goto found;
+    if (PTR_ERR(subdir) != -ENOENT)
+        goto failed;
 
-	spin_unlock(&sysctl_lock);
-	new = new_dir(set, name, namelen) {
+    spin_unlock(&sysctl_lock);
+    new = new_dir(set, name, namelen) {
         struct ctl_table *table;
         struct ctl_dir *new;
         struct ctl_node *node;
@@ -14554,20 +14596,20 @@ struct ctl_dir *get_subdir(struct ctl_dir *dir,
 
         return new;
     }
-	spin_lock(&sysctl_lock);
-	subdir = ERR_PTR(-ENOMEM);
-	if (!new)
-		goto failed;
+    spin_lock(&sysctl_lock);
+    subdir = ERR_PTR(-ENOMEM);
+    if (!new)
+        goto failed;
 
-	/* Was the subdir added while we dropped the lock? */
-	subdir = find_subdir(dir, name, namelen);
-	if (!IS_ERR(subdir))
-		goto found;
-	if (PTR_ERR(subdir) != -ENOENT)
-		goto failed;
+    /* Was the subdir added while we dropped the lock? */
+    subdir = find_subdir(dir, name, namelen);
+    if (!IS_ERR(subdir))
+        goto found;
+    if (PTR_ERR(subdir) != -ENOENT)
+        goto failed;
 
-	/* Nope.  Use the our freshly made directory entry. */
-	err = insert_header(dir, &new->header) {
+    /* Nope.  Use the our freshly made directory entry. */
+    err = insert_header(dir, &new->header) {
         const struct ctl_table *entry;
         struct ctl_table_header *dir_h = &dir->header;
         int err;
@@ -14643,25 +14685,25 @@ struct ctl_dir *get_subdir(struct ctl_dir *dir,
         drop_sysctl_table(dir_h);
         return err;
     }
-	subdir = ERR_PTR(err);
-	if (err)
-		goto failed;
-	subdir = new;
+    subdir = ERR_PTR(err);
+    if (err)
+        goto failed;
+    subdir = new;
 
 found:
-	subdir->header.nreg++;
+    subdir->header.nreg++;
 failed:
-	if (IS_ERR(subdir)) {
-		pr_err("sysctl could not get directory: ");
-		sysctl_print_dir(dir);
-		pr_cont("%*.*s %ld\n", namelen, namelen, name,
-			PTR_ERR(subdir));
-	}
-	drop_sysctl_table(&dir->header);
-	if (new)
-		drop_sysctl_table(&new->header);
-	spin_unlock(&sysctl_lock);
-	return subdir;
+    if (IS_ERR(subdir)) {
+        pr_err("sysctl could not get directory: ");
+        sysctl_print_dir(dir);
+        pr_cont("%*.*s %ld\n", namelen, namelen, name,
+            PTR_ERR(subdir));
+    }
+    drop_sysctl_table(&dir->header);
+    if (new)
+        drop_sysctl_table(&new->header);
+    spin_unlock(&sysctl_lock);
+    return subdir;
 }
 ```
 
@@ -15034,6 +15076,86 @@ int simple_fill_super(struct super_block *s, unsigned long magic,
 }
 ```
 
+### tracefs_super_operations
+
+```c
+static const struct super_operations tracefs_super_operations = {
+    .alloc_inode    = tracefs_alloc_inode,
+    .free_inode     = tracefs_free_inode,
+    .destroy_inode  = tracefs_destroy_inode,
+    .drop_inode     = tracefs_drop_inode,
+    .statfs         = simple_statfs,
+    .show_options   = tracefs_show_options,
+};
+
+struct tracefs_inode {
+    struct inode            vfs_inode;
+    /* The below gets initialized with memset_after(ti, 0, vfs_inode) */
+    struct list_head        list;
+    unsigned long           flags;
+    void                    *private;
+};
+
+static LIST_HEAD(tracefs_inodes);
+
+static struct inode *tracefs_alloc_inode(struct super_block *sb)
+{
+    struct tracefs_inode *ti;
+    unsigned long flags;
+
+    ti = alloc_inode_sb(sb, tracefs_inode_cachep, GFP_KERNEL);
+    if (!ti)
+        return NULL;
+
+    spin_lock_irqsave(&tracefs_inode_lock, flags);
+    list_add_rcu(&ti->list, &tracefs_inodes);
+    spin_unlock_irqrestore(&tracefs_inode_lock, flags);
+
+    return &ti->vfs_inode;
+}
+```
+
+### tracefs_instance_dir_inode_operations
+
+```c
+static const struct inode_operations tracefs_instance_dir_inode_operations = {
+	.lookup		= simple_lookup,
+	.mkdir		= tracefs_syscall_mkdir,
+	.rmdir		= tracefs_syscall_rmdir,
+	.permission	= tracefs_permission,
+	.getattr	= tracefs_getattr,
+	.setattr	= tracefs_setattr,
+};
+```
+
+### tracefs_dir_inode_operations
+
+```c
+static const struct inode_operations tracefs_dir_inode_operations = {
+	.lookup		= simple_lookup,
+	.permission	= tracefs_permission,
+	.getattr	= tracefs_getattr,
+	.setattr	= tracefs_setattr,
+};
+
+static const struct inode_operations tracefs_file_inode_operations = {
+	.permission	= tracefs_permission,
+	.getattr	= tracefs_getattr,
+	.setattr	= tracefs_setattr,
+};
+```
+
+### tracefs_file_operations
+
+```c
+static const struct file_operations tracefs_file_operations = {
+	.read =		default_read_file,
+	.write =	default_write_file,
+	.open =		simple_open,
+	.llseek =	noop_llseek,
+};
+```
+
 ### tracefs_create_file
 
 ```c
@@ -15119,7 +15241,7 @@ struct dentry *tracefs_create_file(const char *name, umode_t mode,
         return NULL;
 
     inode = tracefs_get_inode(dentry->d_sb) {
-        struct inode *inode = new_inode(sb);
+        struct inode *inode = new_inode(sb); /* tracefs_alloc_inode */
         if (inode) {
             inode->i_ino = get_next_ino();
             simple_inode_init_ts(inode) {
