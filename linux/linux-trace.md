@@ -1445,191 +1445,6 @@ struct user_regset {
     unsigned int                bias;
     unsigned int                core_note_type;
 };
-
-static const struct user_regset_view user_aarch64_view = {
-    .name = "aarch64",
-    .e_machine = EM_AARCH64,
-    .regsets = aarch64_regsets,
-    .n = ARRAY_SIZE(aarch64_regsets)
-};
-
-static const struct user_regset aarch64_regsets[] = {
-    [REGSET_GPR] = {
-        .core_note_type = NT_PRSTATUS,
-        .n = sizeof(struct user_pt_regs) / sizeof(u64),
-        .size = sizeof(u64),
-        .align = sizeof(u64),
-        .regset_get = gpr_get,
-        .set = gpr_set
-    },
-    [REGSET_FPR] = {
-        .core_note_type = NT_PRFPREG,
-        .n = sizeof(struct user_fpsimd_state) / sizeof(u32),
-        /* We pretend we have 32-bit registers because the fpsr and
-        * fpcr are 32-bits wide. */
-        .size = sizeof(u32),
-        .align = sizeof(u32),
-        .active = fpr_active,
-        .regset_get = fpr_get,
-        .set = fpr_set
-    },
-    [REGSET_TLS] = {
-        .core_note_type = NT_ARM_TLS,
-        .n = 2,
-        .size = sizeof(void *),
-        .align = sizeof(void *),
-        .regset_get = tls_get,
-        .set = tls_set,
-    },
-#ifdef CONFIG_HAVE_HW_BREAKPOINT
-    [REGSET_HW_BREAK] = {
-        .core_note_type = NT_ARM_HW_BREAK,
-        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
-        .size = sizeof(u32),
-        .align = sizeof(u32),
-        .regset_get = hw_break_get,
-        .set = hw_break_set,
-    },
-    [REGSET_HW_WATCH] = {
-        .core_note_type = NT_ARM_HW_WATCH,
-        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
-        .size = sizeof(u32),
-        .align = sizeof(u32),
-        .regset_get = hw_break_get,
-        .set = hw_break_set,
-    },
-#endif
-    [REGSET_SYSTEM_CALL] = {
-        .core_note_type = NT_ARM_SYSTEM_CALL,
-        .n = 1,
-        .size = sizeof(int),
-        .align = sizeof(int),
-        .regset_get = system_call_get,
-        .set = system_call_set,
-    },
-    [REGSET_FPMR] = {
-        .core_note_type = NT_ARM_FPMR,
-        .n = 1,
-        .size = sizeof(u64),
-        .align = sizeof(u64),
-        .regset_get = fpmr_get,
-        .set = fpmr_set,
-    },
-#ifdef CONFIG_ARM64_SVE
-    [REGSET_SVE] = { /* Scalable Vector Extension */
-        .core_note_type = NT_ARM_SVE,
-        .n = DIV_ROUND_UP(SVE_PT_SIZE(ARCH_SVE_VQ_MAX,
-                        SVE_PT_REGS_SVE),
-                SVE_VQ_BYTES),
-        .size = SVE_VQ_BYTES,
-        .align = SVE_VQ_BYTES,
-        .regset_get = sve_get,
-        .set = sve_set,
-    },
-#endif
-#ifdef CONFIG_ARM64_SME
-    [REGSET_SSVE] = { /* Streaming mode SVE */
-        .core_note_type = NT_ARM_SSVE,
-        .n = DIV_ROUND_UP(SVE_PT_SIZE(SME_VQ_MAX, SVE_PT_REGS_SVE),
-                SVE_VQ_BYTES),
-        .size = SVE_VQ_BYTES,
-        .align = SVE_VQ_BYTES,
-        .regset_get = ssve_get,
-        .set = ssve_set,
-    },
-    [REGSET_ZA] = { /* SME ZA */
-        .core_note_type = NT_ARM_ZA,
-        /* ZA is a single register but it's variably sized and
-        * the ptrace core requires that the size of any data
-        * be an exact multiple of the configured register
-        * size so report as though we had SVE_VQ_BYTES
-        * registers. These values aren't exposed to
-        * userspace. */
-        .n = DIV_ROUND_UP(ZA_PT_SIZE(SME_VQ_MAX), SVE_VQ_BYTES),
-        .size = SVE_VQ_BYTES,
-        .align = SVE_VQ_BYTES,
-        .regset_get = za_get,
-        .set = za_set,
-    },
-    [REGSET_ZT] = { /* SME ZT */
-        .core_note_type = NT_ARM_ZT,
-        .n = 1,
-        .size = ZT_SIG_REG_BYTES,
-        .align = sizeof(u64),
-        .regset_get = zt_get,
-        .set = zt_set,
-    },
-#endif
-#ifdef CONFIG_ARM64_PTR_AUTH
-    [REGSET_PAC_MASK] = {
-        .core_note_type = NT_ARM_PAC_MASK,
-        .n = sizeof(struct user_pac_mask) / sizeof(u64),
-        .size = sizeof(u64),
-        .align = sizeof(u64),
-        .regset_get = pac_mask_get,
-        /* this cannot be set dynamically */
-    },
-    [REGSET_PAC_ENABLED_KEYS] = {
-        .core_note_type = NT_ARM_PAC_ENABLED_KEYS,
-        .n = 1,
-        .size = sizeof(long),
-        .align = sizeof(long),
-        .regset_get = pac_enabled_keys_get,
-        .set = pac_enabled_keys_set,
-    },
-#ifdef CONFIG_CHECKPOINT_RESTORE
-    [REGSET_PACA_KEYS] = {
-        .core_note_type = NT_ARM_PACA_KEYS,
-        .n = sizeof(struct user_pac_address_keys) / sizeof(__uint128_t),
-        .size = sizeof(__uint128_t),
-        .align = sizeof(__uint128_t),
-        .regset_get = pac_address_keys_get,
-        .set = pac_address_keys_set,
-    },
-    [REGSET_PACG_KEYS] = {
-        .core_note_type = NT_ARM_PACG_KEYS,
-        .n = sizeof(struct user_pac_generic_keys) / sizeof(__uint128_t),
-        .size = sizeof(__uint128_t),
-        .align = sizeof(__uint128_t),
-        .regset_get = pac_generic_keys_get,
-        .set = pac_generic_keys_set,
-    },
-#endif
-#endif
-
-#ifdef CONFIG_ARM64_TAGGED_ADDR_ABI
-    [REGSET_TAGGED_ADDR_CTRL] = {
-        .core_note_type = NT_ARM_TAGGED_ADDR_CTRL,
-        .n = 1,
-        .size = sizeof(long),
-        .align = sizeof(long),
-        .regset_get = tagged_addr_ctrl_get,
-        .set = tagged_addr_ctrl_set,
-    },
-#endif
-
-#ifdef CONFIG_ARM64_POE
-    [REGSET_POE] = {
-        .core_note_type = NT_ARM_POE,
-        .n = 1,
-        .size = sizeof(long),
-        .align = sizeof(long),
-        .regset_get = poe_get,
-        .set = poe_set,
-    },
-#endif
-
-#ifdef CONFIG_ARM64_GCS
-    [REGSET_GCS] = {
-        .core_note_type = NT_ARM_GCS,
-        .n = sizeof(struct user_gcs) / sizeof(u64),
-        .size = sizeof(u64),
-        .align = sizeof(u64),
-        .regset_get = gcs_get,
-        .set = gcs_set,
-    },
-#endif
-};
 ```
 
 ```c
@@ -1689,6 +1504,42 @@ static int ptrace_regset(struct task_struct *task, int req, unsigned int type,
     else
         return copy_regset_from_user(task, view, regset_no, 0, kiov->iov_len, kiov->iov_base);
 }
+
+static const struct user_regset_view user_aarch64_view = {
+    .name = "aarch64",
+    .e_machine = EM_AARCH64,
+    .regsets = aarch64_regsets,
+    .n = ARRAY_SIZE(aarch64_regsets)
+};
+
+static const struct user_regset aarch64_regsets[] = {
+    [REGSET_GPR] = {
+        USER_REGSET_NOTE_TYPE(PRSTATUS),
+        .n = sizeof(struct user_pt_regs) / sizeof(u64),
+        .size = sizeof(u64),
+        .align = sizeof(u64),
+        .regset_get = gpr_get,
+        .set = gpr_set
+    },
+#ifdef CONFIG_HAVE_HW_BREAKPOINT
+    [REGSET_HW_BREAK] = {
+        USER_REGSET_NOTE_TYPE(ARM_HW_BREAK),
+        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
+        .size = sizeof(u32),
+        .align = sizeof(u32),
+        .regset_get = hw_break_get,
+        .set = hw_break_set,
+    },
+    [REGSET_HW_WATCH] = {
+        USER_REGSET_NOTE_TYPE(ARM_HW_WATCH),
+        .n = sizeof(struct user_hwdebug_state) / sizeof(u32),
+        .size = sizeof(u32),
+        .align = sizeof(u32),
+        .regset_get = hw_break_get,
+        .set = hw_break_set,
+    },
+#endif
+};
 ```
 
 ### hw_break_get
@@ -1990,10 +1841,11 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
 ---
 
 ```sh
-/sys/kernel/debug/kprobes/
-/sys/kernel/debug/kprobes/list # Lists all registered Kprobes/Kretprobes
-/sys/kernel/debug/kprobes/blacklist
-    /sys/kernel/debug/kprobes/enabled
+/sys/kernel/debug/kprobes
+├── blacklist
+├── enabled
+└── list
+
 /sys/kernel/tracing/kprobe_events # Register/unregister Kprobes/Kretprobes
 /sys/kernel/tracing/kprobe_profile
 /sys/kernel/tracing/kprobes/<GRP>/<EVENT>/enabled
@@ -2081,125 +1933,124 @@ int __init init_kprobes(void)
         INIT_HLIST_HEAD(&kprobe_table[i]);
 
     err = populate_kprobe_blacklist(__start_kprobe_blacklist, __stop_kprobe_blacklist);
+
     if (kretprobe_blacklist_size) {
         for (i = 0; kretprobe_blacklist[i].name != NULL; i++) {
-            kretprobe_blacklist[i].addr = kprobe_lookup_name(
-                kretprobe_blacklist[i].name, 0) {
-                return ((kprobe_opcode_t *)(kallsyms_lookup_name(name))) {
-                    int ret;
-                    unsigned int i;
-
-                    /* Skip the search for empty string. */
-                    if (!*name)
-                        return 0;
-
-                    ret = kallsyms_lookup_names(name, &i, NULL) {
-                        int ret;
-                        int low, mid, high;
-                        unsigned int seq, off;
-                        char namebuf[KSYM_NAME_LEN];
-
-                        low = 0;
-                        high = kallsyms_num_syms - 1;
-
-                        while (low <= high) {
-                            mid = low + (high - low) / 2;
-                            seq = get_symbol_seq(mid);
-                            off = get_symbol_offset(seq);
-                            kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-                            ret = strcmp(name, namebuf);
-                            if (ret > 0)
-                                low = mid + 1;
-                            else if (ret < 0)
-                                high = mid - 1;
-                            else
-                                break;
-                        }
-
-                        if (low > high)
-                            return -ESRCH;
-
-                        low = mid;
-                        while (low) {
-                            seq = get_symbol_seq(low - 1);
-                            off = get_symbol_offset(seq);
-                            kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-                            if (strcmp(name, namebuf))
-                                break;
-                            low--;
-                        }
-                        *start = low;
-
-                        if (end) {
-                            high = mid;
-                            while (high < kallsyms_num_syms - 1) {
-                                seq = get_symbol_seq(high + 1);
-                                off = get_symbol_offset(seq);
-                                kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
-                                if (strcmp(name, namebuf))
-                                    break;
-                                high++;
-                            }
-                            *end = high;
-                        }
-
-                        return 0;
-                    }
-                    if (!ret)
-                        return kallsyms_sym_address(get_symbol_seq(i));
-
-                    return module_kallsyms_lookup_name(name);
-                }
-            }
+            kretprobe_blacklist[i].addr = kprobe_lookup_name(kretprobe_blacklist[i].name, 0);
         }
     }
 
     /* By default, kprobes are armed */
     kprobes_all_disarmed = false;
 
-#if defined(CONFIG_OPTPROBES) && defined(__ARCH_WANT_KPROBES_INSN_SLOT)
-    /* Init 'kprobe_optinsn_slots' for allocation */
-    kprobe_optinsn_slots.insn_size = MAX_OPTINSN_SIZE;
-#endif
+    /* Initialize the optimization infrastructure */
+    init_optprobe() {
+    #ifdef __ARCH_WANT_KPROBES_INSN_SLOT
+        /* Init 'kprobe_optinsn_slots' for allocation */
+        kprobe_optinsn_slots.insn_size = MAX_OPTINSN_SIZE;
+    #endif
 
-    err = arch_init_kprobes() {
-        register_kernel_break_hook(&kprobes_break_hook);    /* pre_handler */
-        register_kernel_break_hook(&kprobes_break_ss_hook); /* post_handler */
-        register_kernel_break_hook(&kretprobes_break_hook);
+        init_waitqueue_head(&kprobe_optimizer_wait);
+        atomic_set(&optimizer_state, OPTIMIZER_ST_IDLE);
+        kprobe_optimizer_task = kthread_run(kprobe_optimizer_thread, NULL,
+                            "kprobe-optimizer");
     }
+
+    err = arch_init_kprobes();
     if (!err)
         err = register_die_notifier(&kprobe_exceptions_nb);
     if (!err)
         err = kprobe_register_module_notifier();
 
     kprobes_initialized = (err == 0);
-    kprobe_sysctls_init();
+
+    kprobe_sysctls_init() {
+        register_sysctl_init("debug", kprobe_sysctls);
+    }
+
     return err;
 }
 
-static LIST_HEAD(user_break_hook);
-static LIST_HEAD(kernel_break_hook);
-
-void register_user_break_hook(struct break_hook *hook)
-{
-    register_debug_hook(&hook->node, &user_break_hook);
-}
-
-void register_kernel_break_hook(struct break_hook *hook)
-{
-    register_debug_hook(&hook->node, &kernel_break_hook);
-}
-
-/* Different IMM can be used to identify the 1st or 2nd BRK before/after probed inst */
-static struct break_hook kprobes_break_hook = {
-    .imm = KPROBES_BRK_IMM, /* pre-BRK which is encoded into BRK insn before probed insn */
-    .fn = kprobe_breakpoint_handler,
+static const struct ctl_table kprobe_sysctls[] = {
+    {
+        .procname       = "kprobes-optimization",
+        .data           = &sysctl_kprobes_optimization,
+        .maxlen         = sizeof(int),
+        .mode           = 0644,
+        .proc_handler   = proc_kprobes_optimization_handler,
+        .extra1         = SYSCTL_ZERO,
+        .extra2         = SYSCTL_ONE,
+    },
 };
 
-static struct break_hook kprobes_break_ss_hook = {
-    .imm = KPROBES_BRK_SS_IMM, /* post-BRK after probed insn */
-    .fn = kprobe_breakpoint_ss_handler,
-};
+kprobe_opcode_t * __weak kprobe_lookup_name(const char *name,
+                    unsigned int __unused) {
+    return ((kprobe_opcode_t *)(kallsyms_lookup_name(name))) {
+        int ret;
+        unsigned int i;
+
+        /* Skip the search for empty string. */
+        if (!*name)
+            return 0;
+
+        ret = kallsyms_lookup_names(name, &i, NULL) {
+            int ret;
+            int low, mid, high;
+            unsigned int seq, off;
+            char namebuf[KSYM_NAME_LEN];
+
+            low = 0;
+            high = kallsyms_num_syms - 1;
+
+            while (low <= high) {
+                mid = low + (high - low) / 2;
+                seq = get_symbol_seq(mid);
+                off = get_symbol_offset(seq);
+                kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                ret = strcmp(name, namebuf);
+                if (ret > 0)
+                    low = mid + 1;
+                else if (ret < 0)
+                    high = mid - 1;
+                else
+                    break;
+            }
+
+            if (low > high)
+                return -ESRCH;
+
+            low = mid;
+            while (low) {
+                seq = get_symbol_seq(low - 1);
+                off = get_symbol_offset(seq);
+                kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                if (strcmp(name, namebuf))
+                    break;
+                low--;
+            }
+            *start = low;
+
+            if (end) {
+                high = mid;
+                while (high < kallsyms_num_syms - 1) {
+                    seq = get_symbol_seq(high + 1);
+                    off = get_symbol_offset(seq);
+                    kallsyms_expand_symbol(off, namebuf, ARRAY_SIZE(namebuf));
+                    if (strcmp(name, namebuf))
+                        break;
+                    high++;
+                }
+                *end = high;
+            }
+
+            return 0;
+        }
+        if (!ret)
+            return kallsyms_sym_address(get_symbol_seq(i));
+
+        return module_kallsyms_lookup_name(name);
+    }
+}
 ```
 
 ## register_kprobe
@@ -2336,6 +2187,7 @@ int register_kprobe(struct kprobe *p)
     hlist_add_head_rcu(&p->hlist, &kprobe_table[hash_ptr(p->addr, KPROBE_HASH_BITS)]);
 
     if (!kprobes_all_disarmed && !kprobe_disabled(p)) {
+        /* Put a breakpoint for a probe. */
         ret = arm_kprobe(p) {
             if (unlikely(kprobe_ftrace(kp)))
                 return arm_kprobe_ftrace(kp);
@@ -2395,6 +2247,23 @@ out:
         module_put(probed_mod);
 
     return ret;
+}
+
+static int aggr_pre_handler(struct kprobe *p, struct pt_regs *regs)
+{
+	struct kprobe *kp;
+
+	list_for_each_entry_rcu(kp, &p->list, list) {
+		if (kp->pre_handler && likely(!kprobe_disabled(kp))) {
+			set_kprobe_instance(kp) {
+                _this_cpu_write(kprobe_instance, kp);
+            }
+			if (kp->pre_handler(kp, regs))
+				return 1;
+		}
+		reset_kprobe_instance();
+	}
+	return 0;
 }
 ```
 
@@ -2467,184 +2336,278 @@ static int __kprobes aarch64_insn_patch_text_cb(void *arg)
 }
 ```
 
-## brk_handle
+## register_aggr_kprobe
 
 ```c
-
-static const struct fault_info fault_info[];
-static struct fault_info debug_fault_info[];
-
-static inline const struct fault_info *esr_to_fault_info(unsigned long esr)
+int register_aggr_kprobe(struct kprobe *orig_p, struct kprobe *p)
 {
-    return fault_info + (esr & ESR_ELx_FSC);
-}
+	int ret = 0;
+	struct kprobe *ap = orig_p;
 
-static inline const struct fault_info *esr_to_debug_fault_info(unsigned long esr)
-{
-    return debug_fault_info + DBG_ESR_EVT(esr);
-}
+	scoped_guard(cpus_read_lock) {
+		/* For preparing optimization, jump_label_text_reserved() is called */
+		guard(jump_label_lock)();
+		guard(mutex)(&text_mutex);
 
-void __init debug_traps_init(void)
-{
-    hook_debug_fault_code(DBG_ESR_EVT_HWSS, single_step_handler, SIGTRAP,
-                TRAP_TRACE, "single-step handler");
-    hook_debug_fault_code(DBG_ESR_EVT_BRK, brk_handler, SIGTRAP,
-                TRAP_BRKPT, "BRK handler") {
+		ret = kprobe_aggrprobe(orig_p) {
+            return p->pre_handler == aggr_pre_handler() {
+                struct kprobe *kp;
 
-        debug_fault_info[nr].fn     = fn;
-        debug_fault_info[nr].sig    = sig;
-        debug_fault_info[nr].code   = code;
-        debug_fault_info[nr].name   = name;
-    }
+                list_for_each_entry_rcu(kp, &p->list, list) {
+                    if (kp->pre_handler && likely(!kprobe_disabled(kp))) {
+                        set_kprobe_instance(kp);
+                        if (kp->pre_handler(kp, regs))
+                            return 1;
+                    }
+                    reset_kprobe_instance();
+                }
+                return 0;
+            }
+        }
+        if (!ret) {
+			/* If 'orig_p' is not an 'aggr_kprobe', create new one. */
+			ap = alloc_aggr_kprobe(orig_p);
+			if (!ap)
+				return -ENOMEM;
+			init_aggr_kprobe(ap, orig_p) {
+                /* Copy the insn slot of 'p' to 'ap'. */
+                copy_kprobe(p, ap) {
+                    memcpy(&p->opcode, &ap->opcode, sizeof(kprobe_opcode_t));
+	                memcpy(&p->ainsn, &ap->ainsn, sizeof(struct arch_specific_insn));
+                }
+                flush_insn_slot(ap);
+                ap->addr = p->addr;
+                ap->flags = p->flags & ~KPROBE_FLAG_OPTIMIZED;
+                ap->pre_handler = aggr_pre_handler() {
+                    struct kprobe *kp;
+
+                    list_for_each_entry_rcu(kp, &p->list, list) {
+                        if (kp->post_handler && likely(!kprobe_disabled(kp))) {
+                            set_kprobe_instance(kp);
+                            kp->post_handler(kp, regs, flags);
+                            reset_kprobe_instance();
+                        }
+                    }
+                }
+                /* We don't care the kprobe which has gone. */
+                if (p->post_handler && !kprobe_gone(p))
+                    ap->post_handler = aggr_post_handler;
+
+                INIT_LIST_HEAD(&ap->list);
+                INIT_HLIST_NODE(&ap->hlist);
+
+                list_add_rcu(&p->list, &ap->list);
+                hlist_replace_rcu(&p->hlist, &ap->hlist);
+            }
+		} else if (kprobe_unused(ap)) {
+			/* This probe is going to die. Rescue it */
+			ret = reuse_unused_kprobe(ap);
+			if (ret)
+				return ret;
+		}
+
+		if (kprobe_gone(ap)) {
+			/*
+			 * Attempting to insert new probe at the same location that
+			 * had a probe in the module vaddr area which already
+			 * freed. So, the instruction slot has already been
+			 * released. We need a new slot for the new probe.
+			 */
+			ret = arch_prepare_kprobe(ap);
+			if (ret)
+				/*
+				 * Even if fail to allocate new slot, don't need to
+				 * free the 'ap'. It will be used next time, or
+				 * freed by unregister_kprobe().
+				 */
+				return ret;
+
+			/* Prepare optimized instructions if possible. */
+			prepare_optimized_kprobe(ap);
+
+			/*
+			 * Clear gone flag to prevent allocating new slot again, and
+			 * set disabled flag because it is not armed yet.
+			 */
+			ap->flags = (ap->flags & ~KPROBE_FLAG_GONE)
+					| KPROBE_FLAG_DISABLED;
+		}
+
+		/* Copy the insn slot of 'p' to 'ap'. */
+		copy_kprobe(ap, p);
+		ret = add_new_kprobe(ap, p) {
+            if (p->post_handler)
+                unoptimize_kprobe(ap, true);	/* Fall back to normal kprobe */
+
+            list_add_rcu(&p->list, &ap->list);
+            if (p->post_handler && !ap->post_handler)
+                ap->post_handler = aggr_post_handler;
+
+            return 0;
+        }
+	}
+
+	if (ret == 0 && kprobe_disabled(ap) && !kprobe_disabled(p)) {
+		ap->flags &= ~KPROBE_FLAG_DISABLED;
+		if (!kprobes_all_disarmed) {
+			/* Arm the breakpoint again. */
+			ret = arm_kprobe(ap);
+			if (ret) {
+				ap->flags |= KPROBE_FLAG_DISABLED;
+				list_del_rcu(&p->list);
+				synchronize_rcu();
+			}
+		}
+	}
+	return ret;
 }
 ```
 
-```c
-static int brk_handler(unsigned long unused, unsigned long esr,
-            struct pt_regs *regs)
-{
-    ret = call_break_hook(regs, esr) {
-        struct break_hook *hook;
-        struct list_head *list;
-
-        list = user_mode(regs) ? &user_break_hook : &kernel_break_hook;
-
-        list_for_each_entry_rcu(hook, list, node) {
-            if ((esr_brk_comment(esr) & ~hook->mask) == hook->imm)
-                return hook->fn(regs, esr);
-        }
-
-        return DBG_HOOK_ERROR;
-    }
-    if (ret == DBG_HOOK_HANDLED)
-        return 0;
-
-    /* If not handled by hook, send TRAP_BRKPT to task */
-    if (user_mode(regs)) {
-        send_user_sigtrap(TRAP_BRKPT) {
-            struct pt_regs *regs = current_pt_regs();
-
-            if (WARN_ON(!user_mode(regs)))
-                return;
-
-            if (interrupts_enabled(regs))
-                local_irq_enable();
-
-            arm64_force_sig_fault(SIGTRAP, si_code, instruction_pointer(regs),
-                        "User debug trap");
-        }
-    } else {
-        pr_warn("Unexpected kernel BRK exception at EL1\n");
-        return -EFAULT;
-    }
-
-    return 0;
-}
-```
-
-### kprobe_breakpoint_handler
+## kprobe_brk_handler
 
 ```c
-static int __kprobes
-kprobe_breakpoint_handler(struct pt_regs *regs, unsigned long esr)
+int __kprobes
+kprobe_brk_handler(struct pt_regs *regs, unsigned long esr)
 {
     struct kprobe *p, *cur_kprobe;
     struct kprobe_ctlblk *kcb;
     unsigned long addr = instruction_pointer(regs);
 
-    kcb = get_kprobe_ctlblk();
+    kcb = get_kprobe_ctlblk() {
+        return this_cpu_ptr(&kprobe_ctlblk);
+    }
     cur_kprobe = kprobe_running();
 
-    p = get_kprobe((kprobe_opcode_t *) addr);
+    p = get_kprobe((kprobe_opcode_t *) addr) {
+        struct hlist_head *head;
+        struct kprobe *p;
+
+        head = &kprobe_table[hash_ptr(addr, KPROBE_HASH_BITS)];
+        hlist_for_each_entry_rcu(p, head, hlist, lockdep_is_held(&kprobe_mutex)) {
+            if (p->addr == addr)
+                return p;
+        }
+
+        return NULL;
+    }
     if (WARN_ON_ONCE(!p)) {
+        /* Something went wrong. This BRK used an immediate reserved
+         * for kprobes, but we couldn't find any corresponding probe. */
         return DBG_HOOK_ERROR;
     }
 
     if (cur_kprobe) {
         /* Hit a kprobe inside another kprobe */
         ret = reenter_kprobe(p, regs, kcb) {
+            switch (kcb->kprobe_status) {
+            case KPROBE_HIT_SSDONE:
+            case KPROBE_HIT_ACTIVE:
+                kprobes_inc_nmissed_count(p);
+                setup_singlestep(p, regs, kcb, 1);
+                break;
+            case KPROBE_HIT_SS:
+            case KPROBE_REENTER:
+                pr_warn("Failed to recover from reentered kprobes.\n");
+                dump_kprobe(p);
+                BUG();
+                break;
+            default:
+                WARN_ON(1);
+                return 0;
+            }
 
+            return 1;
         }
         if (!ret)
             return DBG_HOOK_ERROR;
     } else {
+        /* Probe hit */
         set_current_kprobe(p);
         kcb->kprobe_status = KPROBE_HIT_ACTIVE;
 
-        if (!p->pre_handler || !p->pre_handler(p, regs)) {
-            setup_singlestep(p, regs, kcb, 0) {
-                unsigned long slot;
-
-                if (reenter) {
-                    save_previous_kprobe(kcb);
-                    set_current_kprobe(p);
-                    kcb->kprobe_status = KPROBE_REENTER;
-                } else {
-                    kcb->kprobe_status = KPROBE_HIT_SS;
-                }
-
-                if (p->ainsn.xol_insn) {
-                    /* prepare for single stepping */
-                    slot = (unsigned long)p->ainsn.xol_insn;
-
-                    kprobes_save_local_irqflag(kcb, regs);
-                    instruction_pointer_set(regs, slot) {
-                        regs->pc = val;
-                    }
-                } else {
-                    /* insn simulation */
-                    arch_simulate_insn(p, regs) {
-                        struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
-
-                        if (p->ainsn.api.handler)
-                            p->ainsn.api.handler(le32_to_cpu(p->opcode), (long)p->addr, regs);
-
-                        /* single step simulated, now go for post processing */
-                        post_kprobe_handler(p, kcb, regs) {
-                            /* return addr restore if non-branching insn */
-                            if (cur->ainsn.xol_restore != 0) {
-                                instruction_pointer_set(regs, cur->ainsn.xol_restore) {
-                                    regs->pc = val;
-                                }
-                            }
-
-                            /* restore back original saved kprobe variables and continue */
-                            if (kcb->kprobe_status == KPROBE_REENTER) {
-                                restore_previous_kprobe(kcb);
-                                return;
-                            }
-                            /* call post handler */
-                            kcb->kprobe_status = KPROBE_HIT_SSDONE;
-                            if (cur->post_handler)
-                                cur->post_handler(cur, regs, 0);
-
-                            reset_current_kprobe();
-                        }
-                    }
-                }
-            }
-        } else {
+        /* If we have no pre-handler or it returned 0, we
+         * continue with normal processing.  If we have a
+         * pre-handler and it returned non-zero, it will
+         * modify the execution path and not need to single-step
+         * Let's just reset current kprobe and exit. */
+        if (!p->pre_handler || !p->pre_handler(p, regs))
+            setup_singlestep(p, regs, kcb, 0);
+        else
             reset_current_kprobe();
-        }
     }
 
     return DBG_HOOK_HANDLED;
 }
+
+void __kprobes setup_singlestep(struct kprobe *p,
+                       struct pt_regs *regs,
+                       struct kprobe_ctlblk *kcb, int reenter)
+{
+    unsigned long slot;
+
+    if (reenter) {
+        save_previous_kprobe(kcb) {
+            kcb->prev_kprobe.kp = kprobe_running();
+            kcb->prev_kprobe.status = kcb->kprobe_status;
+        }
+        set_current_kprobe(p);
+        kcb->kprobe_status = KPROBE_REENTER;
+    } else {
+        kcb->kprobe_status = KPROBE_HIT_SS;
+    }
+
+
+    if (p->ainsn.xol_insn) {
+        /* prepare for single stepping */
+        slot = (unsigned long)p->ainsn.xol_insn;
+
+        kprobes_save_local_irqflag(kcb, regs);
+        instruction_pointer_set(regs, slot) {
+            regs->pc = val;
+        }
+    } else {
+        /* insn simulation */
+        arch_simulate_insn(p, regs) {
+            struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
+
+            if (p->ainsn.api.handler)
+                p->ainsn.api.handler(le32_to_cpu(p->opcode), (long)p->addr, regs);
+
+            /* single step simulated, now go for post processing */
+            post_kprobe_handler(p, kcb, regs) {
+                /* return addr restore if non-branching insn */
+                if (cur->ainsn.xol_restore != 0)
+                    instruction_pointer_set(regs, cur->ainsn.xol_restore);
+
+                /* restore back original saved kprobe variables and continue */
+                if (kcb->kprobe_status == KPROBE_REENTER) {
+                    restore_previous_kprobe(kcb);
+                    return;
+                }
+                /* call post handler */
+                kcb->kprobe_status = KPROBE_HIT_SSDONE;
+                if (cur->post_handler)
+                    cur->post_handler(cur, regs, 0);
+
+                reset_current_kprobe();
+            }
+        }
+    }
+}
 ```
 
-### kprobe_breakpoint_ss_handler
+## kprobe_ss_brk_handler
 
 ```c
-/* the 2nd BRK handler after probed instruction */
-kprobe_breakpoint_ss_handler(struct pt_regs *regs, unsigned long esr)
+int __kprobes
+kprobe_ss_brk_handler(struct pt_regs *regs, unsigned long esr)
 {
     struct kprobe_ctlblk *kcb = get_kprobe_ctlblk();
     unsigned long addr = instruction_pointer(regs);
     struct kprobe *cur = kprobe_running();
 
-    if (cur && (kcb->kprobe_status & (KPROBE_HIT_SS | KPROBE_REENTER))
-        && ((unsigned long)&cur->ainsn.xol_insn[1] == addr)) {
-
+    if (cur && (kcb->kprobe_status & (KPROBE_HIT_SS | KPROBE_REENTER)) &&
+        ((unsigned long)&cur->ainsn.xol_insn[1] == addr)) {
         kprobes_restore_local_irqflag(kcb, regs);
         post_kprobe_handler(cur, kcb, regs);
 
@@ -3029,7 +2992,7 @@ static int create_or_delete_trace_kprobe(const char *raw_command)
         int ret;
 
         mutex_lock(&dyn_event_ops_mutex);
-        ret = type->create(raw_command);
+        ret = type->create(raw_command); /* trace_kprobe_ops.create */
         mutex_unlock(&dyn_event_ops_mutex);
         return ret;
     }
@@ -3609,6 +3572,60 @@ static int __register_trace_kprobe(struct trace_kprobe *tk) {
 # dyn_event
 
 ```c
+```
+
+# dyn_event
+
+```c
+static LIST_HEAD(dyn_event_ops_list);
+
+trace_create_file("dynamic_events", TRACE_MODE_WRITE, NULL,
+              NULL, &dynamic_events_ops);
+
+static const struct file_operations dynamic_events_ops = {
+    .owner          = THIS_MODULE,
+    .open           = dyn_event_open,
+    .read           = seq_read,
+    .llseek         = seq_lseek,
+    .release        = seq_release,
+    .write          = dyn_event_write,
+};
+```
+
+```c
+static ssize_t dyn_event_write(struct file *file, const char __user *buffer,
+				size_t count, loff_t *ppos)
+{
+	return trace_parse_run_command(file, buffer, count, ppos, create_dyn_event);
+}
+
+int create_dyn_event(const char *raw_command)
+{
+	struct dyn_event_operations *ops;
+	int ret = -ENODEV;
+
+	if (raw_command[0] == '-' || raw_command[0] == '!')
+		return dyn_event_release(raw_command, NULL);
+
+	mutex_lock(&dyn_event_ops_mutex);
+	list_for_each_entry(ops, &dyn_event_ops_list, list) {
+		ret = ops->create(raw_command);
+		if (!ret || ret != -ECANCELED)
+			break;
+	}
+	if (ret == -ECANCELED) {
+		static const char *err_msg[] = {"No matching dynamic event type"};
+
+		/* Wrong dynamic event. Leave an error message. */
+		tracing_log_err(NULL, "dynevent", raw_command, err_msg,
+				0, 0);
+		ret = -EINVAL;
+	}
+
+	mutex_unlock(&dyn_event_ops_mutex);
+
+	return ret;
+}
 ```
 
 # ftrace
@@ -6098,8 +6115,7 @@ int event_trace_add_tracer(struct dentry *parent, struct trace_array *tr)
 
         nr_entries = ARRAY_SIZE(events_entries);
 
-        e_events = eventfs_create_events_dir("events", parent, events_entries,
-                            nr_entries, tr);
+        e_events = eventfs_create_events_dir("events", parent, events_entries, nr_entries, tr);
         if (IS_ERR(e_events)) {
             pr_warn("Could not create tracefs 'events' directory\n");
             return -ENOMEM;
@@ -6123,10 +6139,34 @@ int event_trace_add_tracer(struct dentry *parent, struct trace_array *tr)
 
     down_write(&trace_event_sem);
     /* If tr already has the event list, it is initialized in early boot. */
-    if (unlikely(!list_empty(&tr->events)))
-        __trace_early_add_event_dirs(tr);
-    else
-        __trace_add_event_dirs(tr);
+    if (unlikely(!list_empty(&tr->events))) {
+        __trace_early_add_event_dirs(tr) {
+            struct trace_event_file *file;
+            int ret;
+
+
+            list_for_each_entry(file, &tr->events, list) {
+                ret = event_create_dir(tr->event_dir, file);
+                if (ret < 0)
+                    pr_warn("Could not create directory for event %s\n",
+                        trace_event_name(file->event_call));
+            }
+        }
+    } else {
+        __trace_add_event_dirs(tr) {
+            struct trace_event_call *call;
+            int ret;
+
+            lockdep_assert_held(&trace_event_sem);
+
+            list_for_each_entry(call, &ftrace_events, list) {
+                ret = __trace_add_new_event(call, tr);
+                if (ret < 0)
+                    pr_warn("Could not create directory for event %s\n",
+                        trace_event_name(call));
+            }
+        }
+    }
     up_write(&trace_event_sem);
 
  out:
@@ -9365,6 +9405,7 @@ int trace_array_create_dir(struct trace_array *tr)
 {
     int ret;
 
+    /* create a dir at /sys/kernek/tracing/instances/ */
     tr->dir = tracefs_create_dir(tr->name, trace_instance_dir);
     if (!tr->dir)
         return -EINVAL;

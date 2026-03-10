@@ -14357,6 +14357,314 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
 }
 ```
 
+### register_sysctl_sz
+
+```c
+#define register_sysctl_init(path, table)	\
+	__register_sysctl_init(path, table, #table, ARRAY_SIZE(table))
+
+void __init __register_sysctl_init(const char *path, const struct ctl_table *table,
+				 const char *table_name, size_t table_size)
+{
+	struct ctl_table_header *hdr = register_sysctl_sz(path, table, table_size) {
+        return __register_sysctl_table(&sysctl_table_root.default_set, path, table, table_size);
+    }
+
+	if (unlikely(!hdr)) {
+		pr_err("failed when register_sysctl_sz %s to %s\n", table_name, path);
+		return;
+	}
+	kmemleak_not_leak(hdr);
+}
+
+struct ctl_table_header *__register_sysctl_table(
+	struct ctl_table_set *set,
+	const char *path, const struct ctl_table *table, size_t table_size)
+{
+	struct ctl_table_root *root = set->dir.header.root;
+	struct ctl_table_header *header;
+	struct ctl_dir *dir;
+	struct ctl_node *node;
+
+	header = kzalloc(sizeof(struct ctl_table_header) +
+			 sizeof(struct ctl_node)*table_size, GFP_KERNEL_ACCOUNT);
+	if (!header)
+		return NULL;
+
+	node = (struct ctl_node *)(header + 1);
+
+	init_header(header, root, set, node, table, table_size) {
+        head->ctl_table = table;
+        head->ctl_table_size = table_size;
+        head->ctl_table_arg = table;
+        head->used = 0;
+        head->count = 1;
+        head->nreg = 1;
+        head->unregistering = NULL;
+        head->root = root;
+        head->set = set;
+        head->parent = NULL;
+        head->node = node;
+        INIT_HLIST_HEAD(&head->inodes);
+        if (node) {
+            const struct ctl_table *entry;
+
+            list_for_each_table_entry(entry, head) {
+                node->header = head;
+                node++;
+            }
+        }
+        if (table == sysctl_mount_point)
+            sysctl_set_perm_empty_ctl_header(head);
+    }
+	if (sysctl_check_table(path, header))
+		goto fail;
+
+	spin_lock(&sysctl_lock);
+	dir = &set->dir;
+	/* Reference moved down the directory tree get_subdir */
+	dir->header.nreg++;
+	spin_unlock(&sysctl_lock);
+
+	dir = sysctl_mkdir_p(dir, path);
+	if (IS_ERR(dir))
+		goto fail;
+	spin_lock(&sysctl_lock);
+	if (insert_header(dir, header))
+		goto fail_put_dir_locked;
+
+	drop_sysctl_table(&dir->header);
+	spin_unlock(&sysctl_lock);
+
+	return header;
+
+fail_put_dir_locked:
+	drop_sysctl_table(&dir->header);
+	spin_unlock(&sysctl_lock);
+fail:
+	kfree(header);
+	return NULL;
+}
+```
+
+### sysctl_mkdir_p
+
+```c
+struct ctl_dir *sysctl_mkdir_p(struct ctl_dir *dir, const char *path)
+{
+	const char *name, *nextname;
+
+	for (name = path; name; name = nextname) {
+		int namelen;
+		nextname = strchr(name, '/');
+		if (nextname) {
+			namelen = nextname - name;
+			nextname++;
+		} else {
+			namelen = strlen(name);
+		}
+		if (namelen == 0)
+			continue;
+
+		/*
+		 * namelen ensures if name is "foo/bar/yay" only foo is
+		 * registered first. We traverse as if using mkdir -p and
+		 * return a ctl_dir for the last directory entry.
+		 */
+		dir = get_subdir(dir, name, namelen);
+		if (IS_ERR(dir))
+			break;
+	}
+	return dir;
+}
+
+struct ctl_dir *get_subdir(struct ctl_dir *dir,
+				  const char *name, int namelen)
+{
+	struct ctl_table_set *set = dir->header.set;
+	struct ctl_dir *subdir, *new = NULL;
+	int err;
+
+	spin_lock(&sysctl_lock);
+	subdir = find_subdir(dir, name, namelen) {
+        struct ctl_table_header *head;
+        const struct ctl_table *entry;
+
+        entry = find_entry(&head, dir, name, namelen) {
+            struct ctl_table_header *head;
+            const struct ctl_table *entry;
+            struct rb_node *node = dir->root.rb_node;
+
+            lockdep_assert_held(&sysctl_lock);
+
+            while (node) {
+                struct ctl_node *ctl_node;
+                const char *procname;
+                int cmp;
+
+                ctl_node = rb_entry(node, struct ctl_node, node);
+                head = ctl_node->header;
+                entry = &head->ctl_table[ctl_node - head->node];
+                procname = entry->procname;
+
+                cmp = namecmp(name, namelen, procname, strlen(procname));
+                if (cmp < 0)
+                    node = node->rb_left;
+                else if (cmp > 0)
+                    node = node->rb_right;
+                else {
+                    *phead = head;
+                    return entry;
+                }
+            }
+            return NULL;
+        }
+        if (!entry)
+            return ERR_PTR(-ENOENT);
+        if (!S_ISDIR(entry->mode))
+            return ERR_PTR(-ENOTDIR);
+        return container_of(head, struct ctl_dir, header);
+    }
+
+	if (!IS_ERR(subdir))
+		goto found;
+	if (PTR_ERR(subdir) != -ENOENT)
+		goto failed;
+
+	spin_unlock(&sysctl_lock);
+	new = new_dir(set, name, namelen) {
+        struct ctl_table *table;
+        struct ctl_dir *new;
+        struct ctl_node *node;
+        char *new_name;
+
+        new = kzalloc(sizeof(*new) + sizeof(struct ctl_node) +
+                sizeof(struct ctl_table) +  namelen + 1,
+                GFP_KERNEL);
+        if (!new)
+            return NULL;
+
+        node = (struct ctl_node *)(new + 1);
+        table = (struct ctl_table *)(node + 1);
+        new_name = (char *)(table + 1);
+        memcpy(new_name, name, namelen);
+        table[0].procname = new_name;
+        table[0].mode = S_IFDIR|S_IRUGO|S_IXUGO;
+        init_header(&new->header, set->dir.header.root, set, node, table, 1);
+
+        return new;
+    }
+	spin_lock(&sysctl_lock);
+	subdir = ERR_PTR(-ENOMEM);
+	if (!new)
+		goto failed;
+
+	/* Was the subdir added while we dropped the lock? */
+	subdir = find_subdir(dir, name, namelen);
+	if (!IS_ERR(subdir))
+		goto found;
+	if (PTR_ERR(subdir) != -ENOENT)
+		goto failed;
+
+	/* Nope.  Use the our freshly made directory entry. */
+	err = insert_header(dir, &new->header) {
+        const struct ctl_table *entry;
+        struct ctl_table_header *dir_h = &dir->header;
+        int err;
+
+
+        /* Is this a permanently empty directory? */
+        if (sysctl_is_perm_empty_ctl_header(dir_h))
+            return -EROFS;
+
+        /* Am I creating a permanently empty directory? */
+        if (sysctl_is_perm_empty_ctl_header(header)) {
+            if (!RB_EMPTY_ROOT(&dir->root))
+                return -EINVAL;
+            sysctl_set_perm_empty_ctl_header(dir_h);
+        }
+
+        dir_h->nreg++;
+        header->parent = dir;
+        err = insert_links(header) {
+            struct ctl_table_set *root_set = &sysctl_table_root.default_set;
+            struct ctl_dir *core_parent;
+            struct ctl_table_header *links;
+            int err;
+
+            if (head->set == root_set)
+                return 0;
+
+            core_parent = xlate_dir(root_set, head->parent);
+            if (IS_ERR(core_parent))
+                return 0;
+
+            if (get_links(core_parent, head, head->root))
+                return 0;
+
+            core_parent->header.nreg++;
+            spin_unlock(&sysctl_lock);
+
+            links = new_links(core_parent, head);
+
+            spin_lock(&sysctl_lock);
+            err = -ENOMEM;
+            if (!links)
+                goto out;
+
+            err = 0;
+            if (get_links(core_parent, head, head->root)) {
+                kfree(links);
+                goto out;
+            }
+
+            err = insert_header(core_parent, links);
+            if (err)
+                kfree(links);
+        out:
+            drop_sysctl_table(&core_parent->header);
+            return err;
+        }
+        if (err)
+            goto fail_links;
+        list_for_each_table_entry(entry, header) {
+            err = insert_entry(header, entry);
+            if (err)
+                goto fail;
+        }
+        return 0;
+    fail:
+        erase_header(header);
+        put_links(header);
+    fail_links:
+        if (header->ctl_table == sysctl_mount_point)
+            sysctl_clear_perm_empty_ctl_header(dir_h);
+        header->parent = NULL;
+        drop_sysctl_table(dir_h);
+        return err;
+    }
+	subdir = ERR_PTR(err);
+	if (err)
+		goto failed;
+	subdir = new;
+
+found:
+	subdir->header.nreg++;
+failed:
+	if (IS_ERR(subdir)) {
+		pr_err("sysctl could not get directory: ");
+		sysctl_print_dir(dir);
+		pr_cont("%*.*s %ld\n", namelen, namelen, name,
+			PTR_ERR(subdir));
+	}
+	drop_sysctl_table(&dir->header);
+	if (new)
+		drop_sysctl_table(&new->header);
+	spin_unlock(&sysctl_lock);
+	return subdir;
+}
+```
+
 ## seq_file
 
 ### seq_open_private
@@ -14836,7 +15144,10 @@ struct dentry *tracefs_create_file(const char *name, umode_t mode,
     inode->i_private = data;
     inode->i_uid = d_inode(dentry->d_parent)->i_uid;
     inode->i_gid = d_inode(dentry->d_parent)->i_gid;
+
     d_make_persistent(dentry, inode);
+        --->
+
     fsnotify_create(d_inode(dentry->d_parent), dentry);
     return tracefs_end_creating(dentry);
 }
