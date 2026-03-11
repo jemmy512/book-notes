@@ -120,6 +120,35 @@ noinline noinstr void arch_stack_walk(stack_trace_consume_fn consume_entry,
 
     kunwind_stack_walk(arch_kunwind_consume_entry, &data, task, regs);
 }
+```
+
+### kunwind_stack_walk
+
+```c
+struct kunwind_state {
+    struct unwind_state     common;
+    struct task_struct      *task;
+    int                     graph_idx;
+#ifdef CONFIG_KRETPROBES
+    struct llist_node       *kr_cur;
+#endif
+    enum kunwind_source     source;
+    union unwind_flags      flags;
+    struct pt_regs          *regs;
+};
+
+struct unwind_state {
+    unsigned long           fp;
+    unsigned long           pc;
+
+    struct stack_info {
+        unsigned long low;
+        unsigned long high;
+    }                       stack;
+
+    struct stack_info       *stacks;
+    int                     nr_stacks;
+};
 
 static __always_inline int
 kunwind_stack_walk(kunwind_consume_fn consume_state,
@@ -127,17 +156,64 @@ kunwind_stack_walk(kunwind_consume_fn consume_state,
            struct pt_regs *regs)
 {
     struct stack_info stacks[] = {
-        stackinfo_get_task(task),
-        STACKINFO_CPU(irq),
-        STACKINFO_CPU(overflow),
-#if defined(CONFIG_ARM_SDE_INTERFACE)
-        STACKINFO_SDEI(normal),
-        STACKINFO_SDEI(critical),
-#endif
-#ifdef CONFIG_EFI
-        STACKINFO_EFI,
-#endif
+        stackinfo_get_task(task) {
+            unsigned long low = (unsigned long)task_stack_page(tsk);
+            unsigned long high = low + THREAD_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        },
+        STACKINFO_CPU(irq) {
+            unsigned long low = (unsigned long)raw_cpu_read(irq_stack_ptr);
+            unsigned long high = low + IRQ_STACK_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        },
+        STACKINFO_CPU(overflow) {
+            unsigned long low = (unsigned long)raw_cpu_ptr(overflow_stack);
+            unsigned long high = low + OVERFLOW_STACK_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        },
+
+        STACKINFO_SDEI(normal) {
+            unsigned long low = (unsigned long)raw_cpu_read(sdei_stack_normal_ptr);
+            unsigned long high = low + SDEI_STACK_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        },
+        STACKINFO_SDEI(critical) {
+            unsigned long low = (unsigned long)raw_cpu_read(sdei_stack_critical_ptr);
+            unsigned long high = low + SDEI_STACK_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        }
+
+        STACKINFO_EFI {
+            unsigned long high = (u64)efi_rt_stack_top;
+            unsigned long low = high - THREAD_SIZE;
+
+            return (struct stack_info) {
+                .low    = low,
+                .high   = high,
+            };
+        }
     };
+
     struct kunwind_state state = {
         .common = {
             .stacks = stacks,
@@ -148,19 +224,38 @@ kunwind_stack_walk(kunwind_consume_fn consume_state,
     if (regs) {
         if (task != current)
             return -EINVAL;
-        kunwind_init_from_regs(&state, regs);
+
+        kunwind_init_from_regs(&state, regs) {
+            kunwind_init(state, current);
+
+            state->regs = regs;
+            state->common.fp = regs->regs[29];
+            state->common.pc = regs->pc;
+            state->source = KUNWIND_SOURCE_REGS_PC;
+        }
     } else if (task == current) {
-        kunwind_init_from_caller(&state);
+        kunwind_init_from_caller(&state) {
+            kunwind_init(state, current);
+
+            state->common.fp = (unsigned long)__builtin_frame_address(1);
+            state->common.pc = (unsigned long)__builtin_return_address(0);
+            state->source = KUNWIND_SOURCE_CALLER;
+        }
     } else {
-        kunwind_init_from_task(&state, task);
+        kunwind_init_from_task(&state, task) {
+            kunwind_init(state, task);
+
+            state->common.fp = thread_saved_fp(task);
+            state->common.pc = thread_saved_pc(task);
+            state->source = KUNWIND_SOURCE_TASK;
+        }
     }
 
     return do_kunwind(&state, consume_state, cookie);
 }
 
 static __always_inline int
-do_kunwind(struct kunwind_state *state, kunwind_consume_fn consume_state,
-       void *cookie)
+do_kunwind(struct kunwind_state *state, kunwind_consume_fn consume_state, void *cookie)
 {
     int ret;
 
@@ -240,8 +335,11 @@ static __always_inline int
 kunwind_next_frame_record(struct kunwind_state *state)
 {
     unsigned long fp = state->common.fp;
-    struct frame_record *record;
-    struct stack_info *info;
+    struct frame_record {
+        u64     fp;
+        u64     lr;
+    }                   *record;
+    struct stack_info   *info;
     unsigned long new_fp, new_pc;
 
     if (fp & 0x7)
@@ -250,7 +348,16 @@ kunwind_next_frame_record(struct kunwind_state *state)
     info = unwind_find_stack(&state->common, fp, sizeof(*record)) {
         struct stack_info *info = &state->stack;
 
-        if (stackinfo_on_stack(info, sp, size))
+        ret = stackinfo_on_stack(info, sp, size) {
+            if (!info->low)
+                return false;
+
+            if (sp < info->low || sp + size < sp || sp + size > info->high)
+                return false;
+
+            return true;
+        }
+        if (ret)
             return info;
 
         for (int i = 0; i < state->nr_stacks; i++) {
@@ -269,50 +376,7 @@ kunwind_next_frame_record(struct kunwind_state *state)
     new_pc = READ_ONCE(record->lr);
 
     if (!new_fp && !new_pc) {
-        return kunwind_next_frame_record_meta(state) {
-            struct task_struct *tsk = state->task;
-            unsigned long fp = state->common.fp;
-            struct frame_record_meta *meta;
-            struct stack_info *info;
-
-            info = unwind_find_stack(&state->common, fp, sizeof(*meta));
-            if (!info)
-                return -EINVAL;
-
-            meta = (struct frame_record_meta *)fp;
-            switch (READ_ONCE(meta->type)) {
-            case FRAME_META_TYPE_FINAL:
-                if (meta == &task_pt_regs(tsk)->stackframe)
-                    return -ENOENT;
-                WARN_ON_ONCE(tsk == current);
-                return -EINVAL;
-            case FRAME_META_TYPE_PT_REGS:
-                return kunwind_next_regs_pc(state) {
-                    struct stack_info *info;
-                    unsigned long fp = state->common.fp;
-                    struct pt_regs *regs;
-
-                    regs = container_of((u64 *)fp, struct pt_regs, stackframe.record.fp);
-
-                    info = unwind_find_stack(&state->common, (unsigned long)regs, sizeof(*regs));
-                    if (!info)
-                        return -EINVAL;
-
-                    unwind_consume_stack(&state->common, info, (unsigned long)regs,
-                                sizeof(*regs));
-
-                    state->regs = regs;
-                    state->common.pc = regs->pc;
-                    state->common.fp = regs->regs[29];
-                    state->regs = NULL;
-                    state->source = KUNWIND_SOURCE_REGS_PC;
-                    return 0;
-                }
-            default:
-                WARN_ON_ONCE(tsk == current);
-                return -EINVAL;
-            }
-        }
+        return kunwind_next_frame_record_meta(state);
     }
 
     unwind_consume_stack(&state->common, info, fp, sizeof(*record)) {
@@ -348,6 +412,60 @@ kunwind_next_frame_record(struct kunwind_state *state)
     state->source = KUNWIND_SOURCE_FRAME;
 
     return 0;
+}
+```
+
+### kunwind_next_frame_record_meta
+
+```c
+static __always_inline int
+kunwind_next_frame_record_meta(struct kunwind_state *state) {
+    struct task_struct *tsk = state->task;
+    unsigned long fp = state->common.fp;
+    struct frame_record_meta {
+        struct frame_record record;
+	    u64 type;
+    }                   *meta;
+    struct stack_info   *info;
+
+    info = unwind_find_stack(&state->common, fp, sizeof(*meta));
+    if (!info)
+        return -EINVAL;
+
+    meta = (struct frame_record_meta *)fp;
+    /* the type is stored at kernel_entry */
+    switch (READ_ONCE(meta->type)) {
+    case FRAME_META_TYPE_FINAL:
+        if (meta == &task_pt_regs(tsk)->stackframe)
+            return -ENOENT;
+        WARN_ON_ONCE(tsk == current);
+        return -EINVAL;
+
+    case FRAME_META_TYPE_PT_REGS:
+        return kunwind_next_regs_pc(state) {
+            struct stack_info *info;
+            unsigned long fp = state->common.fp;
+            struct pt_regs *regs;
+
+            regs = container_of((u64 *)fp, struct pt_regs, stackframe.record.fp);
+
+            info = unwind_find_stack(&state->common, (unsigned long)regs, sizeof(*regs));
+            if (!info)
+                return -EINVAL;
+
+            unwind_consume_stack(&state->common, info, (unsigned long)regs, sizeof(*regs));
+
+            state->regs = regs;
+            state->common.pc = regs->pc;
+            state->common.fp = regs->regs[29];
+            state->regs = NULL;
+            state->source = KUNWIND_SOURCE_REGS_PC;
+            return 0;
+        }
+    default:
+        WARN_ON_ONCE(tsk == current);
+        return -EINVAL;
+    }
 }
 ```
 
@@ -2251,19 +2369,19 @@ out:
 
 static int aggr_pre_handler(struct kprobe *p, struct pt_regs *regs)
 {
-	struct kprobe *kp;
+    struct kprobe *kp;
 
-	list_for_each_entry_rcu(kp, &p->list, list) {
-		if (kp->pre_handler && likely(!kprobe_disabled(kp))) {
-			set_kprobe_instance(kp) {
+    list_for_each_entry_rcu(kp, &p->list, list) {
+        if (kp->pre_handler && likely(!kprobe_disabled(kp))) {
+            set_kprobe_instance(kp) {
                 _this_cpu_write(kprobe_instance, kp);
             }
-			if (kp->pre_handler(kp, regs))
-				return 1;
-		}
-		reset_kprobe_instance();
-	}
-	return 0;
+            if (kp->pre_handler(kp, regs))
+                return 1;
+        }
+        reset_kprobe_instance();
+    }
+    return 0;
 }
 ```
 
@@ -2341,15 +2459,15 @@ static int __kprobes aarch64_insn_patch_text_cb(void *arg)
 ```c
 int register_aggr_kprobe(struct kprobe *orig_p, struct kprobe *p)
 {
-	int ret = 0;
-	struct kprobe *ap = orig_p;
+    int ret = 0;
+    struct kprobe *ap = orig_p;
 
-	scoped_guard(cpus_read_lock) {
-		/* For preparing optimization, jump_label_text_reserved() is called */
-		guard(jump_label_lock)();
-		guard(mutex)(&text_mutex);
+    scoped_guard(cpus_read_lock) {
+        /* For preparing optimization, jump_label_text_reserved() is called */
+        guard(jump_label_lock)();
+        guard(mutex)(&text_mutex);
 
-		ret = kprobe_aggrprobe(orig_p) {
+        ret = kprobe_aggrprobe(orig_p) {
             return p->pre_handler == aggr_pre_handler() {
                 struct kprobe *kp;
 
@@ -2365,15 +2483,15 @@ int register_aggr_kprobe(struct kprobe *orig_p, struct kprobe *p)
             }
         }
         if (!ret) {
-			/* If 'orig_p' is not an 'aggr_kprobe', create new one. */
-			ap = alloc_aggr_kprobe(orig_p);
-			if (!ap)
-				return -ENOMEM;
-			init_aggr_kprobe(ap, orig_p) {
+            /* If 'orig_p' is not an 'aggr_kprobe', create new one. */
+            ap = alloc_aggr_kprobe(orig_p);
+            if (!ap)
+                return -ENOMEM;
+            init_aggr_kprobe(ap, orig_p) {
                 /* Copy the insn slot of 'p' to 'ap'. */
                 copy_kprobe(p, ap) {
                     memcpy(&p->opcode, &ap->opcode, sizeof(kprobe_opcode_t));
-	                memcpy(&p->ainsn, &ap->ainsn, sizeof(struct arch_specific_insn));
+                    memcpy(&p->ainsn, &ap->ainsn, sizeof(struct arch_specific_insn));
                 }
                 flush_insn_slot(ap);
                 ap->addr = p->addr;
@@ -2399,45 +2517,39 @@ int register_aggr_kprobe(struct kprobe *orig_p, struct kprobe *p)
                 list_add_rcu(&p->list, &ap->list);
                 hlist_replace_rcu(&p->hlist, &ap->hlist);
             }
-		} else if (kprobe_unused(ap)) {
-			/* This probe is going to die. Rescue it */
-			ret = reuse_unused_kprobe(ap);
-			if (ret)
-				return ret;
-		}
+        } else if (kprobe_unused(ap)) {
+            /* This probe is going to die. Rescue it */
+            ret = reuse_unused_kprobe(ap);
+            if (ret)
+                return ret;
+        }
 
-		if (kprobe_gone(ap)) {
-			/*
-			 * Attempting to insert new probe at the same location that
-			 * had a probe in the module vaddr area which already
-			 * freed. So, the instruction slot has already been
-			 * released. We need a new slot for the new probe.
-			 */
-			ret = arch_prepare_kprobe(ap);
-			if (ret)
-				/*
-				 * Even if fail to allocate new slot, don't need to
-				 * free the 'ap'. It will be used next time, or
-				 * freed by unregister_kprobe().
-				 */
-				return ret;
+        if (kprobe_gone(ap)) {
+            /* Attempting to insert new probe at the same location that
+             * had a probe in the module vaddr area which already
+             * freed. So, the instruction slot has already been
+             * released. We need a new slot for the new probe. */
+            ret = arch_prepare_kprobe(ap);
+            if (ret)
+                /* Even if fail to allocate new slot, don't need to
+                 * free the 'ap'. It will be used next time, or
+                 * freed by unregister_kprobe(). */
+                return ret;
 
-			/* Prepare optimized instructions if possible. */
-			prepare_optimized_kprobe(ap);
+            /* Prepare optimized instructions if possible. */
+            prepare_optimized_kprobe(ap);
 
-			/*
-			 * Clear gone flag to prevent allocating new slot again, and
-			 * set disabled flag because it is not armed yet.
-			 */
-			ap->flags = (ap->flags & ~KPROBE_FLAG_GONE)
-					| KPROBE_FLAG_DISABLED;
-		}
+            /* Clear gone flag to prevent allocating new slot again, and
+             * set disabled flag because it is not armed yet. */
+            ap->flags = (ap->flags & ~KPROBE_FLAG_GONE)
+                    | KPROBE_FLAG_DISABLED;
+        }
 
-		/* Copy the insn slot of 'p' to 'ap'. */
-		copy_kprobe(ap, p);
-		ret = add_new_kprobe(ap, p) {
+        /* Copy the insn slot of 'p' to 'ap'. */
+        copy_kprobe(ap, p);
+        ret = add_new_kprobe(ap, p) {
             if (p->post_handler)
-                unoptimize_kprobe(ap, true);	/* Fall back to normal kprobe */
+                unoptimize_kprobe(ap, true);    /* Fall back to normal kprobe */
 
             list_add_rcu(&p->list, &ap->list);
             if (p->post_handler && !ap->post_handler)
@@ -2445,21 +2557,21 @@ int register_aggr_kprobe(struct kprobe *orig_p, struct kprobe *p)
 
             return 0;
         }
-	}
+    }
 
-	if (ret == 0 && kprobe_disabled(ap) && !kprobe_disabled(p)) {
-		ap->flags &= ~KPROBE_FLAG_DISABLED;
-		if (!kprobes_all_disarmed) {
-			/* Arm the breakpoint again. */
-			ret = arm_kprobe(ap);
-			if (ret) {
-				ap->flags |= KPROBE_FLAG_DISABLED;
-				list_del_rcu(&p->list);
-				synchronize_rcu();
-			}
-		}
-	}
-	return ret;
+    if (ret == 0 && kprobe_disabled(ap) && !kprobe_disabled(p)) {
+        ap->flags &= ~KPROBE_FLAG_DISABLED;
+        if (!kprobes_all_disarmed) {
+            /* Arm the breakpoint again. */
+            ret = arm_kprobe(ap);
+            if (ret) {
+                ap->flags |= KPROBE_FLAG_DISABLED;
+                list_del_rcu(&p->list);
+                synchronize_rcu();
+            }
+        }
+    }
+    return ret;
 }
 ```
 
@@ -3510,13 +3622,13 @@ static struct trace_event_fields kprobe_fields_array[] = {
             return -ENOENT;
 
         DEFINE_FIELD(unsigned long, ip, FIELD_STRING_IP, 0) {
-            do {								\
-                ret = trace_define_field(event_call, #type, name,	\
-                            offsetof(typeof(field), item),	\
+            do {                                \
+                ret = trace_define_field(event_call, #type, name,    \
+                            offsetof(typeof(field), item),    \
                             sizeof(field.item), is_signed, \
-                            FILTER_OTHER);			\
-                if (ret)						\
-                    return ret;					\
+                            FILTER_OTHER);            \
+                if (ret)                        \
+                    return ret;                    \
             } while (0)
         }
 
@@ -3600,37 +3712,37 @@ static const struct file_operations dynamic_events_ops = {
 
 ```c
 static ssize_t dyn_event_write(struct file *file, const char __user *buffer,
-				size_t count, loff_t *ppos)
+                size_t count, loff_t *ppos)
 {
-	return trace_parse_run_command(file, buffer, count, ppos, create_dyn_event);
+    return trace_parse_run_command(file, buffer, count, ppos, create_dyn_event);
 }
 
 int create_dyn_event(const char *raw_command)
 {
-	struct dyn_event_operations *ops;
-	int ret = -ENODEV;
+    struct dyn_event_operations *ops;
+    int ret = -ENODEV;
 
-	if (raw_command[0] == '-' || raw_command[0] == '!')
-		return dyn_event_release(raw_command, NULL);
+    if (raw_command[0] == '-' || raw_command[0] == '!')
+        return dyn_event_release(raw_command, NULL);
 
-	mutex_lock(&dyn_event_ops_mutex);
-	list_for_each_entry(ops, &dyn_event_ops_list, list) {
-		ret = ops->create(raw_command);
-		if (!ret || ret != -ECANCELED)
-			break;
-	}
-	if (ret == -ECANCELED) {
-		static const char *err_msg[] = {"No matching dynamic event type"};
+    mutex_lock(&dyn_event_ops_mutex);
+    list_for_each_entry(ops, &dyn_event_ops_list, list) {
+        ret = ops->create(raw_command);
+        if (!ret || ret != -ECANCELED)
+            break;
+    }
+    if (ret == -ECANCELED) {
+        static const char *err_msg[] = {"No matching dynamic event type"};
 
-		/* Wrong dynamic event. Leave an error message. */
-		tracing_log_err(NULL, "dynevent", raw_command, err_msg,
-				0, 0);
-		ret = -EINVAL;
-	}
+        /* Wrong dynamic event. Leave an error message. */
+        tracing_log_err(NULL, "dynevent", raw_command, err_msg,
+                0, 0);
+        ret = -EINVAL;
+    }
 
-	mutex_unlock(&dyn_event_ops_mutex);
+    mutex_unlock(&dyn_event_ops_mutex);
 
-	return ret;
+    return ret;
 }
 ```
 
@@ -6348,26 +6460,24 @@ event_create_dir(struct eventfs_inode *parent, struct trace_event_file *file)
 
 int event_define_fields(struct trace_event_call *call)
 {
-	struct list_head *head;
-	int ret = 0;
+    struct list_head *head;
+    int ret = 0;
 
-	/*
-	 * Other events may have the same class. Only update
-	 * the fields if they are not already defined.
-	 */
-	head = trace_get_fields(call);
-	if (list_empty(head)) {
-		struct trace_event_fields *field = call->class->fields_array;
-		unsigned int offset = sizeof(struct trace_entry);
+    /* Other events may have the same class. Only update
+     * the fields if they are not already defined. */
+    head = trace_get_fields(call);
+    if (list_empty(head)) {
+        struct trace_event_fields *field = call->class->fields_array;
+        unsigned int offset = sizeof(struct trace_entry);
 
-		for (; field->type; field++) {
-			if (field->type == TRACE_FUNCTION_TYPE) {
-				field->define_fields(call);
-				break;
-			}
+        for (; field->type; field++) {
+            if (field->type == TRACE_FUNCTION_TYPE) {
+                field->define_fields(call);
+                break;
+            }
 
-			offset = ALIGN(offset, field->align);
-			ret = trace_define_field_ext(call, field->type, field->name,
+            offset = ALIGN(offset, field->align);
+            ret = trace_define_field_ext(call, field->type, field->name,
                 offset, field->size,
                 field->is_signed, field->filter_type, field->len, field->needs_test) {
                 struct list_head *head;
@@ -6379,16 +6489,16 @@ int event_define_fields(struct trace_event_call *call)
                 return __trace_define_field(head, type, name, offset, size, is_signed, filter_type, len, need_test);
                     --->
             }
-			if (WARN_ON_ONCE(ret)) {
-				pr_err("error code is %d\n", ret);
-				break;
-			}
+            if (WARN_ON_ONCE(ret)) {
+                pr_err("error code is %d\n", ret);
+                break;
+            }
 
-			offset += field->size;
-		}
-	}
+            offset += field->size;
+        }
+    }
 
-	return ret;
+    return ret;
 }
 ```
 
