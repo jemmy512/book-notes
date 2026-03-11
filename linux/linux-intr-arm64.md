@@ -166,11 +166,9 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
     .if    \el == 0
     alternative_insn nop, SET_PSTATE_DIT(1), ARM64_HAS_DIT
     .endif
-
     .if    \regsize == 32
     mov    w0, w0                // zero upper 32 bits of x0
     .endif
-    /* save the regs context of current task on the top of stack */
     stp    x0, x1, [sp, #16 * 0]
     stp    x2, x3, [sp, #16 * 1]
     stp    x4, x5, [sp, #16 * 2]
@@ -188,74 +186,74 @@ SYM_CODE_END(el\el\ht\()_\regsize\()_\label)
     stp    x28, x29, [sp, #16 * 14]
 
     .if    \el == 0
-    clear_gp_regs
-    mrs    x21, sp_el0
-    ldr_this_cpu    tsk, __entry_task, x20
-    msr    sp_el0, tsk
+        clear_gp_regs
+        mrs    x21, sp_el0
+        ldr_this_cpu    tsk, __entry_task, x20
+        msr    sp_el0, tsk
 
-    /* Ensure MDSCR_EL1.SS is clear, since we can unmask debug exceptions
-     * when scheduling. */
-    ldr    x19, [tsk, #TSK_TI_FLAGS]
-    disable_step_tsk x19, x20
+        /* Ensure MDSCR_EL1.SS is clear, since we can unmask debug exceptions
+        * when scheduling. */
+        ldr    x19, [tsk, #TSK_TI_FLAGS]
+        disable_step_tsk x19, x20
 
-    /* Check for asynchronous tag check faults in user space */
-    ldr    x0, [tsk, THREAD_SCTLR_USER]
-    check_mte_async_tcf x22, x23, x0
+        /* Check for asynchronous tag check faults in user space */
+        ldr    x0, [tsk, THREAD_SCTLR_USER]
+        check_mte_async_tcf x22, x23, x0
 
-#ifdef CONFIG_ARM64_PTR_AUTH
-alternative_if ARM64_HAS_ADDRESS_AUTH
-    /* Enable IA for in-kernel PAC if the task had it disabled. Although
-     * this could be implemented with an unconditional MRS which would avoid
-     * a load, this was measured to be slower on Cortex-A75 and Cortex-A76.
-     *
-     * Install the kernel IA key only if IA was enabled in the task. If IA
-     * was disabled on kernel exit then we would have left the kernel IA
-     * installed so there is no need to install it again. */
-    tbz    x0, SCTLR_ELx_ENIA_SHIFT, 1f
-    __ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23
-    b    2f
-1:
-    mrs    x0, sctlr_el1
-    orr    x0, x0, SCTLR_ELx_ENIA
-    msr    sctlr_el1, x0
-2:
-alternative_else_nop_endif
-#endif
+    #ifdef CONFIG_ARM64_PTR_AUTH
+    alternative_if ARM64_HAS_ADDRESS_AUTH
+        /* Enable IA for in-kernel PAC if the task had it disabled. Although
+        * this could be implemented with an unconditional MRS which would avoid
+        * a load, this was measured to be slower on Cortex-A75 and Cortex-A76.
+        *
+        * Install the kernel IA key only if IA was enabled in the task. If IA
+        * was disabled on kernel exit then we would have left the kernel IA
+        * installed so there is no need to install it again. */
+        tbz    x0, SCTLR_ELx_ENIA_SHIFT, 1f
+        __ptrauth_keys_install_kernel_nosync tsk, x20, x22, x23
+        b    2f
+    1:
+        mrs    x0, sctlr_el1
+        orr    x0, x0, SCTLR_ELx_ENIA
+        msr    sctlr_el1, x0
+    2:
+    alternative_else_nop_endif
+    #endif
 
-    apply_ssbd 1, x22, x23
+        apply_ssbd 1, x22, x23
 
-    mte_set_kernel_gcr x22, x23
+        mte_set_kernel_gcr x22, x23
 
-    /* Any non-self-synchronizing system register updates required for
-     * kernel entry should be placed before this point. */
-alternative_if ARM64_MTE
-    isb
-    b    1f
-alternative_else_nop_endif
-alternative_if ARM64_HAS_ADDRESS_AUTH
-    isb
-alternative_else_nop_endif
-1:
+        /* Any non-self-synchronizing system register updates required for
+        * kernel entry should be placed before this point. */
+    alternative_if ARM64_MTE
+        isb
+        b    1f
+    alternative_else_nop_endif
+    alternative_if ARM64_HAS_ADDRESS_AUTH
+        isb
+    alternative_else_nop_endif
+    1:
 
-    scs_load_current
-    .else     /* \el != 0 */
-    add    x21, sp, #PT_REGS_SIZE
-    get_current_task tsk
+        scs_load_current
+    .else
+        add    x21, sp, #PT_REGS_SIZE
+        get_current_task tsk
     .endif /* \el == 0 */
 
     mrs    x22, elr_el1
     mrs    x23, spsr_el1
     stp    lr, x21, [sp, #S_LR]
 
-    /* For exceptions from EL0, create a final frame record.
-     * For exceptions from EL1, create a synthetic frame record so the
-     * interrupted code shows up in the backtrace. */
+    /* Create a metadata frame record. The unwinder will use this to
+     * identify and unwind exception boundaries. */
+    stp    xzr, xzr, [sp, #S_STACKFRAME]
     .if \el == 0
-        stp    xzr, xzr, [sp, #S_STACKFRAME]
+        mov    x0, #FRAME_META_TYPE_FINAL
     .else
-        stp    x29, x22, [sp, #S_STACKFRAME]
+        mov    x0, #FRAME_META_TYPE_PT_REGS
     .endif
-
+    str    x0, [sp, #S_STACKFRAME_TYPE]
     add    x29, sp, #S_STACKFRAME
 
 #ifdef CONFIG_ARM64_SW_TTBR0_PAN
@@ -268,8 +266,8 @@ alternative_else_nop_endif
 
     /* Not in a syscall by default (el0_svc overwrites for real syscall) */
     .if    \el == 0
-    mov    w21, #NO_SYSCALL
-    str    w21, [sp, #S_SYSCALLNO]
+        mov    w21, #NO_SYSCALL
+        str    w21, [sp, #S_SYSCALLNO]
     .endif
 
 #ifdef CONFIG_ARM64_PSEUDO_NMI
@@ -278,7 +276,7 @@ alternative_if_not ARM64_HAS_GIC_PRIO_MASKING
 alternative_else_nop_endif
 
     mrs_s    x20, SYS_ICC_PMR_EL1
-    str    x20, [sp, #S_PMR_SAVE]
+    str    w20, [sp, #S_PMR]
     mov    x20, #GIC_PRIO_IRQON | GIC_PRIO_PSR_I_SET
     msr_s    SYS_ICC_PMR_EL1, x20
 
