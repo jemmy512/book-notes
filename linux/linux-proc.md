@@ -903,21 +903,18 @@ struct pt_regs {
         };
     };
     u64 orig_x0;
-#ifdef __AARCH64EB__
-    u32 unused2;
     s32 syscallno;
-#else
-    s32 syscallno;
-    u32 unused2;
-#endif
-    u64 sdei_ttbr1;
-    /* Only valid when ARM64_HAS_GIC_PRIO_MASKING is enabled. */
-    u64 pmr_save;
-    u64 stackframe[2]; /* store FP and LR */
+    u32 pmr;
 
-    /* Only valid for some EL1 exceptions. */
-    u64 lockdep_hardirqs;
-    u64 exit_rcu;
+    u64 sdei_ttbr1;
+
+    struct frame_record_meta{
+        struct frame_record {
+            u64     fp;
+            u64     lr;
+        }               record;
+	    u64 type;
+    }                           stackframe;
 };
 
 struct user_pt_regs {
@@ -5227,8 +5224,8 @@ void __dl_add(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 
 void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 {
-	dl_b->total_bw -= tsk_bw;
-	__dl_update(dl_b, (s32)tsk_bw / cpus) {
+    dl_b->total_bw -= tsk_bw;
+    __dl_update(dl_b, (s32)tsk_bw / cpus) {
         struct root_domain *rd = container_of(dl_b, struct root_domain, dl_bw);
         int i;
 
@@ -5242,16 +5239,16 @@ void __dl_sub(struct dl_bw *dl_b, u64 tsk_bw, int cpus)
 
 static void dl_server_add_bw(struct root_domain *rd, int cpu)
 {
-	struct sched_dl_entity *dl_se;
+    struct sched_dl_entity *dl_se;
 
-	dl_se = &cpu_rq(cpu)->fair_server;
-	if (dl_server(dl_se) && cpu_active(cpu))
-		__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(cpu));
+    dl_se = &cpu_rq(cpu)->fair_server;
+    if (dl_server(dl_se) && cpu_active(cpu))
+        __dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(cpu));
 
 #ifdef CONFIG_SCHED_CLASS_EXT
-	dl_se = &cpu_rq(cpu)->ext_server;
-	if (dl_server(dl_se) && cpu_active(cpu))
-		__dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(cpu));
+    dl_se = &cpu_rq(cpu)->ext_server;
+    if (dl_server(dl_se) && cpu_active(cpu))
+        __dl_add(&rd->dl_bw, dl_se->dl_bw, dl_bw_cpus(cpu));
 #endif
 }
 ```
@@ -11897,58 +11894,54 @@ match3:
 
 void dl_rebuild_rd_accounting(void)
 {
-	struct cpuset *cs = NULL;
-	struct cgroup_subsys_state *pos_css;
-	int cpu;
-	u64 cookie = ++dl_cookie;
+    struct cpuset *cs = NULL;
+    struct cgroup_subsys_state *pos_css;
+    int cpu;
+    u64 cookie = ++dl_cookie;
 
-	lockdep_assert_held(&cpuset_mutex);
-	lockdep_assert_cpus_held();
-	lockdep_assert_held(&sched_domains_mutex);
+    lockdep_assert_held(&cpuset_mutex);
+    lockdep_assert_cpus_held();
+    lockdep_assert_held(&sched_domains_mutex);
 
-	rcu_read_lock();
+    rcu_read_lock();
 
-	for_each_possible_cpu(cpu) {
-		if (dl_bw_visited(cpu, cookie))
-			continue;
+    for_each_possible_cpu(cpu) {
+        if (dl_bw_visited(cpu, cookie))
+            continue;
 
-		dl_clear_root_domain_cpu(cpu) {
+        dl_clear_root_domain_cpu(cpu) {
             dl_clear_root_domain(cpu_rq(cpu)->rd) {
                 int i;
 
                 guard(raw_spinlock_irqsave)(&rd->dl_bw.lock);
 
-                /*
-                * Reset total_bw to zero and extra_bw to max_bw so that next
-                * loop will add dl-servers contributions back properly,
-                */
+                /* Reset total_bw to zero and extra_bw to max_bw so that next
+                * loop will add dl-servers contributions back properly, */
                 rd->dl_bw.total_bw = 0;
                 for_each_cpu(i, rd->span)
                     cpu_rq(i)->dl.extra_bw = cpu_rq(i)->dl.max_bw;
 
-                /*
-                * dl_servers are not tasks. Since dl_add_task_root_domain ignores
-                * them, we need to account for them here explicitly.
-                */
+                /* dl_servers are not tasks. Since dl_add_task_root_domain ignores
+                * them, we need to account for them here explicitly. */
                 for_each_cpu(i, rd->span)
                     dl_server_add_bw(rd, i);
                         --->
             }
         }
-	}
+    }
 
-	cpuset_for_each_descendant_pre(cs, pos_css, &top_cpuset) {
+    cpuset_for_each_descendant_pre(cs, pos_css, &top_cpuset) {
 
-		if (cpumask_empty(cs->effective_cpus)) {
-			pos_css = css_rightmost_descendant(pos_css);
-			continue;
-		}
+        if (cpumask_empty(cs->effective_cpus)) {
+            pos_css = css_rightmost_descendant(pos_css);
+            continue;
+        }
 
-		css_get(&cs->css);
+        css_get(&cs->css);
 
-		rcu_read_unlock();
+        rcu_read_unlock();
 
-		dl_update_tasks_root_domain(cs) {struct css_task_iter it;
+        dl_update_tasks_root_domain(cs) {struct css_task_iter it;
             struct task_struct *task;
 
             if (cs->nr_deadline_tasks == 0)
@@ -11987,10 +11980,10 @@ void dl_rebuild_rd_accounting(void)
             css_task_iter_end(&it);
         }
 
-		rcu_read_lock();
-		css_put(&cs->css);
-	}
-	rcu_read_unlock();
+        rcu_read_lock();
+        css_put(&cs->css);
+    }
+    rcu_read_unlock();
 }
 ```
 
