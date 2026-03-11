@@ -8335,6 +8335,603 @@ static inline void local_lock_acquire(local_lock_t *l)
 
 ```
 
+## flock
+
+```c
+SYSCALL_DEFINE3(fcntl, unsigned int, fd, unsigned int, cmd, unsigned long, arg)
+{
+    CLASS(fd_raw, f)(fd);
+    long err;
+
+    if (fd_empty(f))
+        return -EBADF;
+
+    if (unlikely(fd_file(f)->f_mode & FMODE_PATH)) {
+        if (!check_fcntl_cmd(cmd))
+            return -EBADF;
+    }
+
+    err = security_file_fcntl(fd_file(f), cmd, arg);
+    if (!err)
+        err = do_fcntl(fd, cmd, arg, fd_file(f));
+
+    return err;
+}
+
+long do_fcntl(int fd, unsigned int cmd, unsigned long arg,
+        struct file *filp)
+{
+    void __user *argp = (void __user *)arg;
+    struct delegation deleg;
+    int argi = (int)arg;
+    struct flock flock;
+    long err = -EINVAL;
+
+    switch (cmd) {
+    case F_CREATED_QUERY:
+        err = f_created_query(filp);
+        break;
+    case F_DUPFD:
+        err = f_dupfd(argi, filp, 0);
+        break;
+    case F_DUPFD_CLOEXEC:
+        err = f_dupfd(argi, filp, O_CLOEXEC);
+        break;
+    case F_DUPFD_QUERY:
+        err = f_dupfd_query(argi, filp);
+        break;
+    case F_GETFD:
+        err = get_close_on_exec(fd) ? FD_CLOEXEC : 0;
+        break;
+    case F_SETFD:
+        err = 0;
+        set_close_on_exec(fd, argi & FD_CLOEXEC);
+        break;
+    case F_GETFL:
+        err = filp->f_flags;
+        break;
+    case F_SETFL:
+        err = setfl(fd, filp, argi);
+        break;
+#if BITS_PER_LONG != 32
+    /* 32-bit arches must use fcntl64() */
+    case F_OFD_GETLK:
+#endif
+    case F_GETLK:
+        if (copy_from_user(&flock, argp, sizeof(flock)))
+            return -EFAULT;
+        err = fcntl_getlk(filp, cmd, &flock);
+        if (!err && copy_to_user(argp, &flock, sizeof(flock)))
+            return -EFAULT;
+        break;
+#if BITS_PER_LONG != 32
+    /* 32-bit arches must use fcntl64() */
+    case F_OFD_SETLK:
+    case F_OFD_SETLKW:
+        fallthrough;
+#endif
+    case F_SETLK:
+    case F_SETLKW:
+        if (copy_from_user(&flock, argp, sizeof(flock)))
+            return -EFAULT;
+        err = fcntl_setlk(fd, filp, cmd, &flock);
+        break;
+    case F_GETOWN:
+        /* XXX If f_owner is a process group, the
+         * negative return value will get converted
+         * into an error.  Oops.  If we keep the
+         * current syscall conventions, the only way
+         * to fix this will be in libc. */
+        err = f_getown(filp);
+        force_successful_syscall_return();
+        break;
+    case F_SETOWN:
+        err = f_setown(filp, argi, 1);
+        break;
+    case F_GETOWN_EX:
+        err = f_getown_ex(filp, arg);
+        break;
+    case F_SETOWN_EX:
+        err = f_setown_ex(filp, arg);
+        break;
+    case F_GETOWNER_UIDS:
+        err = f_getowner_uids(filp, arg);
+        break;
+    case F_GETSIG:
+        err = f_owner_sig(filp, 0, false);
+        break;
+    case F_SETSIG:
+        err = f_owner_sig(filp, argi, true);
+        break;
+    case F_GETLEASE:
+        err = fcntl_getlease(filp);
+        break;
+    case F_SETLEASE:
+        err = fcntl_setlease(fd, filp, argi);
+        break;
+    case F_NOTIFY:
+        err = fcntl_dirnotify(fd, filp, argi);
+        break;
+    case F_SETPIPE_SZ:
+    case F_GETPIPE_SZ:
+        err = pipe_fcntl(filp, cmd, argi);
+        break;
+    case F_ADD_SEALS:
+    case F_GET_SEALS:
+        err = memfd_fcntl(filp, cmd, argi);
+        break;
+    case F_GET_RW_HINT:
+        err = fcntl_get_rw_hint(filp, arg);
+        break;
+    case F_SET_RW_HINT:
+        err = fcntl_set_rw_hint(filp, arg);
+        break;
+    case F_GETDELEG:
+        if (copy_from_user(&deleg, argp, sizeof(deleg)))
+            return -EFAULT;
+        err = fcntl_getdeleg(filp, &deleg);
+        if (!err && copy_to_user(argp, &deleg, sizeof(deleg)))
+            return -EFAULT;
+        break;
+    case F_SETDELEG:
+        if (copy_from_user(&deleg, argp, sizeof(deleg)))
+            return -EFAULT;
+        err = fcntl_setdeleg(fd, filp, &deleg);
+        break;
+    default:
+        break;
+    }
+    return err;
+}
+```
+
+### F_SETLKW
+
+```c
+int fcntl_setlk(unsigned int fd, struct file *filp, unsigned int cmd,
+        struct flock *flock)
+{
+    struct file_lock *file_lock = locks_alloc_lock();
+    struct inode *inode = file_inode(filp);
+    struct file *f;
+    int error;
+
+    if (file_lock == NULL)
+        return -ENOLCK;
+
+    error = flock_to_posix_lock(filp, file_lock, flock) {
+        struct flock64 ll = {
+            .l_type = l->l_type,
+            .l_whence = l->l_whence,
+            .l_start = l->l_start,
+            .l_len = l->l_len,
+        };
+
+        return flock64_to_posix_lock(filp, fl, &ll) {
+            switch (l->l_whence) {
+            case SEEK_SET:
+                fl->fl_start = 0;
+                break;
+            case SEEK_CUR:
+                fl->fl_start = filp->f_pos;
+                break;
+            case SEEK_END:
+                fl->fl_start = i_size_read(file_inode(filp));
+                break;
+            default:
+                return -EINVAL;
+            }
+            if (l->l_start > OFFSET_MAX - fl->fl_start)
+                return -EOVERFLOW;
+            fl->fl_start += l->l_start;
+            if (fl->fl_start < 0)
+                return -EINVAL;
+
+            /* POSIX-1996 leaves the case l->l_len < 0 undefined;
+            POSIX-2001 defines it. */
+            if (l->l_len > 0) {
+                if (l->l_len - 1 > OFFSET_MAX - fl->fl_start)
+                    return -EOVERFLOW;
+                fl->fl_end = fl->fl_start + (l->l_len - 1);
+
+            } else if (l->l_len < 0) {
+                if (fl->fl_start + l->l_len < 0)
+                    return -EINVAL;
+                fl->fl_end = fl->fl_start - 1;
+                fl->fl_start += l->l_len;
+            } else
+                fl->fl_end = OFFSET_MAX;
+
+            fl->c.flc_owner = current->files;
+            fl->c.flc_pid = current->tgid;
+            fl->c.flc_file = filp;
+            fl->c.flc_flags = FL_POSIX;
+            fl->fl_ops = NULL;
+            fl->fl_lmops = NULL;
+
+            return assign_type(&fl->c, l->l_type) {
+                switch (type) {
+                case F_RDLCK:
+                case F_WRLCK:
+                case F_UNLCK:
+                    flc->flc_type = type;
+                    break;
+                default:
+                    return -EINVAL;
+                }
+                return 0;
+            }
+        }
+    }
+    if (error)
+        goto out;
+
+    error = check_fmode_for_setlk(file_lock);
+    if (error)
+        goto out;
+
+    /* If the cmd is requesting file-private locks, then set the
+     * FL_OFDLCK flag and override the owner. */
+    switch (cmd) {
+    case F_OFD_SETLK:
+        error = -EINVAL;
+        if (flock->l_pid != 0)
+            goto out;
+
+        cmd = F_SETLK;
+        file_lock->c.flc_flags |= FL_OFDLCK;
+        file_lock->c.flc_owner = filp;
+        break;
+    case F_OFD_SETLKW:
+        error = -EINVAL;
+        if (flock->l_pid != 0)
+            goto out;
+
+        cmd = F_SETLKW;
+        file_lock->c.flc_flags |= FL_OFDLCK;
+        file_lock->c.flc_owner = filp;
+        fallthrough;
+    case F_SETLKW:
+        file_lock->c.flc_flags |= FL_SLEEP;
+    }
+
+    error = do_lock_file_wait(filp, cmd, file_lock);
+
+    /* Detect close/fcntl races and recover by zapping all POSIX locks
+     * associated with this file and our files_struct, just like on
+     * filp_flush(). There is no need to do that when we're
+     * unlocking though, or for OFD locks. */
+    if (!error && file_lock->c.flc_type != F_UNLCK &&
+        !(file_lock->c.flc_flags & FL_OFDLCK)) {
+        struct files_struct *files = current->files;
+        /* We need that spin_lock here - it prevents reordering between
+         * update of i_flctx->flc_posix and check for it done in
+         * close(). rcu_read_lock() wouldn't do. */
+        spin_lock(&files->file_lock);
+        f = files_lookup_fd_locked(files, fd);
+        spin_unlock(&files->file_lock);
+        if (f != filp) {
+            locks_remove_posix(filp, files);
+            error = -EBADF;
+        }
+    }
+out:
+    trace_fcntl_setlk(inode, file_lock, error);
+    locks_free_lock(file_lock);
+    return error;
+}
+
+int do_lock_file_wait(struct file *filp, unsigned int cmd,
+                 struct file_lock *fl)
+{
+    int error;
+
+    error = security_file_lock(filp, fl->c.flc_type);
+    if (error)
+        return error;
+
+    for (;;) {
+        error = vfs_lock_file(filp, cmd, fl, NULL) {
+            WARN_ON_ONCE(filp != fl->c.flc_file);
+            if (filp->f_op->lock)
+                return filp->f_op->lock(filp, cmd, fl);
+            else
+                return posix_lock_file(filp, fl, conf) {
+                    return posix_lock_inode(file_inode(filp), fl, conflock);
+                }
+        }
+        if (error != FILE_LOCK_DEFERRED)
+            break;
+        error = wait_event_interruptible(fl->c.flc_wait,
+                         list_empty(&fl->c.flc_blocked_member));
+        if (error)
+            break;
+    }
+    locks_delete_block(fl);
+
+    return error;
+}
+
+int posix_lock_inode(struct inode *inode, struct file_lock *request,
+                struct file_lock *conflock)
+{
+    struct file_lock *fl, *tmp;
+    struct file_lock *new_fl = NULL;
+    struct file_lock *new_fl2 = NULL;
+    struct file_lock *left = NULL;
+    struct file_lock *right = NULL;
+    struct file_lock_context *ctx;
+    int error;
+    bool added = false;
+    LIST_HEAD(dispose);
+    void *owner;
+    void (*func)(void);
+
+    ctx = locks_get_lock_context(inode, request->c.flc_type) {
+        struct file_lock_context *ctx;
+
+        ctx = locks_inode_context(inode) {
+            if (likely(!(smp_load_acquire(&inode->i_opflags) & IOP_FLCTX)))
+                return NULL;
+            return READ_ONCE(inode->i_flctx);
+        }
+        if (likely(ctx) || type == F_UNLCK)
+            goto out;
+
+        ctx = kmem_cache_alloc(flctx_cache, GFP_KERNEL);
+        if (!ctx)
+            goto out;
+
+        spin_lock_init(&ctx->flc_lock);
+        INIT_LIST_HEAD(&ctx->flc_flock);
+        INIT_LIST_HEAD(&ctx->flc_posix);
+        INIT_LIST_HEAD(&ctx->flc_lease);
+
+        /* Assign the pointer if it's not already assigned. If it is, then
+        * free the context we just allocated. */
+        spin_lock(&inode->i_lock);
+        if (!(inode->i_opflags & IOP_FLCTX)) {
+            VFS_BUG_ON_INODE(inode->i_flctx, inode);
+            WRITE_ONCE(inode->i_flctx, ctx);
+            /* Paired with locks_inode_context(). */
+            smp_store_release(&inode->i_opflags, inode->i_opflags | IOP_FLCTX);
+            spin_unlock(&inode->i_lock);
+        } else {
+            VFS_BUG_ON_INODE(!inode->i_flctx, inode);
+            spin_unlock(&inode->i_lock);
+            kmem_cache_free(flctx_cache, ctx);
+            ctx = locks_inode_context(inode);
+        }
+    out:
+        trace_locks_get_lock_context(inode, type, ctx);
+        return ctx;
+    }
+    if (!ctx)
+        return lock_is_unlock(request) ? 0 : -ENOMEM;
+
+    /* We may need two file_lock structures for this operation,
+     * so we get them in advance to avoid races.
+     *
+     * In some cases we can be sure, that no new locks will be needed */
+    if (!(request->c.flc_flags & FL_ACCESS) &&
+        (request->c.flc_type != F_UNLCK ||
+         request->fl_start != 0 || request->fl_end != OFFSET_MAX)) {
+        new_fl = locks_alloc_lock();
+        new_fl2 = locks_alloc_lock();
+    }
+
+retry:
+    percpu_down_read(&file_rwsem);
+    spin_lock(&ctx->flc_lock);
+    /* New lock request. Walk all POSIX locks and look for conflicts. If
+     * there are any, either return error or put the request on the
+     * blocker's list of waiters and the global blocked_hash. */
+    if (request->c.flc_type != F_UNLCK) {
+        list_for_each_entry(fl, &ctx->flc_posix, c.flc_list) {
+            ret = posix_locks_conflict(&request->c, &fl->c) {
+                truct file_lock *caller_fl = file_lock(caller_flc);
+                struct file_lock *sys_fl = file_lock(sys_flc);
+
+                /* POSIX locks owned by the same process do not conflict with
+                * each other.
+                */
+                if (posix_same_owner(caller_flc, sys_flc))
+                    return false;
+
+                /* Check whether they overlap */
+                if (!locks_overlap(caller_fl, sys_fl))
+                    return false;
+
+                return locks_conflict(caller_flc, sys_flc) {
+                    if (sys_flc->flc_type == F_WRLCK)
+                        return true;
+                    if (caller_flc->flc_type == F_WRLCK)
+                        return true;
+                    return false;
+                }
+            }
+            if (!ret)
+                continue;
+
+            if (fl->fl_lmops && fl->fl_lmops->lm_lock_expirable
+                && (*fl->fl_lmops->lm_lock_expirable)(fl)) {
+                owner = fl->fl_lmops->lm_mod_owner;
+                func = fl->fl_lmops->lm_expire_lock;
+                __module_get(owner);
+                spin_unlock(&ctx->flc_lock);
+                percpu_up_read(&file_rwsem);
+                (*func)();
+                module_put(owner);
+                goto retry;
+            }
+            if (conflock)
+                locks_copy_conflock(conflock, fl);
+            error = -EAGAIN;
+            if (!(request->c.flc_flags & FL_SLEEP))
+                goto out;
+            /* Deadlock detection and insertion into the blocked
+             * locks list must be done while holding the same lock! */
+            error = -EDEADLK;
+            spin_lock(&blocked_lock_lock);
+            /* Ensure that we don't find any locks blocked on this
+             * request during deadlock detection. */
+            __locks_wake_up_blocks(&request->c);
+
+            if (likely(!posix_locks_deadlock(request, fl))) {
+                error = FILE_LOCK_DEFERRED;
+                __locks_insert_block(&fl->c, &request->c, posix_locks_conflict);
+            }
+            spin_unlock(&blocked_lock_lock);
+            goto out;
+        }
+    }
+
+    /* If we're just looking for a conflict, we're done. */
+    error = 0;
+    if (request->c.flc_flags & FL_ACCESS)
+        goto out;
+
+    /* Find the first old lock with the same owner as the new lock */
+    list_for_each_entry(fl, &ctx->flc_posix, c.flc_list) {
+        if (posix_same_owner(&request->c, &fl->c))
+            break;
+    }
+
+    /* Process locks with this owner. */
+    list_for_each_entry_safe_from(fl, tmp, &ctx->flc_posix, c.flc_list) {
+        if (!posix_same_owner(&request->c, &fl->c))
+            break;
+
+        /* Detect adjacent or overlapping regions (if same lock type) */
+        if (request->c.flc_type == fl->c.flc_type) {
+            /* In all comparisons of start vs end, use
+             * "start - 1" rather than "end + 1". If end
+             * is OFFSET_MAX, end + 1 will become negative. */
+            if (fl->fl_end < request->fl_start - 1)
+                continue;
+            /* If the next lock in the list has entirely bigger
+             * addresses than the new one, insert the lock here. */
+            if (fl->fl_start - 1 > request->fl_end)
+                break;
+
+            /* If we come here, the new and old lock are of the
+             * same type and adjacent or overlapping. Make one
+             * lock yielding from the lower start address of both
+             * locks to the higher end address. */
+            if (fl->fl_start > request->fl_start)
+                fl->fl_start = request->fl_start;
+            else
+                request->fl_start = fl->fl_start;
+            if (fl->fl_end < request->fl_end)
+                fl->fl_end = request->fl_end;
+            else
+                request->fl_end = fl->fl_end;
+            if (added) {
+                locks_delete_lock_ctx(&fl->c, &dispose);
+                continue;
+            }
+            request = fl;
+            added = true;
+        } else {
+            /* Processing for different lock types is a bit
+             * more complex. */
+            if (fl->fl_end < request->fl_start)
+                continue;
+            if (fl->fl_start > request->fl_end)
+                break;
+            if (lock_is_unlock(request))
+                added = true;
+            if (fl->fl_start < request->fl_start)
+                left = fl;
+            /* If the next lock in the list has a higher end
+             * address than the new one, insert the new one here. */
+            if (fl->fl_end > request->fl_end) {
+                right = fl;
+                break;
+            }
+            if (fl->fl_start >= request->fl_start) {
+                /* The new lock completely replaces an old
+                 * one (This may happen several times). */
+                if (added) {
+                    locks_delete_lock_ctx(&fl->c, &dispose);
+                    continue;
+                }
+                /* Replace the old lock with new_fl, and
+                 * remove the old one. It's safe to do the
+                 * insert here since we know that we won't be
+                 * using new_fl later, and that the lock is
+                 * just replacing an existing lock. */
+                error = -ENOLCK;
+                if (!new_fl)
+                    goto out;
+                locks_copy_lock(new_fl, request);
+                locks_move_blocks(new_fl, request);
+                request = new_fl;
+                new_fl = NULL;
+                locks_insert_lock_ctx(&request->c,
+                              &fl->c.flc_list);
+                locks_delete_lock_ctx(&fl->c, &dispose);
+                added = true;
+            }
+        }
+    }
+
+    /* The above code only modifies existing locks in case of merging or
+     * replacing. If new lock(s) need to be inserted all modifications are
+     * done below this, so it's safe yet to bail out. */
+    error = -ENOLCK; /* "no luck" */
+    if (right && left == right && !new_fl2)
+        goto out;
+
+    error = 0;
+    if (!added) {
+        if (lock_is_unlock(request)) {
+            if (request->c.flc_flags & FL_EXISTS)
+                error = -ENOENT;
+            goto out;
+        }
+
+        if (!new_fl) {
+            error = -ENOLCK;
+            goto out;
+        }
+        locks_copy_lock(new_fl, request);
+        locks_move_blocks(new_fl, request);
+        locks_insert_lock_ctx(&new_fl->c, &fl->c.flc_list);
+        fl = new_fl;
+        new_fl = NULL;
+    }
+    if (right) {
+        if (left == right) {
+            /* The new lock breaks the old one in two pieces,
+             * so we have to use the second new lock. */
+            left = new_fl2;
+            new_fl2 = NULL;
+            locks_copy_lock(left, right);
+            locks_insert_lock_ctx(&left->c, &fl->c.flc_list);
+        }
+        right->fl_start = request->fl_end + 1;
+        locks_wake_up_blocks(&right->c);
+    }
+    if (left) {
+        left->fl_end = request->fl_start - 1;
+        locks_wake_up_blocks(&left->c);
+    }
+ out:
+    trace_posix_lock_inode(inode, request, error);
+    spin_unlock(&ctx->flc_lock);
+    percpu_up_read(&file_rwsem);
+    /* Free any unused locks. */
+    if (new_fl)
+        locks_free_lock(new_fl);
+    if (new_fl2)
+        locks_free_lock(new_fl2);
+    locks_dispose_list(&dispose);
+
+    return error;
+}
+```
+
 # vdso
 
 * [Unified Virtual Dynamic Shared Object (vDSO).ppt](https://lpc.events/event/7/contributions/664/attachments/509/918/Unified_vDSO_LPC_2020.pdf)
