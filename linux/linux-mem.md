@@ -21503,7 +21503,6 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
                         print_worker_info(log_lvl, current);
                         print_stop_info(log_lvl, current);
                         print_scx_info(log_lvl, current);
-                        }
                     }
                     print_pstate(regs);
 
@@ -21546,6 +21545,7 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 
                     printk("%sCall trace:\n", loglvl);
                     kunwind_stack_walk(dump_backtrace_entry, (void *)loglvl, tsk, regs);
+                        --->
 
                     put_task_stack(tsk);
                 }

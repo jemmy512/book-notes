@@ -119,6 +119,83 @@ noinline noinstr void arch_stack_walk(stack_trace_consume_fn consume_entry,
     };
 
     kunwind_stack_walk(arch_kunwind_consume_entry, &data, task, regs);
+        --->
+}
+```
+
+# dump_stack
+
+![](../images/kernel/trace-dump_stack.drawio.svg)
+
+```c
+asmlinkage __visible void dump_stack(void)
+{
+    dump_stack_lvl(KERN_DEFAULT);
+}
+
+void dump_stack_lvl(const char *log_lvl)
+{
+    bool in_panic = panic_on_this_cpu() {
+        return unlikely(atomic_read(&panic_cpu) == raw_smp_processor_id());
+    }
+    unsigned long flags;
+
+    /* Permit this cpu to perform nested stack dumps while serialising
+     * against other CPUs, unless this CPU is in panic.
+     *
+     * When in panic, non-panic CPUs are not permitted to store new
+     * printk messages so there is no need to synchronize the output.
+     * This avoids potential deadlock in panic() if another CPU is
+     * holding and unable to release the printk_cpu_sync. */
+    if (!in_panic)
+        printk_cpu_sync_get_irqsave(flags);
+
+    __dump_stack(log_lvl) {
+        dump_stack_print_info(log_lvl);
+	    show_stack(NULL, NULL, log_lvl) {
+            dump_backtrace(NULL, tsk, loglvl) {
+                pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
+
+                if (regs && user_mode(regs))
+                    return;
+
+                if (!tsk)
+                    tsk = current;
+
+                if (!try_get_task_stack(tsk))
+                    return;
+
+                printk("%sCall trace:\n", loglvl);
+                kunwind_stack_walk(dump_backtrace_entry, (void *)loglvl, tsk, regs);
+                    --->
+
+                put_task_stack(tsk);
+            }
+	        barrier();
+        }
+    }
+
+    if (!in_panic)
+        printk_cpu_sync_put_irqrestore(flags);
+}
+
+static bool dump_backtrace_entry(const struct kunwind_state *state, void *arg)
+{
+	const char *source = state_source_string(state);
+	union unwind_flags flags = state->flags;
+	bool has_info = source || flags.all;
+	char *loglvl = arg;
+
+    /* %pSb resolves pc to symbol */
+	printk("%s %pSb%s%s%s%s%s\n", loglvl,
+		(void *)state->common.pc,
+		has_info ? " (" : "",
+		source ? source : "",
+		flags.fgraph ? "F" : "",
+		flags.kretprobe ? "K" : "",
+		has_info ? ")" : "");
+
+	return true;
 }
 ```
 
@@ -203,7 +280,7 @@ kunwind_stack_walk(kunwind_consume_fn consume_state,
             };
         }
 
-        STACKINFO_EFI {
+        STACKINFO_EFI() {
             unsigned long high = (u64)efi_rt_stack_top;
             unsigned long low = high - THREAD_SIZE;
 
@@ -337,7 +414,7 @@ kunwind_next_frame_record(struct kunwind_state *state)
     unsigned long fp = state->common.fp;
     struct frame_record {
         u64     fp;
-        u64     lr;
+        u64     lr;F
     }                   *record;
     struct stack_info   *info;
     unsigned long new_fp, new_pc;
@@ -423,8 +500,8 @@ kunwind_next_frame_record_meta(struct kunwind_state *state) {
     struct task_struct *tsk = state->task;
     unsigned long fp = state->common.fp;
     struct frame_record_meta {
-        struct frame_record record;
-	    u64 type;
+        struct frame_record     record;
+        u64                     type;
     }                   *meta;
     struct stack_info   *info;
 
