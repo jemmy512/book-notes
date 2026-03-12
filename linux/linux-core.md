@@ -5734,6 +5734,11 @@ pi_faulted:
 
 ## spinlock
 
+* [[PATCH v16 00/14] qspinlock: a 4-byte queue spinlock with PV support](https://lore.kernel.org/1429901803-29771-1-git-send-email-Waiman.Long@hp.com/)
+* [[PATCH bpf-next v4 00/25] Resilient Queued Spin Lock](https://lore.kernel.org/20250316040541.108729-1-memxor@gmail.com/)
+
+---
+
 ![](../images/kernel/lock-spinlock-arch.png)
 
 ---
@@ -5806,8 +5811,8 @@ struct qnode {
 };
 
 /* task ctx, hardirq ctx, softirq ctx, nmi ctx */
-#define MAX_NODES    4
-static DEFINE_PER_CPU_ALIGNED(struct qnode, qnodes[MAX_NODES]);
+#define _Q_MAX_NODES    4
+static DEFINE_PER_CPU_ALIGNED(struct qnode, qnodes[_Q_MAX_NODES]);
 ```
 
 ### spin_lock
@@ -5856,15 +5861,25 @@ do { \
 /* include/linux/spinlock.h */
 static inline int do_raw_spin_trylock(raw_spinlock_t *lock)
 {
-    return arch_spin_trylock(&(lock)->raw_lock);
+    return arch_spin_trylock(&(lock)->raw_lock) {
+        return queued_spin_trylock(struct qspinlock *lock) {
+            int val = atomic_read(&lock->val);
+
+            if (unlikely(val))
+                return 0;
+
+            return likely(atomic_try_cmpxchg_acquire(&lock->val, &val, _Q_LOCKED_VAL));
+        }
+
+    }
 }
 
 /* kernel/locking/spinlock_debug.c */
 void do_raw_spin_lock(raw_spinlock_t *lock)
 {
-    debug_spin_lock_before(lock);
+    __acquire(lock);
     arch_spin_lock(&lock->raw_lock);
-    debug_spin_lock_after(lock);
+    mmiowb_spin_lock();
 }
 
 #define arch_spin_lock(l)    queued_spin_lock(l)
@@ -5883,6 +5898,8 @@ void queued_spin_lock(struct qspinlock *lock)
 #### queued_spin_lock_slowpath
 
 ```c
+/* @lock: Pointer to queued spinlock structure
+ * @val: Current value of the queued spinlock 32-bit word */
 void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 {
     struct mcs_spinlock *prev, *next, *node;
@@ -5906,7 +5923,9 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     /* trylock || pending
      * * 0,0,* -> 0,1,* -> 0,0,1 pending, trylock
      * fetch the whole lock value and set pending */
-    val = queued_fetch_set_pending_acquire(lock);
+    val = queued_fetch_set_pending_acquire(lock) {
+        return atomic_fetch_or_acquire(_Q_PENDING_VAL, &lock->val);
+    }
 
     /* If we observe contention, there is a concurrent locker.
      *
@@ -5931,8 +5950,19 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
      * sequentiality; this is because not all
      * clear_pending_set_locked() implementations imply full
      * barriers. */
-    if (val & _Q_LOCKED_MASK)
-        smp_cond_load_acquire(&lock->locked, !VAL);
+    if (val & _Q_LOCKED_MASK) {
+        smp_cond_load_acquire(&lock->locked, !VAL) {
+            typeof(ptr) __PTR = (ptr);
+            __unqual_scalar_typeof(*ptr) VAL;
+            for (;;) {
+                VAL = smp_load_acquire(__PTR);
+                if (cond_expr)
+                    break;
+                __cmpwait_relaxed(__PTR, VAL);
+            }
+            (typeof(*ptr))VAL;
+        }
+    }
 
     /* take ownership and clear the pending bit.
      *
@@ -6023,6 +6053,17 @@ pv_queue:
         pv_wait_node(node, prev);
         arch_mcs_spin_lock_contended(&node->locked) {
             smp_cond_load_acquire(l, VAL);
+            ({									\
+                typeof(ptr) __PTR = (ptr);					\
+                __unqual_scalar_typeof(*ptr) VAL;				\
+                for (;;) {							\
+                    VAL = smp_load_acquire(__PTR);				\
+                    if (cond_expr)						\
+                        break;						\
+                    __cmpwait_relaxed(__PTR, VAL);				\
+                }								\
+                (typeof(*ptr))VAL;						\
+            })
         }
 
         /* While waiting for the MCS lock, the next pointer may have
@@ -6055,7 +6096,24 @@ pv_queue:
     if ((val = pv_wait_head_or_lock(lock, node)))
         goto locked;
 
-    val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK));
+    val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK)) {
+        #define smp_cond_load_acquire(ptr, cond_expr) ({		\
+            __unqual_scalar_typeof(*ptr) _val;			\
+            _val = smp_cond_load_relaxed(ptr, cond_expr) {
+                typeof(ptr) __PTR = (ptr);				\
+                __unqual_scalar_typeof(*ptr) VAL;			\
+                for (;;) {						\
+                    VAL = READ_ONCE(*__PTR);			\
+                    if (cond_expr)					\
+                        break;					\
+                    cpu_relax();					\
+                }							\
+                (typeof(*ptr))VAL;
+            }
+            smp_acquire__after_ctrl_dep();				\
+            (typeof(*ptr))_val;					\
+        })
+    }
 
 locked:
     /* claim the lock:
@@ -6107,10 +6165,10 @@ spin_unlock(spinlock_t *lock) {
             do_raw_spin_unlock(lock) {
                 mmiowb_spin_unlock();
                 arch_spin_unlock(&lock->raw_lock) {
-                    u16 *ptr = (u16 *)lock + IS_ENABLED(CONFIG_CPU_BIG_ENDIAN);
-                    u32 val = atomic_read(lock);
-
-                    smp_store_release(ptr, (u16)val + 1);
+                   queued_spin_unlock(struct qspinlock *lock) {
+                        /* unlock() needs release semantics: */
+                        smp_store_release(&lock->locked, 0);
+                    }
                 }
                 __release(lock);
             }
@@ -8733,8 +8791,7 @@ retry:
                 struct file_lock *sys_fl = file_lock(sys_flc);
 
                 /* POSIX locks owned by the same process do not conflict with
-                * each other.
-                */
+                * each other. */
                 if (posix_same_owner(caller_flc, sys_flc))
                     return false;
 
