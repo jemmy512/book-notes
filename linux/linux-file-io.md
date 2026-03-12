@@ -1308,42 +1308,91 @@ anon_inode_getfile();
 ```c
 SYSCALL_DEFINE2(mkdir, const char __user *, pathname, umode_t, mode)
 {
-	CLASS(filename, name)(pathname);
-	return filename_mkdirat(AT_FDCWD, name, mode);
+    CLASS(filename, name)(pathname);
+    return filename_mkdirat(AT_FDCWD, name, mode);
 }
 
 int filename_mkdirat(int dfd, struct filename *name, umode_t mode)
 {
-	struct dentry *dentry;
-	struct path path;
-	int error;
-	unsigned int lookup_flags = LOOKUP_DIRECTORY;
-	struct delegated_inode delegated_inode = { };
+    struct dentry *dentry;
+    struct path path;
+    int error;
+    unsigned int lookup_flags = LOOKUP_DIRECTORY;
+    struct delegated_inode delegated_inode = { };
 
 retry:
-	dentry = filename_create(dfd, name, &path, lookup_flags);
-	if (IS_ERR(dentry))
-		return PTR_ERR(dentry);
+    dentry = filename_create(dfd, name, &path, lookup_flags);
+    if (IS_ERR(dentry))
+        return PTR_ERR(dentry);
 
-	error = security_path_mkdir(&path, dentry,
-			mode_strip_umask(path.dentry->d_inode, mode));
-	if (!error) {
-		dentry = vfs_mkdir(mnt_idmap(path.mnt), path.dentry->d_inode,
-				   dentry, mode, &delegated_inode);
-		if (IS_ERR(dentry))
-			error = PTR_ERR(dentry);
-	}
-	end_creating_path(&path, dentry);
-	if (is_delegated(&delegated_inode)) {
-		error = break_deleg_wait(&delegated_inode);
-		if (!error)
-			goto retry;
-	}
-	if (retry_estale(error, lookup_flags)) {
-		lookup_flags |= LOOKUP_REVAL;
-		goto retry;
-	}
-	return error;
+    error = security_path_mkdir(&path, dentry,
+            mode_strip_umask(path.dentry->d_inode, mode));
+    if (!error) {
+        dentry = vfs_mkdir(mnt_idmap(path.mnt), path.dentry->d_inode,
+                   dentry, mode, &delegated_inode);
+        if (IS_ERR(dentry))
+            error = PTR_ERR(dentry);
+    }
+    end_creating_path(&path, dentry);
+    if (is_delegated(&delegated_inode)) {
+        error = break_deleg_wait(&delegated_inode);
+        if (!error)
+            goto retry;
+    }
+    if (retry_estale(error, lookup_flags)) {
+        lookup_flags |= LOOKUP_REVAL;
+        goto retry;
+    }
+    return error;
+}
+```
+
+### filename_create
+
+```c
+struct dentry *filename_create(int dfd, struct filename *name,
+                      struct path *path, unsigned int lookup_flags)
+{
+    struct dentry *dentry = ERR_PTR(-EEXIST);
+    struct qstr last;
+    bool want_dir = lookup_flags & LOOKUP_DIRECTORY;
+    unsigned int reval_flag = lookup_flags & LOOKUP_REVAL;
+    unsigned int create_flags = LOOKUP_CREATE | LOOKUP_EXCL;
+    int type;
+    int error;
+
+    error = filename_parentat(dfd, name, reval_flag, path, &last, &type);
+    if (error)
+        return ERR_PTR(error);
+
+    /* Yucky last component or no last component at all?
+     * (foo/., foo/.., /////) */
+    if (unlikely(type != LAST_NORM))
+        goto out;
+
+    /* don't fail immediately if it's r/o, at least try to report other errors */
+    error = mnt_want_write(path->mnt);
+    /* Do the final lookup.  Suppress 'create' if there is a trailing
+     * '/', and a directory wasn't requested. */
+    if (last.name[last.len] && !want_dir)
+        create_flags &= ~LOOKUP_CREATE;
+    dentry = start_dirop(path->dentry, &last, reval_flag | create_flags);
+    if (IS_ERR(dentry))
+        goto out_drop_write;
+
+    if (unlikely(error))
+        goto fail;
+
+    return dentry;
+fail:
+    end_dirop(dentry);
+    dentry = ERR_PTR(error);
+out_drop_write:
+    if (!error)
+        mnt_drop_write(path->mnt);
+out:
+    path_put(path);
+    return dentry;
 }
 ```
 
@@ -1535,9 +1584,8 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                     if (!error)
                         error = ima_file_check(file, op->acc_mode);
                     if (!error && do_truncate) {
-                        error = handle_truncate(mnt_userns, file) {
-
-                        }
+                        error = handle_truncate(mnt_userns, file);
+                            --->
                     }
                     if (do_truncate)
                         mnt_drop_write(nd->path.mnt);
@@ -2190,9 +2238,660 @@ finish_lookup:
 }
 ```
 
+#### lookup_fast
+
+```c
+struct dentry *lookup_fast(struct nameidata *nd)
+{
+    struct dentry *dentry, *parent = nd->path.dentry;
+    int status = 1;
+
+    /* Rename seqlock is not required here because in the off chance
+     * of a false negative due to a concurrent rename, the caller is
+     * going to fall back to non-racy lookup. */
+    if (nd->flags & LOOKUP_RCU) {
+        dentry = __d_lookup_rcu(parent, &nd->last, &nd->next_seq);
+        if (unlikely(!dentry)) {
+            if (!try_to_unlazy(nd))
+                return ERR_PTR(-ECHILD);
+            return NULL;
+        }
+
+        /* This sequence count validates that the parent had no
+         * changes while we did the lookup of the dentry above. */
+        if (read_seqcount_retry(&parent->d_seq, nd->seq))
+            return ERR_PTR(-ECHILD);
+
+        status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
+        if (likely(status > 0))
+            return dentry;
+        if (!try_to_unlazy_next(nd, dentry))
+            return ERR_PTR(-ECHILD);
+        if (status == -ECHILD)
+            /* we'd been told to redo it in non-rcu mode */
+            status = d_revalidate(nd->inode, &nd->last,
+                          dentry, nd->flags);
+    } else {
+        dentry = __d_lookup(parent, &nd->last);
+        if (unlikely(!dentry))
+            return NULL;
+        status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
+    }
+    if (unlikely(status <= 0)) {
+        if (!status)
+            d_invalidate(dentry);
+        dput(dentry);
+        return ERR_PTR(status);
+    }
+    return dentry;
+}
+
+static unsigned int             d_hash_shift;
+static struct hlist_bl_head     *dentry_hashtable
+
+struct dentry *__d_lookup(const struct dentry *parent, const struct qstr *name)
+{
+    unsigned int hash = name->hash;
+    struct hlist_bl_head *b = d_hash(hash) {
+        return runtime_const_ptr(dentry_hashtable) +
+            runtime_const_shift_right_32(hashlen, d_hash_shift);
+    }
+    struct hlist_bl_node *node;
+    struct dentry *found = NULL;
+    struct dentry *dentry;
+
+    /* Note: There is significant duplication with __d_lookup_rcu which is
+     * required to prevent single threaded performance regressions
+     * especially on architectures where smp_rmb (in seqcounts) are costly.
+     * Keep the two functions in sync. */
+
+    /* The hash list is protected using RCU.
+     *
+     * Take d_lock when comparing a candidate dentry, to avoid races
+     * with d_move().
+     *
+     * It is possible that concurrent renames can mess up our list
+     * walk here and result in missing our dentry, resulting in the
+     * false-negative result. d_lookup() protects against concurrent
+     * renames using rename_lock seqlock.
+     *
+     * See Documentation/filesystems/path-lookup.txt for more details. */
+    rcu_read_lock();
+
+    hlist_bl_for_each_entry_rcu(dentry, node, b, d_hash) {
+
+        if (dentry->d_name.hash != hash)
+            continue;
+
+        spin_lock(&dentry->d_lock);
+        if (dentry->d_parent != parent)
+            goto next;
+        if (d_unhashed(dentry))
+            goto next;
+
+        if (!d_same_name(dentry, parent, name))
+            goto next;
+
+        dentry->d_lockref.count++;
+        found = dentry;
+        spin_unlock(&dentry->d_lock);
+        break;
+next:
+        spin_unlock(&dentry->d_lock);
+     }
+     rcu_read_unlock();
+
+     return found;
+}
+```
+
+#### lookup_slow
+
+```c
+static noinline struct dentry *lookup_slow(const struct qstr *name,
+                  struct dentry *dir,
+                  unsigned int flags)
+{
+    struct inode *inode = dir->d_inode;
+    struct dentry *res;
+    inode_lock_shared(inode);
+    res = __lookup_slow(name, dir, flags);
+    inode_unlock_shared(inode);
+    return res;
+}
+
+struct dentry *__lookup_slow(const struct qstr *name,
+                    struct dentry *dir,
+                    unsigned int flags)
+{
+    struct dentry *dentry, *old;
+    struct inode *inode = dir->d_inode;
+    DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+
+    /* Don't go there if it's already dead */
+    if (unlikely(IS_DEADDIR(inode)))
+        return ERR_PTR(-ENOENT);
+again:
+    dentry = d_alloc_parallel(dir, name, &wq);
+    if (IS_ERR(dentry))
+        return dentry;
+    if (unlikely(!d_in_lookup(dentry))) {
+        int error = d_revalidate(inode, name, dentry, flags) {
+            if (unlikely(dentry->d_flags & DCACHE_OP_REVALIDATE))
+                return dentry->d_op->d_revalidate(dir, name, dentry, flags);
+            else
+                return 1;
+        }
+        if (unlikely(error <= 0)) {
+            if (!error) {
+                d_invalidate(dentry);
+                dput(dentry);
+                goto again;
+            }
+            dput(dentry);
+            dentry = ERR_PTR(error);
+        }
+    } else {
+        old = inode->i_op->lookup(inode, dentry, flags);
+        d_lookup_done(dentry);
+        if (unlikely(old)) {
+            dput(dentry);
+            dentry = old;
+        }
+    }
+    return dentry;
+}
+
+void d_invalidate(struct dentry *dentry)
+{
+    bool had_submounts = false;
+    spin_lock(&dentry->d_lock);
+    if (d_unhashed(dentry)) {
+        spin_unlock(&dentry->d_lock);
+        return;
+    }
+    __d_drop(dentry) {
+        if (!d_unhashed(dentry)) {
+            ___d_drop(dentry) {
+                struct hlist_bl_head *b;
+                /* Hashed dentries are normally on the dentry hashtable,
+                * with the exception of those newly allocated by
+                * d_obtain_root, which are always IS_ROOT: */
+                if (unlikely(IS_ROOT(dentry)))
+                    b = &dentry->d_sb->s_roots;
+                else
+                    b = d_hash(dentry->d_name.hash);
+
+                hlist_bl_lock(b);
+                __hlist_bl_del(&dentry->d_hash);
+                hlist_bl_unlock(b);
+            }
+            dentry->d_hash.pprev = NULL;
+            write_seqcount_invalidate(&dentry->d_seq);
+        }
+    }
+    spin_unlock(&dentry->d_lock);
+
+    /* Negative dentries can be dropped without further checks */
+    if (!dentry->d_inode)
+        return;
+
+    shrink_dcache_parent(dentry) {
+        shrink_dcache_tree(parent, false);
+    }
+    for (;;) {
+        struct dentry *victim = NULL;
+        d_walk(dentry, &victim, find_submount);
+        if (!victim) {
+            if (had_submounts)
+                shrink_dcache_parent(dentry);
+            return;
+        }
+        had_submounts = true;
+        detach_mounts(victim);
+        dput(victim);
+    }
+}
+```
+
+#### lookup_open
+
+```c
+struct dentry *lookup_open(struct nameidata *nd, struct file *file,
+                  const struct open_flags *op,
+                  bool got_write, struct delegated_inode *delegated_inode)
+{
+    struct mnt_idmap *idmap;
+    struct dentry *dir = nd->path.dentry;
+    struct inode *dir_inode = dir->d_inode;
+    int open_flag = op->open_flag;
+    struct dentry *dentry;
+    int error, create_error = 0;
+    umode_t mode = op->mode;
+    DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+
+    if (unlikely(IS_DEADDIR(dir_inode)))
+        return ERR_PTR(-ENOENT);
+
+    file->f_mode &= ~FMODE_CREATED;
+    dentry = d_lookup(dir, &nd->last) {
+        struct dentry *dentry;
+        unsigned seq;
+
+        do {
+            seq = read_seqbegin(&rename_lock);
+            dentry = __d_lookup(parent, name);
+            if (dentry)
+                break;
+        } while (read_seqretry(&rename_lock, seq));
+        return dentry;
+    }
+
+    for (;;) {
+        if (!dentry) {
+            dentry = d_alloc_parallel(dir, &nd->last, &wq);
+            if (IS_ERR(dentry))
+                return dentry;
+        }
+        if (d_in_lookup(dentry))
+            break;
+
+        error = d_revalidate(dir_inode, &nd->last, dentry, nd->flags);
+        if (likely(error > 0))
+            break;
+        if (error)
+            goto out_dput;
+        d_invalidate(dentry);
+        dput(dentry);
+        dentry = NULL;
+    }
+    if (dentry->d_inode) {
+        /* Cached positive dentry: will open in f_op->open */
+        return dentry;
+    }
+
+    if (open_flag & O_CREAT)
+        audit_inode(nd->name, dir, AUDIT_INODE_PARENT);
+
+    /* Checking write permission is tricky, bacuse we don't know if we are
+     * going to actually need it: O_CREAT opens should work as long as the
+     * file exists.  But checking existence breaks atomicity.  The trick is
+     * to check access and if not granted clear O_CREAT from the flags.
+     *
+     * Another problem is returing the "right" error value (e.g. for an
+     * O_EXCL open we want to return EEXIST not EROFS). */
+    if (unlikely(!got_write))
+        open_flag &= ~O_TRUNC;
+    idmap = mnt_idmap(nd->path.mnt);
+    if (open_flag & O_CREAT) {
+        if (open_flag & O_EXCL)
+            open_flag &= ~O_TRUNC;
+        mode = vfs_prepare_mode(idmap, dir->d_inode, mode, mode, mode);
+        if (likely(got_write))
+            create_error = may_o_create(idmap, &nd->path,
+                            dentry, mode);
+        else
+            create_error = -EROFS;
+    }
+    if (create_error)
+        open_flag &= ~O_CREAT;
+    if (dir_inode->i_op->atomic_open) {
+        if (nd->flags & LOOKUP_DIRECTORY)
+            open_flag |= O_DIRECTORY;
+        dentry = atomic_open(&nd->path, dentry, file, open_flag, mode);
+        if (unlikely(create_error) && dentry == ERR_PTR(-ENOENT))
+            dentry = ERR_PTR(create_error);
+        return dentry;
+    }
+
+    if (d_in_lookup(dentry)) {
+        struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry, nd->flags);
+        d_lookup_done(dentry) {
+            if (unlikely(d_in_lookup(dentry))) {
+                __d_lookup_unhash_wake(dentry) {
+                    spin_lock(&dentry->d_lock);
+                    wq = __d_lookup_unhash(dentry) {
+                        wait_queue_head_t *d_wait;
+                        struct hlist_bl_head *b;
+
+                        lockdep_assert_held(&dentry->d_lock);
+
+                        b = in_lookup_hash(dentry->d_parent, dentry->d_name.hash);
+                        hlist_bl_lock(b);
+                        dentry->d_flags &= ~DCACHE_PAR_LOOKUP;
+                        __hlist_bl_del(&dentry->d_u.d_in_lookup_hash);
+                        d_wait = dentry->d_wait;
+                        dentry->d_wait = NULL;
+                        hlist_bl_unlock(b);
+                        INIT_HLIST_NODE(&dentry->d_u.d_alias);
+                        INIT_LIST_HEAD(&dentry->d_lru);
+                        return d_wait;
+                    }
+                    wake_up_all(wq);
+                    spin_unlock(&dentry->d_lock);
+                }
+            }
+        }
+        if (unlikely(res)) {
+            if (IS_ERR(res)) {
+                error = PTR_ERR(res);
+                goto out_dput;
+            }
+            dput(dentry);
+            dentry = res;
+        }
+    }
+
+    /* Negative dentry, just create the file */
+    if (!dentry->d_inode && (open_flag & O_CREAT)) {
+        /* but break the directory lease first! */
+        error = try_break_deleg(dir_inode, delegated_inode);
+        if (error)
+            goto out_dput;
+
+        file->f_mode |= FMODE_CREATED;
+        audit_inode_child(dir_inode, dentry, AUDIT_TYPE_CHILD_CREATE);
+        if (!dir_inode->i_op->create) {
+            error = -EACCES;
+            goto out_dput;
+        }
+
+        error = dir_inode->i_op->create(idmap, dir_inode, dentry, mode, open_flag & O_EXCL);
+        if (error)
+            goto out_dput;
+    }
+    if (unlikely(create_error) && !dentry->d_inode) {
+        error = create_error;
+        goto out_dput;
+    }
+    return dentry;
+
+out_dput:
+    dput(dentry);
+    return ERR_PTR(error);
+}
+```
+
+#### d_alloc_parallel
+
+```c
+#define IN_LOOKUP_SHIFT 10
+static struct hlist_bl_head in_lookup_hashtable[1 << IN_LOOKUP_SHIFT];
+
+
+struct dentry *d_alloc_parallel(struct dentry *parent,
+                const struct qstr *name,
+                wait_queue_head_t *wq)
+{
+    unsigned int hash = name->hash;
+    struct hlist_bl_head *b = in_lookup_hash(parent, hash) {
+        hash += (unsigned long) parent / L1_CACHE_BYTES;
+        return in_lookup_hashtable + hash_32(hash, IN_LOOKUP_SHIFT);
+    }
+    struct hlist_bl_node *node;
+    struct dentry *new = __d_alloc(parent->d_sb, name);
+    struct dentry *dentry;
+    unsigned seq, r_seq, d_seq;
+
+    if (unlikely(!new))
+        return ERR_PTR(-ENOMEM);
+
+    new->d_flags |= DCACHE_PAR_LOOKUP;
+    spin_lock(&parent->d_lock);
+    new->d_parent = dget_dlock(parent);
+    hlist_add_head(&new->d_sib, &parent->d_children);
+    if (parent->d_flags & DCACHE_DISCONNECTED)
+        new->d_flags |= DCACHE_DISCONNECTED;
+    spin_unlock(&parent->d_lock);
+
+retry:
+    rcu_read_lock();
+    seq = smp_load_acquire(&parent->d_inode->i_dir_seq);
+    r_seq = read_seqbegin(&rename_lock);
+    dentry = __d_lookup_rcu(parent, name, &d_seq);
+    if (unlikely(dentry)) {
+        if (!lockref_get_not_dead(&dentry->d_lockref)) {
+            rcu_read_unlock();
+            goto retry;
+        }
+        if (read_seqcount_retry(&dentry->d_seq, d_seq)) {
+            rcu_read_unlock();
+            dput(dentry);
+            goto retry;
+        }
+        rcu_read_unlock();
+        dput(new);
+        return dentry;
+    }
+    if (unlikely(read_seqretry(&rename_lock, r_seq))) {
+        rcu_read_unlock();
+        goto retry;
+    }
+
+    if (unlikely(seq & 1)) {
+        rcu_read_unlock();
+        goto retry;
+    }
+
+    hlist_bl_lock(b);
+    if (unlikely(READ_ONCE(parent->d_inode->i_dir_seq) != seq)) {
+        hlist_bl_unlock(b);
+        rcu_read_unlock();
+        goto retry;
+    }
+    /* No changes for the parent since the beginning of d_lookup().
+     * Since all removals from the chain happen with hlist_bl_lock(),
+     * any potential in-lookup matches are going to stay here until
+     * we unlock the chain.  All fields are stable in everything
+     * we encounter. */
+    hlist_bl_for_each_entry(dentry, node, b, d_u.d_in_lookup_hash) {
+        if (dentry->d_name.hash != hash)
+            continue;
+        if (dentry->d_parent != parent)
+            continue;
+        if (!d_same_name(dentry, parent, name))
+            continue;
+        hlist_bl_unlock(b);
+        /* now we can try to grab a reference */
+        if (!lockref_get_not_dead(&dentry->d_lockref)) {
+            rcu_read_unlock();
+            goto retry;
+        }
+
+        rcu_read_unlock();
+        /* somebody is likely to be still doing lookup for it;
+         * wait for them to finish */
+        spin_lock(&dentry->d_lock);
+        d_wait_lookup(dentry) {
+            if (d_in_lookup(dentry)) {
+                DECLARE_WAITQUEUE(wait, current);
+                add_wait_queue(dentry->d_wait, &wait);
+                do {
+                    set_current_state(TASK_UNINTERRUPTIBLE);
+                    spin_unlock(&dentry->d_lock);
+                    schedule();
+                    spin_lock(&dentry->d_lock);
+                } while (d_in_lookup(dentry));
+            }
+        }
+        /* it's not in-lookup anymore; in principle we should repeat
+         * everything from dcache lookup, but it's likely to be what
+         * d_lookup() would've found anyway.  If it is, just return it;
+         * otherwise we really have to repeat the whole thing. */
+        if (unlikely(dentry->d_name.hash != hash))
+            goto mismatch;
+        if (unlikely(dentry->d_parent != parent))
+            goto mismatch;
+        if (unlikely(d_unhashed(dentry)))
+            goto mismatch;
+        if (unlikely(!d_same_name(dentry, parent, name)))
+            goto mismatch;
+        /* OK, it *is* a hashed match; return it */
+        spin_unlock(&dentry->d_lock);
+        dput(new);
+        return dentry;
+    }
+    rcu_read_unlock();
+    new->d_wait = wq;
+    hlist_bl_add_head(&new->d_u.d_in_lookup_hash, b);
+    hlist_bl_unlock(b);
+    return new;
+mismatch:
+    spin_unlock(&dentry->d_lock);
+    dput(dentry);
+    goto retry;
+}
+```
+
+### handle_truncate
+
+```c
+```
+
 ### do_tmpfile
 
 ### do_o_path
+
+### shrink_dcache_tree
+
+```c
+static void shrink_dcache_tree(struct dentry *parent, bool for_umount) {
+    for (;;) {
+        struct select_data data = {.start = parent};
+
+        INIT_LIST_HEAD(&data.dispose);
+        d_walk(parent, &data, for_umount
+            ? select_collect_umount : select_collect);
+
+        if (!list_empty(&data.dispose)) {
+            shrink_dentry_list(&data.dispose);
+            continue;
+        }
+
+        cond_resched();
+        if (!data.found)
+            break;
+        data.victim = NULL;
+        d_walk(parent, &data, select_collect2);
+        if (data.victim) {
+            spin_lock(&data.victim->d_lock);
+            if (!lock_for_kill(data.victim)) {
+                spin_unlock(&data.victim->d_lock);
+                rcu_read_unlock();
+            } else {
+                shrink_kill(data.victim);
+            }
+        }
+        if (!list_empty(&data.dispose))
+            shrink_dentry_list(&data.dispose);
+    }
+}
+
+void shrink_dentry_list(struct list_head *list)
+{
+    while (!list_empty(list)) {
+        struct dentry *dentry;
+
+        dentry = list_entry(list->prev, struct dentry, d_lru);
+        spin_lock(&dentry->d_lock);
+        rcu_read_lock();
+        if (!lock_for_kill(dentry)) {
+            bool can_free;
+            rcu_read_unlock();
+            d_shrink_del(dentry);
+            can_free = dentry->d_flags & DCACHE_DENTRY_KILLED;
+            spin_unlock(&dentry->d_lock);
+            if (can_free)
+                dentry_free(dentry);
+            continue;
+        }
+
+        d_shrink_del(dentry) {
+            D_FLAG_VERIFY(dentry, DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);
+            list_del_init(&dentry->d_lru);
+            dentry->d_flags &= ~(DCACHE_SHRINK_LIST | DCACHE_LRU_LIST);
+            this_cpu_dec(nr_dentry_unused);
+        }
+
+        shrink_kill(dentry);
+    }
+}
+
+void shrink_kill(struct dentry *victim)
+{
+    do {
+        rcu_read_unlock();
+        victim = __dentry_kill(victim);
+        rcu_read_lock();
+    } while (victim && lock_for_kill(victim));
+    rcu_read_unlock();
+    if (victim)
+        spin_unlock(&victim->d_lock);
+}
+
+struct dentry *__dentry_kill(struct dentry *dentry)
+{
+    struct dentry *parent = NULL;
+    bool can_free = true;
+
+    /* The dentry is now unrecoverably dead to the world. */
+    lockref_mark_dead(&dentry->d_lockref);
+
+    /* inform the fs via d_prune that this dentry is about to be
+     * unhashed and destroyed. */
+    if (dentry->d_flags & DCACHE_OP_PRUNE)
+        dentry->d_op->d_prune(dentry);
+
+    if (dentry->d_flags & DCACHE_LRU_LIST) {
+        if (!(dentry->d_flags & DCACHE_SHRINK_LIST))
+            d_lru_del(dentry);
+    }
+    /* if it was on the hash then remove it */
+    __d_drop(dentry);
+
+    if (dentry->d_inode) {
+        dentry_unlink_inode(dentry) {
+            struct inode *inode = dentry->d_inode;
+
+            raw_write_seqcount_begin(&dentry->d_seq);
+            __d_clear_type_and_inode(dentry);
+            hlist_del_init(&dentry->d_u.d_alias);
+            raw_write_seqcount_end(&dentry->d_seq);
+            spin_unlock(&dentry->d_lock);
+            spin_unlock(&inode->i_lock);
+            if (!inode->i_nlink)
+                fsnotify_inoderemove(inode);
+            if (dentry->d_op && dentry->d_op->d_iput)
+                dentry->d_op->d_iput(dentry, inode);
+            else
+                iput(inode);
+        }
+    } else
+        spin_unlock(&dentry->d_lock);
+    this_cpu_dec(nr_dentry);
+    if (dentry->d_op && dentry->d_op->d_release)
+        dentry->d_op->d_release(dentry);
+
+    cond_resched();
+    /* now that it's negative, ->d_parent is stable */
+    if (!IS_ROOT(dentry)) {
+        parent = dentry->d_parent;
+        spin_lock(&parent->d_lock);
+    }
+    spin_lock_nested(&dentry->d_lock, DENTRY_D_LOCK_NESTED);
+    dentry_unlist(dentry);
+    if (dentry->d_flags & DCACHE_SHRINK_LIST)
+        can_free = false;
+    spin_unlock(&dentry->d_lock);
+    if (likely(can_free))
+        dentry_free(dentry);
+    if (parent && --parent->d_lockref.count) {
+        spin_unlock(&parent->d_lock);
+        return NULL;
+    }
+    return parent;
+}
+```
 
 ## read-write
 
@@ -13667,18 +14366,17 @@ void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 
 ```c
 struct proc_dir_entry proc_root = {
-    .low_ino    = PROC_ROOT_INO,
-    .namelen    = 5,
-    .mode       = S_IFDIR | S_IRUGO | S_IXUGO,
-    .nlink      = 2,
-    .refcnt     = REFCOUNT_INIT(1),
-    .proc_iops  = &proc_root_inode_operations,
+    .low_ino        = PROC_ROOT_INO,
+    .namelen        = 5,
+    .mode           = S_IFDIR | S_IRUGO | S_IXUGO,
+    .nlink          = 2,
+    .refcnt         = REFCOUNT_INIT(1),
+    .proc_iops      = &proc_root_inode_operations,
     .proc_dir_ops   = &proc_root_operations,
-    .parent     = &proc_root,
-    .subdir     = RB_ROOT,
-    .name       = "/proc",
+    .parent         = &proc_root,
+    .subdir         = RB_ROOT,
+    .name           = "/proc",
 };
-
 
 struct proc_dir_entry {
     /* number of callers into module in progress;
@@ -13720,28 +14418,6 @@ struct proc_dir_entry {
     char                    inline_name[];
 };
 
-struct seq_file {
-    char    *buf;
-    size_t  size;
-    size_t  from;
-    size_t  count;
-    size_t  pad_until;
-    loff_t  index;
-    loff_t  read_pos;
-    struct  mutex lock;
-    const struct seq_operations *op;
-    int                 poll_event;
-    const struct file   *file;
-    void                *private;
-};
-
-struct seq_operations {
-    void *(*start) (struct seq_file *m, loff_t *pos);
-    void (*stop) (struct seq_file *m, void *v);
-    void *(*next) (struct seq_file *m, void *v, loff_t *pos);
-    int (*show) (struct seq_file *m, void *v);
-};
-
 static const struct proc_ops proc_single_ops = {
     /* not permanent -- can call into arbitrary ->single_show */
     .proc_open          = proc_single_open,
@@ -13749,6 +14425,245 @@ static const struct proc_ops proc_single_ops = {
     .proc_lseek         = seq_lseek,
     .proc_release       = single_release,
 };
+```
+
+### proc_root_inode_operations
+
+```c
+static const struct inode_operations proc_root_inode_operations = {
+    .lookup     = proc_root_lookup,
+    .getattr    = proc_root_getattr,
+};
+```
+
+### proc_root_init
+
+```c
+void __init proc_root_init(void)
+{
+    proc_init_kmemcache();
+    set_proc_pid_nlink();
+    proc_self_init();
+    proc_thread_self_init();
+    proc_symlink("mounts", NULL, "self/mounts");
+
+    proc_net_init();
+    proc_mkdir("fs", NULL);
+    proc_mkdir("driver", NULL);
+    proc_create_mount_point("fs/nfsd"); /* somewhere for the nfsd filesystem to be mounted */
+#if defined(CONFIG_SUN_OPENPROMFS) || defined(CONFIG_SUN_OPENPROMFS_MODULE)
+    /* just give it a mountpoint */
+    proc_create_mount_point("openprom");
+#endif
+    proc_tty_init();
+    proc_mkdir("bus", NULL);
+    proc_sys_init();
+
+    /* Last things last. It is not like userspace processes eager
+     * to open /proc files exist at this point but register last
+     * anyway. */
+    register_filesystem(&proc_fs_type);
+}
+```
+
+### proc_fs_type
+
+```c
+static struct file_system_type proc_fs_type = {
+    .name               = "proc",
+    .init_fs_context    = proc_init_fs_context,
+    .parameters         = proc_fs_parameters,
+    .kill_sb            = proc_kill_sb,
+    .fs_flags           = FS_USERNS_MOUNT | FS_DISALLOW_NOTIFY_PERM,
+};
+
+static int proc_init_fs_context(struct fs_context *fc)
+{
+    struct proc_fs_context *ctx;
+
+    ctx = kzalloc_obj(struct proc_fs_context);
+    if (!ctx)
+        return -ENOMEM;
+
+    ctx->pid_ns = get_pid_ns(task_active_pid_ns(current));
+    put_user_ns(fc->user_ns);
+    fc->user_ns = get_user_ns(ctx->pid_ns->user_ns);
+    fc->fs_private = ctx;
+    fc->ops = &proc_fs_context_ops;
+    return 0;
+}
+
+static const struct fs_context_operations proc_fs_context_ops = {
+    .free           = proc_fs_context_free,
+    .parse_param    = proc_parse_param,
+    .get_tree       = proc_get_tree,
+    .reconfigure    = proc_reconfigure,
+};
+
+static int proc_get_tree(struct fs_context *fc)
+{
+    return get_tree_nodev(fc, proc_fill_super);
+}
+
+int proc_fill_super(struct super_block *s, struct fs_context *fc)
+{
+    struct proc_fs_context *ctx = fc->fs_private;
+    struct inode *root_inode;
+    struct proc_fs_info *fs_info;
+    int ret;
+
+    fs_info = kzalloc_obj(*fs_info);
+    if (!fs_info)
+        return -ENOMEM;
+
+    fs_info->pid_ns = get_pid_ns(ctx->pid_ns);
+    proc_apply_options(fs_info, fc, current_user_ns());
+
+    /* User space would break if executables or devices appear on proc */
+    s->s_iflags |= SB_I_USERNS_VISIBLE | SB_I_NOEXEC | SB_I_NODEV;
+    s->s_flags |= SB_NODIRATIME | SB_NOSUID | SB_NOEXEC;
+    s->s_blocksize = 1024;
+    s->s_blocksize_bits = 10;
+    s->s_magic = PROC_SUPER_MAGIC;
+    s->s_op = &proc_sops;
+    s->s_time_gran = 1;
+    s->s_fs_info = fs_info;
+
+    /* procfs isn't actually a stacking filesystem; however, there is
+     * too much magic going on inside it to permit stacking things on
+     * top of it */
+    s->s_stack_depth = FILESYSTEM_MAX_STACK_DEPTH;
+
+    /* procfs dentries and inodes don't require IO to create */
+    s->s_shrink->seeks = 0;
+
+    pde_get(&proc_root);
+    root_inode = proc_get_inode(s, &proc_root);
+    if (!root_inode) {
+        pr_err("proc_fill_super: get root inode failed\n");
+        return -ENOMEM;
+    }
+
+    s->s_root = d_make_root(root_inode);
+    if (!s->s_root) {
+        pr_err("proc_fill_super: allocate dentry failed\n");
+        return -ENOMEM;
+    }
+
+    ret = proc_setup_self(s);
+    if (ret) {
+        return ret;
+    }
+    return proc_setup_thread_self(s);
+}
+```
+
+### proc_root_operations
+
+```c
+static const struct file_operations proc_root_operations = {
+    .read         = generic_read_dir,
+    .iterate_shared     = proc_root_readdir,
+    .llseek        = generic_file_llseek,
+};
+```
+
+#### proc_root_readdir
+
+```c
+static int proc_root_readdir(struct file *file, struct dir_context *ctx)
+{
+    if (ctx->pos < FIRST_PROCESS_ENTRY) {
+        int error = proc_readdir(file, ctx);
+        if (unlikely(error <= 0))
+            return error;
+        ctx->pos = FIRST_PROCESS_ENTRY;
+    }
+
+    return proc_pid_readdir(file, ctx);
+}
+
+int proc_pid_readdir(struct file *file, struct dir_context *ctx)
+{
+    struct tgid_iter iter;
+    struct proc_fs_info *fs_info = proc_sb_info(file_inode(file)->i_sb);
+    struct pid_namespace *ns = proc_pid_ns(file_inode(file)->i_sb);
+    loff_t pos = ctx->pos;
+
+    if (pos >= PID_MAX_LIMIT + TGID_OFFSET)
+        return 0;
+
+    if (pos == TGID_OFFSET - 2) {
+        if (!dir_emit(ctx, "self", 4, self_inum, DT_LNK))
+            return 0;
+        ctx->pos = pos = pos + 1;
+    }
+    if (pos == TGID_OFFSET - 1) {
+        if (!dir_emit(ctx, "thread-self", 11, thread_self_inum, DT_LNK))
+            return 0;
+        ctx->pos = pos = pos + 1;
+    }
+    iter.tgid = pos - TGID_OFFSET;
+    iter.task = NULL;
+    for (iter = next_tgid(ns, iter);
+         iter.task;
+         iter.tgid += 1, iter = next_tgid(ns, iter)) {
+        char name[10 + 1];
+        unsigned int len;
+
+        cond_resched();
+        if (!has_pid_permissions(fs_info, iter.task, HIDEPID_INVISIBLE))
+            continue;
+
+        len = snprintf(name, sizeof(name), "%u", iter.tgid);
+        ctx->pos = iter.tgid + TGID_OFFSET;
+        if (!proc_fill_cache(file, ctx, name, len, proc_pid_instantiate, iter.task, NULL)) {
+            put_task_struct(iter.task);
+            return 0;
+        }
+    }
+    ctx->pos = PID_MAX_LIMIT + TGID_OFFSET;
+    return 0;
+}
+
+bool proc_fill_cache(struct file *file, struct dir_context *ctx,
+    const char *name, unsigned int len,
+    instantiate_t instantiate, struct task_struct *task, const void *ptr)
+{
+    struct dentry *child, *dir = file->f_path.dentry;
+    struct qstr qname = QSTR_INIT(name, len);
+    struct inode *inode;
+    unsigned type = DT_UNKNOWN;
+    ino_t ino = 1;
+
+    child = try_lookup_noperm(&qname, dir);
+    if (IS_ERR(child))
+        goto end_instantiate;
+
+    if (!child) {
+        DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
+        child = d_alloc_parallel(dir, &qname, &wq);
+        if (IS_ERR(child))
+            goto end_instantiate;
+        if (d_in_lookup(child)) {
+            struct dentry *res;
+            res = instantiate(child, task, ptr);
+            d_lookup_done(child);
+            if (unlikely(res)) {
+                dput(child);
+                child = res;
+                if (IS_ERR(child))
+                    goto end_instantiate;
+            }
+        }
+    }
+    inode = d_inode(child);
+    ino = inode->i_ino;
+    type = inode->i_mode >> 12;
+    dput(child);
+end_instantiate:
+    return dir_emit(ctx, name, len, ino, type);
+}
 ```
 
 ### proc_dir_operations
@@ -14015,10 +14930,10 @@ struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
 ```c
 static const struct proc_ops proc_single_ops = {
     /* not permanent -- can call into arbitrary ->single_show */
-    .proc_open            = proc_single_open,
+    .proc_open          = proc_single_open,
     .proc_read_iter     = seq_read_iter,
-    .proc_lseek            = seq_lseek,
-    .proc_release        = single_release,
+    .proc_lseek         = seq_lseek,
+    .proc_release       = single_release,
 };
 ```
 
@@ -14205,199 +15120,6 @@ Done:
 Enomem:
     err = -ENOMEM;
     goto Done;
-}
-```
-
-### /proc/iomem
-
-```c
-struct resource ioport_resource = {
-    .name       = "PCI IO",
-    .start      = 0,
-    .end        = IO_SPACE_LIMIT,
-    .flags      = IORESOURCE_IO,
-};
-EXPORT_SYMBOL(ioport_resource);
-
-struct resource iomem_resource = {
-    .name       = "PCI mem",
-    .start      = 0,
-    .end        = -1,
-    .flags      = IORESOURCE_MEM,
-};
-
-static void __init request_standard_resources(void)
-{
-    struct memblock_region *region;
-    struct resource *res;
-    unsigned long i = 0;
-    size_t res_size;
-
-    kernel_code.start   = __pa_symbol(_text);
-    kernel_code.end     = __pa_symbol(__init_begin - 1);
-    kernel_data.start   = __pa_symbol(_sdata);
-    kernel_data.end     = __pa_symbol(_end - 1);
-    insert_resource(&iomem_resource, &kernel_code);
-    insert_resource(&iomem_resource, &kernel_data);
-}
-
-static struct resource mem_res[] = {
-    {
-        .name = "Kernel code",
-        .start = 0,
-        .end = 0,
-        .flags = IORESOURCE_SYSTEM_RAM
-    },
-    {
-        .name = "Kernel data",
-        .start = 0,
-        .end = 0,
-        .flags = IORESOURCE_SYSTEM_RAM
-    }
-};
-```
-
-```c
-proc_create_seq_data("iomem", 0, NULL, &resource_op, &iomem_resource);
-
-#define proc_create_seq_data(name, mode, parent, ops, data) \
-    proc_create_seq_private(name, mode, parent, ops, 0, data)
-
-struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
-        struct proc_dir_entry *parent, const struct seq_operations *ops,
-        unsigned int state_size, void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    p->proc_ops = &proc_seq_ops;
-    p->seq_ops = ops;
-    p->state_size = state_size;
-    return proc_register(parent, p);
-}
-```
-
-### proc_root_init
-
-```c
-void __init proc_root_init(void)
-{
-    proc_init_kmemcache();
-    set_proc_pid_nlink();
-    proc_self_init();
-    proc_thread_self_init();
-    proc_symlink("mounts", NULL, "self/mounts");
-
-    proc_net_init();
-    proc_mkdir("fs", NULL);
-    proc_mkdir("driver", NULL);
-    proc_create_mount_point("fs/nfsd"); /* somewhere for the nfsd filesystem to be mounted */
-#if defined(CONFIG_SUN_OPENPROMFS) || defined(CONFIG_SUN_OPENPROMFS_MODULE)
-    /* just give it a mountpoint */
-    proc_create_mount_point("openprom");
-#endif
-    proc_tty_init();
-    proc_mkdir("bus", NULL);
-    proc_sys_init();
-
-    /* Last things last. It is not like userspace processes eager
-     * to open /proc files exist at this point but register last
-     * anyway. */
-    register_filesystem(&proc_fs_type);
-}
-```
-
-### proc_fs_type
-
-```c
-static struct file_system_type proc_fs_type = {
-    .name               = "proc",
-    .init_fs_context    = proc_init_fs_context,
-    .parameters         = proc_fs_parameters,
-    .kill_sb            = proc_kill_sb,
-    .fs_flags           = FS_USERNS_MOUNT | FS_DISALLOW_NOTIFY_PERM,
-};
-
-static int proc_init_fs_context(struct fs_context *fc)
-{
-    struct proc_fs_context *ctx;
-
-    ctx = kzalloc_obj(struct proc_fs_context);
-    if (!ctx)
-        return -ENOMEM;
-
-    ctx->pid_ns = get_pid_ns(task_active_pid_ns(current));
-    put_user_ns(fc->user_ns);
-    fc->user_ns = get_user_ns(ctx->pid_ns->user_ns);
-    fc->fs_private = ctx;
-    fc->ops = &proc_fs_context_ops;
-    return 0;
-}
-
-static const struct fs_context_operations proc_fs_context_ops = {
-    .free           = proc_fs_context_free,
-    .parse_param    = proc_parse_param,
-    .get_tree       = proc_get_tree,
-    .reconfigure    = proc_reconfigure,
-};
-
-static int proc_get_tree(struct fs_context *fc)
-{
-    return get_tree_nodev(fc, proc_fill_super);
-}
-
-int proc_fill_super(struct super_block *s, struct fs_context *fc)
-{
-    struct proc_fs_context *ctx = fc->fs_private;
-    struct inode *root_inode;
-    struct proc_fs_info *fs_info;
-    int ret;
-
-    fs_info = kzalloc_obj(*fs_info);
-    if (!fs_info)
-        return -ENOMEM;
-
-    fs_info->pid_ns = get_pid_ns(ctx->pid_ns);
-    proc_apply_options(fs_info, fc, current_user_ns());
-
-    /* User space would break if executables or devices appear on proc */
-    s->s_iflags |= SB_I_USERNS_VISIBLE | SB_I_NOEXEC | SB_I_NODEV;
-    s->s_flags |= SB_NODIRATIME | SB_NOSUID | SB_NOEXEC;
-    s->s_blocksize = 1024;
-    s->s_blocksize_bits = 10;
-    s->s_magic = PROC_SUPER_MAGIC;
-    s->s_op = &proc_sops;
-    s->s_time_gran = 1;
-    s->s_fs_info = fs_info;
-
-    /* procfs isn't actually a stacking filesystem; however, there is
-     * too much magic going on inside it to permit stacking things on
-     * top of it */
-    s->s_stack_depth = FILESYSTEM_MAX_STACK_DEPTH;
-
-    /* procfs dentries and inodes don't require IO to create */
-    s->s_shrink->seeks = 0;
-
-    pde_get(&proc_root);
-    root_inode = proc_get_inode(s, &proc_root);
-    if (!root_inode) {
-        pr_err("proc_fill_super: get root inode failed\n");
-        return -ENOMEM;
-    }
-
-    s->s_root = d_make_root(root_inode);
-    if (!s->s_root) {
-        pr_err("proc_fill_super: allocate dentry failed\n");
-        return -ENOMEM;
-    }
-
-    ret = proc_setup_self(s);
-    if (ret) {
-        return ret;
-    }
-    return proc_setup_thread_self(s);
 }
 ```
 
@@ -14707,7 +15429,102 @@ failed:
 }
 ```
 
+### /proc/iomem
+
+```c
+struct resource ioport_resource = {
+    .name       = "PCI IO",
+    .start      = 0,
+    .end        = IO_SPACE_LIMIT,
+    .flags      = IORESOURCE_IO,
+};
+EXPORT_SYMBOL(ioport_resource);
+
+struct resource iomem_resource = {
+    .name       = "PCI mem",
+    .start      = 0,
+    .end        = -1,
+    .flags      = IORESOURCE_MEM,
+};
+
+static void __init request_standard_resources(void)
+{
+    struct memblock_region *region;
+    struct resource *res;
+    unsigned long i = 0;
+    size_t res_size;
+
+    kernel_code.start   = __pa_symbol(_text);
+    kernel_code.end     = __pa_symbol(__init_begin - 1);
+    kernel_data.start   = __pa_symbol(_sdata);
+    kernel_data.end     = __pa_symbol(_end - 1);
+    insert_resource(&iomem_resource, &kernel_code);
+    insert_resource(&iomem_resource, &kernel_data);
+}
+
+static struct resource mem_res[] = {
+    {
+        .name = "Kernel code",
+        .start = 0,
+        .end = 0,
+        .flags = IORESOURCE_SYSTEM_RAM
+    },
+    {
+        .name = "Kernel data",
+        .start = 0,
+        .end = 0,
+        .flags = IORESOURCE_SYSTEM_RAM
+    }
+};
+```
+
+```c
+proc_create_seq_data("iomem", 0, NULL, &resource_op, &iomem_resource);
+
+#define proc_create_seq_data(name, mode, parent, ops, data) \
+    proc_create_seq_private(name, mode, parent, ops, 0, data)
+
+struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
+        struct proc_dir_entry *parent, const struct seq_operations *ops,
+        unsigned int state_size, void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    p->proc_ops = &proc_seq_ops;
+    p->seq_ops = ops;
+    p->state_size = state_size;
+    return proc_register(parent, p);
+}
+```
+
 ## seq_file
+
+```c
+struct seq_file {
+    char    *buf;
+    size_t  size;
+    size_t  from;
+    size_t  count;
+    size_t  pad_until;
+    loff_t  index;
+    loff_t  read_pos;
+    struct  mutex lock;
+    const struct seq_operations *op;
+    int                 poll_event;
+    const struct file   *file;
+    void                *private;
+};
+
+struct seq_operations {
+    void *(*start) (struct seq_file *m, loff_t *pos);
+    void (*stop) (struct seq_file *m, void *v);
+    void *(*next) (struct seq_file *m, void *v, loff_t *pos);
+    int (*show) (struct seq_file *m, void *v);
+};
+```
 
 ### seq_open_private
 
@@ -15119,12 +15936,12 @@ static struct inode *tracefs_alloc_inode(struct super_block *sb)
 
 ```c
 static const struct inode_operations tracefs_instance_dir_inode_operations = {
-	.lookup		= simple_lookup,
-	.mkdir		= tracefs_syscall_mkdir,
-	.rmdir		= tracefs_syscall_rmdir,
-	.permission	= tracefs_permission,
-	.getattr	= tracefs_getattr,
-	.setattr	= tracefs_setattr,
+    .lookup        = simple_lookup,
+    .mkdir        = tracefs_syscall_mkdir,
+    .rmdir        = tracefs_syscall_rmdir,
+    .permission    = tracefs_permission,
+    .getattr    = tracefs_getattr,
+    .setattr    = tracefs_setattr,
 };
 ```
 
@@ -15132,16 +15949,16 @@ static const struct inode_operations tracefs_instance_dir_inode_operations = {
 
 ```c
 static const struct inode_operations tracefs_dir_inode_operations = {
-	.lookup		= simple_lookup,
-	.permission	= tracefs_permission,
-	.getattr	= tracefs_getattr,
-	.setattr	= tracefs_setattr,
+    .lookup        = simple_lookup,
+    .permission    = tracefs_permission,
+    .getattr    = tracefs_getattr,
+    .setattr    = tracefs_setattr,
 };
 
 static const struct inode_operations tracefs_file_inode_operations = {
-	.permission	= tracefs_permission,
-	.getattr	= tracefs_getattr,
-	.setattr	= tracefs_setattr,
+    .permission    = tracefs_permission,
+    .getattr    = tracefs_getattr,
+    .setattr    = tracefs_setattr,
 };
 ```
 
@@ -15149,10 +15966,10 @@ static const struct inode_operations tracefs_file_inode_operations = {
 
 ```c
 static const struct file_operations tracefs_file_operations = {
-	.read =		default_read_file,
-	.write =	default_write_file,
-	.open =		simple_open,
-	.llseek =	noop_llseek,
+    .read =        default_read_file,
+    .write =    default_write_file,
+    .open =        simple_open,
+    .llseek =    noop_llseek,
 };
 ```
 
@@ -15667,5 +16484,99 @@ struct eventfs_inode *eventfs_create_dir(const char *name, struct eventfs_inode 
         ei = ERR_PTR(-EBUSY);
     }
     return ei;
+}
+```
+
+## nullfs
+
+* [[PATCH v2 0/4] fs: add immutable rootfs](https://lore.kernel.org/20260112-work-immutable-rootfs-v2-0-88dd1c34a204@kernel.org/)
+
+```c
+int __init init_pivot_root(const char *new_root, const char *put_old)
+{
+    struct path new_path __free(path_put) = {};
+    struct path old_path __free(path_put) = {};
+    int ret;
+
+    ret = kern_path(new_root, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &new_path);
+    if (ret)
+        return ret;
+
+    ret = kern_path(put_old, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &old_path);
+    if (ret)
+        return ret;
+
+    return path_pivot_root(&new_path, &old_path);
+}
+
+int path_pivot_root(struct path *new, struct path *old)
+{
+    struct path root __free(path_put) = {};
+    struct mount *new_mnt, *root_mnt, *old_mnt, *root_parent, *ex_parent;
+    int error;
+
+    if (!may_mount())
+        return -EPERM;
+
+    error = security_sb_pivotroot(old, new);
+    if (error)
+        return error;
+
+    get_fs_root(current->fs, &root);
+
+    LOCK_MOUNT(old_mp, old);
+    old_mnt = old_mp.parent;
+    if (IS_ERR(old_mnt))
+        return PTR_ERR(old_mnt);
+
+    new_mnt = real_mount(new->mnt);
+    root_mnt = real_mount(root.mnt);
+    ex_parent = new_mnt->mnt_parent;
+    root_parent = root_mnt->mnt_parent;
+    if (IS_MNT_SHARED(old_mnt) ||
+        IS_MNT_SHARED(ex_parent) ||
+        IS_MNT_SHARED(root_parent))
+        return -EINVAL;
+    if (!check_mnt(root_mnt) || !check_mnt(new_mnt))
+        return -EINVAL;
+    if (new_mnt->mnt.mnt_flags & MNT_LOCKED)
+        return -EINVAL;
+    if (d_unlinked(new->dentry))
+        return -ENOENT;
+    if (new_mnt == root_mnt || old_mnt == root_mnt)
+        return -EBUSY; /* loop, on the same file system  */
+    if (!path_mounted(&root))
+        return -EINVAL; /* not a mountpoint */
+    if (!mnt_has_parent(root_mnt))
+        return -EINVAL; /* absolute root */
+    if (!path_mounted(new))
+        return -EINVAL; /* not a mountpoint */
+    if (!mnt_has_parent(new_mnt))
+        return -EINVAL; /* absolute root */
+    /* make sure we can reach put_old from new_root */
+    if (!is_path_reachable(old_mnt, old_mp.mp->m_dentry, new))
+        return -EINVAL;
+    /* make certain new is below the root */
+    if (!is_path_reachable(new_mnt, new->dentry, &root))
+        return -EINVAL;
+    lock_mount_hash();
+    umount_mnt(new_mnt);
+    if (root_mnt->mnt.mnt_flags & MNT_LOCKED) {
+        new_mnt->mnt.mnt_flags |= MNT_LOCKED;
+        root_mnt->mnt.mnt_flags &= ~MNT_LOCKED;
+    }
+    /* mount new_root on / */
+    attach_mnt(new_mnt, root_parent, root_mnt->mnt_mp);
+    umount_mnt(root_mnt);
+    /* mount old root on put_old */
+    attach_mnt(root_mnt, old_mnt, old_mp.mp);
+    touch_mnt_namespace(current->nsproxy->mnt_ns);
+    /* A moved mount should not expire automatically */
+    list_del_init(&new_mnt->mnt_expire);
+    unlock_mount_hash();
+    mnt_notify_add(root_mnt);
+    mnt_notify_add(new_mnt);
+    chroot_fs_refs(&root, new);
+    return 0;
 }
 ```
