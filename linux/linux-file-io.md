@@ -1398,6 +1398,10 @@ out:
 
 ## open
 
+* [Pathname lookup](https://docs.kernel.org/filesystems/path-lookup.html)
+
+![](../images/kernel/fs-open.svg)
+
 ```c
 do_sys_open() {
     get_unused_fd_flags();
@@ -1497,7 +1501,13 @@ struct files_struct {
   struct file __rcu * fd_array[NR_OPEN_DEFAULT];
 };
 
-SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode);
+SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
+{
+	if (force_o_largefile())
+		flags |= O_LARGEFILE;
+	return do_sys_open(AT_FDCWD, filename, flags, mode);
+}
+
 return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
     struct open_flags op;
     struct filename *tmp = getname(filename);
@@ -1507,6 +1517,8 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
         struct nameidata nd;
         int flags = op->lookup_flags;
         struct file *filp;
+
+        set_nameidata(&nd, dfd, pathname, NULL);
 
         filp = path_openat(&nd, op, flags | LOOKUP_RCU) {
             file = alloc_empty_file(op->open_flag, current_cred());
