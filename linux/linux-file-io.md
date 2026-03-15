@@ -1400,7 +1400,7 @@ out:
 
 * [Pathname lookup](https://docs.kernel.org/filesystems/path-lookup.html)
 
-![](../images/kernel/fs-open.svg)
+![](../images/kernel/file-open.drawio.svg)
 
 ```c
 do_sys_open() {
@@ -2233,8 +2233,8 @@ open_last_lookups(nd, file, op) {
         }
 
         dentry = d_alloc_parallel(dir, &nd->last, &wq);
-        struct dentry *res = dir_inode->i_op->lookup(
-            dir_inode, dentry, nd->flags); /* ext4_lookup */
+        /* ext4_lookup, eventfs_dir_inode_operations */
+        struct dentry *res = dir_inode->i_op->lookup(dir_inode, dentry, nd->flags);
         path->dentry = dentry;
         path->mnt = nd->path.mnt;
     }
@@ -15961,16 +15961,16 @@ static const struct inode_operations tracefs_instance_dir_inode_operations = {
 
 ```c
 static const struct inode_operations tracefs_dir_inode_operations = {
-    .lookup        = simple_lookup,
-    .permission    = tracefs_permission,
-    .getattr    = tracefs_getattr,
-    .setattr    = tracefs_setattr,
+    .lookup         = simple_lookup,
+    .permission     = tracefs_permission,
+    .getattr        = tracefs_getattr,
+    .setattr        = tracefs_setattr,
 };
 
 static const struct inode_operations tracefs_file_inode_operations = {
-    .permission    = tracefs_permission,
-    .getattr    = tracefs_getattr,
-    .setattr    = tracefs_setattr,
+    .permission     = tracefs_permission,
+    .getattr        = tracefs_getattr,
+    .setattr        = tracefs_setattr,
 };
 ```
 
@@ -16112,6 +16112,10 @@ static const struct inode_operations eventfs_dir_inode_operations = {
     .setattr        = eventfs_set_attr,
 };
 
+static const struct inode_operations eventfs_file_inode_operations = {
+    .setattr        = eventfs_set_attr,
+};
+
 struct dentry *eventfs_root_lookup(struct inode *dir,
                       struct dentry *dentry,
                       unsigned int flags)
@@ -16134,6 +16138,7 @@ struct dentry *eventfs_root_lookup(struct inode *dir,
     if (!ei || ei->is_freed)
         goto out;
 
+    /* 1. lookup a event_dir /events/event_dir/ */
     list_for_each_entry(ei_child, &ei->children, list) {
         if (strcmp(ei_child->name, name) != 0)
             continue;
@@ -16163,6 +16168,7 @@ struct dentry *eventfs_root_lookup(struct inode *dir,
         goto out;
     }
 
+    /* 2. lookup a event_entry /events/event_dir/evnet_entry */
     for (int i = 0; i < ei->nr_entries; i++) {
         void *data;
         umode_t mode;
