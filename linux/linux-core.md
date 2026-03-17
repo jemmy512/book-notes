@@ -769,6 +769,28 @@ static int __init rcu_spawn_core_kthreads(void)
           "%s: Could not start rcuc kthread, OOM is now expected behavior\n", __func__);
     return 0;
 }
+
+int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
+{
+    unsigned int cpu;
+    int ret = 0;
+
+    cpus_read_lock();
+    mutex_lock(&smpboot_threads_lock);
+    for_each_online_cpu(cpu) {
+        ret = __smpboot_create_thread(plug_thread, cpu);
+        if (ret) {
+            smpboot_destroy_threads(plug_thread);
+            goto out;
+        }
+        smpboot_unpark_thread(plug_thread, cpu);
+    }
+    list_add(&plug_thread->list, &hotplug_threads);
+out:
+    mutex_unlock(&smpboot_threads_lock);
+    cpus_read_unlock();
+    return ret;
+}
 ```
 
 ### rcu_read_lock
@@ -1102,6 +1124,15 @@ int rcu_pending(int user)
 
 #### check_cpu_stall
 
+```sh
+rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+rcu:     2-...!: (0 ticks this GP) idle=80d4/0/0x1 softirq=846094/846094 fqs=26
+rcu: rcu_preempt kthread starved for 5194 jiffies! g1369893 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x0 ->cpu=4
+rcu:     Unless rcu_preempt kthread gets sufficient CPU time, OOM is now expected behavior.
+rcu: RCU grace-period kthread stack dump:
+rcu: Stack dump where RCU GP kthread last ran:
+```
+
 ```c
 void check_cpu_stall(struct rcu_data *rdp)
 {
@@ -1118,7 +1149,21 @@ void check_cpu_stall(struct rcu_data *rdp)
     if ((rcu_stall_is_suppressed() && !READ_ONCE(rcu_kick_kthreads)) || !rcu_gp_in_progress())
         return;
 
-    rcu_stall_kick_kthreads();
+    rcu_stall_kick_kthreads() {
+        unsigned long j;
+
+        if (!READ_ONCE(rckick_kthreads))
+            return;
+        j = READ_ONCE(rcu_state.jiffies_kick_kthreads);
+        if (time_after(jiffies, j) && rcu_state.gp_kthread &&
+            (rcu_gp_in_progress() || READ_ONCE(rcu_state.gp_flags))) {
+            WARN_ONCE(1, "Kicking %s grace-period kthread\n",
+                rcu_state.name);
+            rcu_ftrace_dump(DUMP_ALL);
+            wake_up_process(rcu_state.gp_kthread);
+            WRITE_ONCE(rcu_state.jiffies_kick_kthreads, j + HZ);
+        }
+    }
 
     /* Check if it was requested (via rcu_cpu_stall_reset()) that the FQS
      * loop has to set jiffies to ensure a non-stale jiffies value. This
@@ -1312,6 +1357,234 @@ void rcu_check_gp_kthread_starvation(void)
             }
             wake_up_process(gpk);
         }
+    }
+}
+```
+
+##### print_cpu_stall_info
+
+```c
+void print_cpu_stall_info(int cpu)
+{
+    unsigned long delta;
+    bool falsepositive;
+    struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+    char *ticks_title;
+    unsigned long ticks_value;
+    bool rcuc_starved;
+    unsigned long j;
+    char buf[32];
+
+    /* We could be printing a lot while holding a spinlock.  Avoid
+     * triggering hard lockup. */
+    touch_nmi_watchdog();
+
+    ticks_value = rcu_seq_ctr(rcu_state.gp_seq - rdp->gp_seq);
+    if (ticks_value) {
+        ticks_title = "GPs behind";
+    } else {
+        ticks_title = "ticks this GP";
+        ticks_value = rdp->ticks_this_gp;
+    }
+    delta = rcu_seq_ctr(rdp->mynode->gp_seq - rdp->rcu_iw_gp_seq);
+    falsepositive = rcu_is_gp_kthread_starving(NULL) &&
+            rcu_watching_snap_in_eqs(ct_rcu_watching_cpu(cpu));
+    rcuc_starved = rcu_is_rcuc_kthread_starving(rdp, &j);
+    if (rcuc_starved)
+        // Print signed value, as negative values indicate a probable bug.
+        snprintf(buf, sizeof(buf), " rcuc=%ld jiffies(starved)", j);
+
+    pr_err("\t%d-%c%c%c%c: (%lu %s) idle=%04x/%ld/%#lx softirq=%u/%u fqs=%ld%s%s\n",
+           cpu,
+           "O."[!!cpu_online(cpu)],
+           "o."[!!(rdp->grpmask & rdp->mynode->qsmaskinit)],
+           "N."[!!(rdp->grpmask & rdp->mynode->qsmaskinitnext)],
+           !IS_ENABLED(CONFIG_IRQ_WORK) ? '?' :
+            rdp->rcu_iw_pending ? (int)min(delta, 9UL) + '0' :
+                "!."[!delta],
+           ticks_value, ticks_title,
+           ct_rcu_watching_cpu(cpu) & 0xffff,
+           ct_nesting_cpu(cpu), ct_nmi_nesting_cpu(cpu),
+           rdp->softirq_snap, kstat_softirqs_cpu(RCU_SOFTIRQ, cpu),
+           data_race(rcu_state.n_force_qs) - rcu_state.n_force_qs_gpstart,
+           rcuc_starved ? buf : "",
+           falsepositive ? " (false positive?)" : "");
+
+    print_cpu_stat_info(cpu) {
+        struct rcu_snap_record rsr, *rsrp;
+        struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+        struct kernel_cpustat *kcsp = &kcpustat_cpu(cpu);
+
+        if (!rcu_cpu_stall_cputime)
+            return;
+
+        rsrp = &rdp->snap_record;
+        if (rsrp->gp_seq != rdp->gp_seq)
+            return;
+
+        rsr.cputime_irq     = kcpustat_field(kcsp, CPUTIME_IRQ, cpu);
+        rsr.cputime_softirq = kcpustat_field(kcsp, CPUTIME_SOFTIRQ, cpu);
+        rsr.cputime_system  = kcpustat_field(kcsp, CPUTIME_SYSTEM, cpu);
+
+        pr_err("\t         hardirqs   softirqs   csw/system\n");
+        pr_err("\t number: %8lld %10d %12lld\n",
+            kstat_cpu_irqs_sum(cpu) + arch_irq_stat_cpu(cpu) - rsrp->nr_hardirqs,
+            kstat_cpu_softirqs_sum(cpu) - rsrp->nr_softirqs,
+            nr_context_switches_cpu(cpu) - rsrp->nr_csw);
+        pr_err("\tcputime: %8lld %10lld %12lld   ==> %d(ms)\n",
+            div_u64(rsr.cputime_irq - rsrp->cputime_irq, NSEC_PER_MSEC),
+            div_u64(rsr.cputime_softirq - rsrp->cputime_softirq, NSEC_PER_MSEC),
+            div_u64(rsr.cputime_system - rsrp->cputime_system, NSEC_PER_MSEC),
+            jiffies_to_msecs(jiffies - rsrp->jiffies));
+    }
+}
+```
+
+##### rcu_print_task_stall
+
+```c
+int rcu_print_task_stall(struct rcu_node *rnp, unsigned long flags)
+    __releases(rnp->lock)
+{
+    int i = 0;
+    int ndetected = 0;
+    struct rcu_stall_chk_rdr rscr;
+    struct task_struct *t;
+    struct task_struct *ts[8];
+
+    lockdep_assert_irqs_disabled();
+    if (!rcu_preempt_blocked_readers_cgp(rnp)) {
+        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        return 0;
+    }
+    pr_err("\tTasks blocked on level-%d rcu_node (CPUs %d-%d):",
+           rnp->level, rnp->grplo, rnp->grphi);
+    t = list_entry(rnp->gp_tasks->prev, struct task_struct, rcu_node_entry);
+    list_for_each_entry_continue(t, &rnp->blkd_tasks, rcu_node_entry) {
+        get_task_struct(t);
+        ts[i++] = t;
+        if (i >= ARRAY_SIZE(ts))
+            break;
+    }
+    raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+    while (i) {
+        t = ts[--i];
+        if (task_call_func(t, check_slow_task, &rscr))
+            pr_cont(" P%d", t->pid);
+        else
+            pr_cont(" P%d/%d:%c%c%c%c",
+                t->pid, rscr.nesting,
+                ".b"[rscr.rs.b.blocked],
+                ".q"[rscr.rs.b.need_qs],
+                ".e"[rscr.rs.b.exp_hint],
+                ".l"[rscr.on_blkd_list]);
+        lockdep_assert_irqs_disabled();
+        put_task_struct(t);
+        ndetected++;
+    }
+    pr_cont("\n");
+    return ndetected;
+}
+```
+
+### rcu_dump_cpu_stacks
+
+```c
+void rcu_dump_cpu_stacks(unsigned long gp_seq)
+{
+    int cpu;
+    unsigned long flags;
+    struct rcu_node *rnp;
+
+    rcu_for_each_leaf_node(rnp) {
+        printk_deferred_enter();
+        for_each_leaf_node_possible_cpu(rnp, cpu) {
+            if (gp_seq != data_race(rcu_state.gp_seq)) {
+                printk_deferred_exit();
+                pr_err("INFO: Stall ended during stack backtracing.\n");
+                return;
+            }
+            if (!(data_race(rnp->qsmask) & leaf_node_cpu_bit(rnp, cpu)))
+                continue;
+
+            raw_spin_lock_irqsave_rcu_node(rnp, flags);
+            if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
+                if (cpu_is_offline(cpu))
+                    pr_err("Offline CPU %d blocking current GP.\n", cpu);
+                else
+                    dump_cpu_task(cpu);
+            }
+            raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        }
+        printk_deferred_exit();
+    }
+}
+
+void dump_cpu_task(int cpu)
+{
+    if (in_hardirq() && cpu == smp_processor_id()) {
+        struct pt_regs *regs;
+
+        regs = get_irq_regs() {
+            return __this_cpu_read(__irq_regs);
+        }
+        if (regs) {
+            show_regs(regs);
+                --->
+            return;
+        }
+    }
+
+    if (trigger_single_cpu_backtrace(cpu))
+        return;
+
+    pr_info("Task dump for CPU %d:\n", cpu);
+    sched_show_task(cpu_curr(cpu)) {
+        unsigned long free;
+        int ppid;
+
+        if (!try_get_task_stack(p))
+            return;
+
+        pr_info("task:%-15.15s state:%c", p->comm, task_state_to_char(p));
+
+        if (task_is_running(p))
+            pr_cont("  running task    ");
+        free = stack_not_used(p);
+        ppid = 0;
+        rcu_read_lock();
+        if (pid_alive(p))
+            ppid = task_pid_nr(rcu_dereference(p->real_parent));
+        rcu_read_unlock();
+        pr_cont(" stack:%-5lu pid:%-5d tgid:%-5d ppid:%-6d task_flags:0x%04x flags:0x%08lx\n",
+            free, task_pid_nr(p), task_tgid_nr(p),
+            ppid, p->flags, read_task_thread_flags(p));
+
+        print_worker_info(KERN_INFO, p);
+        print_stop_info(KERN_INFO, p);
+        print_scx_info(KERN_INFO, p);
+        show_stack(p, NULL, KERN_INFO) {
+            dump_backtrace(NULL, tsk, loglvl) {
+                pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
+
+                if (regs && user_mode(regs))
+                    return;
+
+                if (!tsk)
+                    tsk = current;
+
+                if (!try_get_task_stack(tsk))
+                    return;
+
+                printk("%sCall trace:\n", loglvl);
+                kunwind_stack_walk(dump_backtrace_entry, (void *)loglvl, tsk, regs);
+                    --->
+
+                put_task_stack(tsk);
+            }
+            barrier();
+        }
+        put_task_stack(p);
     }
 }
 ```
@@ -2314,7 +2587,20 @@ bool rcu_gp_init(void)
         unsigned long j1;
 
         WRITE_ONCE(rcu_state.gp_start, j);
-        j1 = rcu_jiffies_till_stall_check();
+        j1 = rcu_jiffies_till_stall_check() {
+            int till_stall_check = READ_ONCE(rcu_cpu_stall_timeout);
+
+            /* Limit check must be consistent with the Kconfig limits
+            * for CONFIG_RCU_CPU_STALL_TIMEOUT. */
+            if (till_stall_check < 3) {
+                WRITE_ONCE(rcu_cpu_stall_timeout, 3);
+                till_stall_check = 3;
+            } else if (till_stall_check > 300) {
+                WRITE_ONCE(rcu_cpu_stall_timeout, 300);
+                till_stall_check = 300;
+            }
+            return till_stall_check * HZ + RCU_STALL_DELAY_DELTA;
+        }
         smp_mb(); // ->gp_start before ->jiffies_stall and caller's ->gp_seq.
         WRITE_ONCE(rcu_state.nr_fqs_jiffies_stall, 0);
         WRITE_ONCE(rcu_state.jiffies_stall, j + j1);
@@ -3602,7 +3888,14 @@ void synchronize_rcu_expedited(void)
     }
 
     /* Take a snapshot of the sequence number.  */
-    s = rcu_exp_gp_seq_snap();
+    s = rcu_exp_gp_seq_snap() {
+        unsigned long s;
+
+        smp_mb(); /* Caller's modifications seen first by other CPUs. */
+        s = rcu_seq_snap(&rcu_state.expedited_sequence);
+        trace_rcu_exp_grace_period(rcu_state.name, s, TPS("snap"));
+        return s;
+    }
     if (exp_funnel_lock(s))
         return;  /* Someone else did our work for us. */
 
@@ -3613,7 +3906,10 @@ void synchronize_rcu_expedited(void)
     } else {
         /* Marshall arguments & schedule the expedited grace period. */
         rew.rew_s = s;
-        synchronize_rcu_expedited_queue_work(&rew);
+        synchronize_rcu_expedited_queue_work(&rew) {
+            kthread_init_work(&rew->rew_work, wait_rcu_exp_gp);
+            kthread_queue_work(rcu_exp_gp_kworker, &rew->rew_work);
+        }
     }
 
     /* Wait for expedited grace period to complete. */
@@ -3649,15 +3945,14 @@ static void rcu_exp_sel_wait_wake(unsigned long s)
             rnp->exp_need_flush = false;
             if (!READ_ONCE(rnp->expmask))
                 continue; /* Avoid early boot non-existent wq. */
-            if (!rcu_exp_par_worker_started(rnp) ||
-                rcu_scheduler_active != RCU_SCHEDULER_RUNNING ||
-                rcu_is_last_leaf_node(rnp)) {
+            if (!rcu_exp_par_worker_started(rnp) || rcu_scheduler_active != RCU_SCHEDULER_RUNNING || rcu_is_last_leaf_node(rnp)) {
                 /* No worker started yet or last leaf, do direct call. */
                 sync_rcu_exp_select_node_cpus(&rnp->rew.rew_work) {
                     struct rcu_exp_work *rewp =
                         container_of(wp, struct rcu_exp_work, rew_work);
 
                     __sync_rcu_exp_select_node_cpus(rewp);
+                        --->
                 }
                 continue;
             }
@@ -3693,8 +3988,7 @@ void __sync_rcu_exp_select_node_cpus(struct rcu_exp_work *rewp)
         unsigned long mask = rdp->grpmask;
         int snap;
 
-        if (raw_smp_processor_id() == cpu ||
-            !(rnp->qsmaskinitnext & mask)) {
+        if (raw_smp_processor_id() == cpu || !(rnp->qsmaskinitnext & mask)) {
             mask_ofl_test |= mask;
         } else {
             /* Full ordering between remote CPU's post idle accesses
@@ -3743,8 +4037,7 @@ retry_ipi:
 
         /* Failed, raced with CPU hotplug operation. */
         raw_spin_lock_irqsave_rcu_node(rnp, flags);
-        if ((rnp->qsmaskinitnext & mask) &&
-            (rnp->expmask & mask)) {
+        if ((rnp->qsmaskinitnext & mask) && (rnp->expmask & mask)) {
             /* Online, so delay for a bit and try again. */
             raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
             schedule_timeout_idle(1);
@@ -3760,68 +4053,6 @@ retry_ipi:
         raw_spin_lock_irqsave_rcu_node(rnp, flags);
         rcu_report_exp_cpu_mult(rnp, flags, mask_ofl_test, false);
     }
-}
-
-void rcu_exp_handler(void *unused)
-{
-    int depth = rcu_preempt_depth() {
-        return READ_ONCE(current->rcu_read_lock_nesting)
-    }
-    unsigned long flags;
-    struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
-    struct rcu_node *rnp = rdp->mynode;
-    struct task_struct *t = current;
-
-    /* WARN if the CPU is unexpectedly already looking for a
-     * QS or has already reported one. */
-    ASSERT_EXCLUSIVE_WRITER_SCOPED(rdp->cpu_no_qs.b.exp);
-    if (WARN_ON_ONCE(!(READ_ONCE(rnp->expmask) & rdp->grpmask) || READ_ONCE(rdp->cpu_no_qs.b.exp)))
-        return;
-
-    /* Second, the common case of not being in an RCU read-side
-     * critical section.  If also enabled or idle, immediately
-     * report the quiescent state, otherwise defer. */
-    if (!depth) {
-        if (!(preempt_count() & (PREEMPT_MASK | SOFTIRQ_MASK)) || rcu_is_cpu_rrupt_from_idle()) {
-                rcu_report_exp_rdp(rdp) {
-                    WRITE_ONCE(rdp->cpu_no_qs.b.exp, false);
-                    rcu_report_exp_cpu_mult(rnp, flags, rdp->grpmask, true);
-                }
-        } else {
-            rcu_exp_need_qs() {
-                /* consumed by rcu_read_unlock to call */
-                __this_cpu_write(rcu_data.cpu_no_qs.b.exp, true);
-                /* Store .exp before .rcu_urgent_qs. */
-                smp_store_release(this_cpu_ptr(&rcu_data.rcu_urgent_qs), true);
-                set_tsk_need_resched(current);
-                set_preempt_need_resched();
-            }
-        }
-        return;
-    }
-
-    /* Third, the less-common case of being in an RCU read-side
-     * critical section.  In this case we can count on a future
-     * rcu_read_unlock().  However, this rcu_read_unlock() might
-     * execute on some other CPU, but in that case there will be
-     * a future context switch.  Either way, if the expedited
-     * grace period is still waiting on this CPU, set ->deferred_qs
-     * so that the eventual quiescent state will be reported.
-     * Note that there is a large group of race conditions that
-     * can have caused this quiescent state to already have been
-     * reported, so we really do need to check ->expmask. */
-    if (depth > 0) {
-        raw_spin_lock_irqsave_rcu_node(rnp, flags);
-        if (rnp->expmask & rdp->grpmask) {
-            WRITE_ONCE(rdp->cpu_no_qs.b.exp, true);
-            t->rcu_read_unlock_special.b.exp_hint = true;
-        }
-        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
-        return;
-    }
-
-    // Fourth and finally, negative nesting depth should not happen.
-    WARN_ON_ONCE(1);
 }
 ```
 
@@ -3859,14 +4090,12 @@ bool exp_funnel_lock(unsigned long s)
             trace_rcu_exp_funnel_lock(rcu_state.name, rnp->level,
                           rnp->grplo, rnp->grphi,
                           TPS("wait"));
-            wait_event(rnp->exp_wq[rcu_seq_ctr(s) & 0x3],
-                   sync_exp_work_done(s));
+            wait_event(rnp->exp_wq[rcu_seq_ctr(s) & 0x3], sync_exp_work_done(s));
             return true;
         }
         WRITE_ONCE(rnp->exp_seq_rq, s); /* Followers can wait on us. */
         spin_unlock(&rnp->exp_lock);
-        trace_rcu_exp_funnel_lock(rcu_state.name, rnp->level,
-                      rnp->grplo, rnp->grphi, TPS("nxtlvl"));
+        trace_rcu_exp_funnel_lock(rcu_state.name, rnp->level, rnp->grplo, rnp->grphi, TPS("nxtlvl"));
     }
     mutex_lock(&rcu_state.exp_mutex);
 fastpath:
@@ -3874,7 +4103,10 @@ fastpath:
         mutex_unlock(&rcu_state.exp_mutex);
         return true;
     }
-    rcu_exp_gp_seq_start();
+    rcu_exp_gp_seq_start() {
+        rcu_seq_start(&rcu_state.expedited_sequence);
+        rcu_poll_gp_seq_start_unlocked(&rcu_state.gp_seq_polled_exp_snap);
+    }
     trace_rcu_exp_grace_period(rcu_state.name, s, TPS("start"));
     return false;
 }
@@ -4006,6 +4238,129 @@ void tick_nohz_dep_set_cpu(int cpu, enum tick_dep_bits bit)
             }
         }
         preempt_enable();
+    }
+}
+```
+
+##### rcu_exp_handler
+
+```c
+
+void rcu_exp_handler(void *unused)
+{
+    int depth = rcu_preempt_depth() {
+        return READ_ONCE(current->rcu_read_lock_nesting)
+    }
+    unsigned long flags;
+    struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
+    struct rcu_node *rnp = rdp->mynode;
+    struct task_struct *t = current;
+
+    /* WARN if the CPU is unexpectedly already looking for a
+     * QS or has already reported one. */
+    ASSERT_EXCLUSIVE_WRITER_SCOPED(rdp->cpu_no_qs.b.exp);
+    if (WARN_ON_ONCE(!(READ_ONCE(rnp->expmask) & rdp->grpmask) || READ_ONCE(rdp->cpu_no_qs.b.exp)))
+        return;
+
+    /* Second, the common case of not being in an RCU read-side
+     * critical section.  If also enabled or idle, immediately
+     * report the quiescent state, otherwise defer. */
+    if (!depth) {
+        if (!(preempt_count() & (PREEMPT_MASK | SOFTIRQ_MASK)) || rcu_is_cpu_rrupt_from_idle()) {
+                rcu_report_exp_rdp(rdp) {
+                    WRITE_ONCE(rdp->cpu_no_qs.b.exp, false);
+                    rcu_report_exp_cpu_mult(rnp, flags, rdp->grpmask, true);
+                }
+        } else {
+            rcu_exp_need_qs() {
+                /* consumed by rcu_read_unlock to call */
+                __this_cpu_write(rcu_data.cpu_no_qs.b.exp, true);
+                /* Store .exp before .rcu_urgent_qs. */
+                smp_store_release(this_cpu_ptr(&rcu_data.rcu_urgent_qs), true);
+                set_tsk_need_resched(current);
+                set_preempt_need_resched();
+            }
+        }
+        return;
+    }
+
+    /* Third, the less-common case of being in an RCU read-side
+     * critical section.  In this case we can count on a future
+     * rcu_read_unlock().  However, this rcu_read_unlock() might
+     * execute on some other CPU, but in that case there will be
+     * a future context switch.  Either way, if the expedited
+     * grace period is still waiting on this CPU, set ->deferred_qs
+     * so that the eventual quiescent state will be reported.
+     * Note that there is a large group of race conditions that
+     * can have caused this quiescent state to already have been
+     * reported, so we really do need to check ->expmask. */
+    if (depth > 0) {
+        raw_spin_lock_irqsave_rcu_node(rnp, flags);
+        if (rnp->expmask & rdp->grpmask) {
+            WRITE_ONCE(rdp->cpu_no_qs.b.exp, true);
+            t->rcu_read_unlock_special.b.exp_hint = true;
+        }
+        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        return;
+    }
+
+    // Fourth and finally, negative nesting depth should not happen.
+    WARN_ON_ONCE(1);
+}
+
+void rcu_report_exp_cpu_mult(struct rcu_node *rnp, unsigned long flags,
+                    unsigned long mask_in, bool wake)
+                    __releases(rnp->lock)
+{
+    int cpu;
+    unsigned long mask;
+    struct rcu_data *rdp;
+
+    raw_lockdep_assert_held_rcu_node(rnp);
+    if (!(rnp->expmask & mask_in)) {
+        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        return;
+    }
+    mask = mask_in & rnp->expmask;
+    WRITE_ONCE(rnp->expmask, rnp->expmask & ~mask);
+    for_each_leaf_node_cpu_mask(rnp, cpu, mask) {
+        rdp = per_cpu_ptr(&rcu_data, cpu);
+        if (!IS_ENABLED(CONFIG_NO_HZ_FULL) || !rdp->rcu_forced_tick_exp)
+            continue;
+        rdp->rcu_forced_tick_exp = false;
+        tick_dep_clear_cpu(cpu, TICK_DEP_BIT_RCU_EXP);
+    }
+    __rcu_report_exp_rnp(rnp, wake, flags); /* Releases rnp->lock. */
+}
+
+void __rcu_report_exp_rnp(struct rcu_node *rnp,
+                 bool wake, unsigned long flags)
+    __releases(rnp->lock)
+{
+    unsigned long mask;
+
+    raw_lockdep_assert_held_rcu_node(rnp);
+    for (;;) {
+        if (!sync_rcu_exp_done(rnp)) {
+            if (!rnp->expmask)
+                rcu_initiate_boost(rnp, flags);
+            else
+                raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+            break;
+        }
+        if (rnp->parent == NULL) {
+            raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+            if (wake)
+                swake_up_one(&rcu_state.expedited_wq);
+
+            break;
+        }
+        mask = rnp->grpmask;
+        raw_spin_unlock_rcu_node(rnp); /* irqs remain disabled */
+        rnp = rnp->parent;
+        raw_spin_lock_rcu_node(rnp); /* irqs already disabled */
+        WARN_ON_ONCE(!(rnp->expmask & mask));
+        WRITE_ONCE(rnp->expmask, rnp->expmask & ~mask);
     }
 }
 ```
@@ -6053,16 +6408,16 @@ pv_queue:
         pv_wait_node(node, prev);
         arch_mcs_spin_lock_contended(&node->locked) {
             smp_cond_load_acquire(l, VAL);
-            ({									\
-                typeof(ptr) __PTR = (ptr);					\
-                __unqual_scalar_typeof(*ptr) VAL;				\
-                for (;;) {							\
-                    VAL = smp_load_acquire(__PTR);				\
-                    if (cond_expr)						\
-                        break;						\
-                    __cmpwait_relaxed(__PTR, VAL);				\
-                }								\
-                (typeof(*ptr))VAL;						\
+            ({                                    \
+                typeof(ptr) __PTR = (ptr);                    \
+                __unqual_scalar_typeof(*ptr) VAL;                \
+                for (;;) {                            \
+                    VAL = smp_load_acquire(__PTR);                \
+                    if (cond_expr)                        \
+                        break;                        \
+                    __cmpwait_relaxed(__PTR, VAL);                \
+                }                                \
+                (typeof(*ptr))VAL;                        \
             })
         }
 
@@ -6097,21 +6452,21 @@ pv_queue:
         goto locked;
 
     val = atomic_cond_read_acquire(&lock->val, !(VAL & _Q_LOCKED_PENDING_MASK)) {
-        #define smp_cond_load_acquire(ptr, cond_expr) ({		\
-            __unqual_scalar_typeof(*ptr) _val;			\
+        #define smp_cond_load_acquire(ptr, cond_expr) ({        \
+            __unqual_scalar_typeof(*ptr) _val;            \
             _val = smp_cond_load_relaxed(ptr, cond_expr) {
-                typeof(ptr) __PTR = (ptr);				\
-                __unqual_scalar_typeof(*ptr) VAL;			\
-                for (;;) {						\
-                    VAL = READ_ONCE(*__PTR);			\
-                    if (cond_expr)					\
-                        break;					\
-                    cpu_relax();					\
-                }							\
+                typeof(ptr) __PTR = (ptr);                \
+                __unqual_scalar_typeof(*ptr) VAL;            \
+                for (;;) {                        \
+                    VAL = READ_ONCE(*__PTR);            \
+                    if (cond_expr)                    \
+                        break;                    \
+                    cpu_relax();                    \
+                }                            \
                 (typeof(*ptr))VAL;
             }
-            smp_acquire__after_ctrl_dep();				\
-            (typeof(*ptr))_val;					\
+            smp_acquire__after_ctrl_dep();                \
+            (typeof(*ptr))_val;                    \
         })
     }
 
