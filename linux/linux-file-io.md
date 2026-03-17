@@ -1503,9 +1503,9 @@ struct files_struct {
 
 SYSCALL_DEFINE3(open, const char __user *, filename, int, flags, umode_t, mode)
 {
-	if (force_o_largefile())
-		flags |= O_LARGEFILE;
-	return do_sys_open(AT_FDCWD, filename, flags, mode);
+    if (force_o_largefile())
+        flags |= O_LARGEFILE;
+    return do_sys_open(AT_FDCWD, filename, flags, mode);
 }
 
 return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
@@ -14439,14 +14439,6 @@ static const struct proc_ops proc_single_ops = {
 };
 ```
 
-### proc_root_inode_operations
-
-```c
-static const struct inode_operations proc_root_inode_operations = {
-    .lookup     = proc_root_lookup,
-    .getattr    = proc_root_getattr,
-};
-```
 
 ### proc_root_init
 
@@ -14570,13 +14562,27 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
 }
 ```
 
+### proc_root_inode_operations
+
+```c
+static const struct inode_operations proc_root_inode_operations = {
+    .lookup     = proc_root_lookup() {
+        if (!proc_pid_lookup(dentry, flags))
+            return NULL;
+
+        return proc_lookup(dir, dentry, flags);
+    },
+    .getattr    = proc_root_getattr,
+};
+```
+
 ### proc_root_operations
 
 ```c
 static const struct file_operations proc_root_operations = {
-    .read         = generic_read_dir,
+    .read               = generic_read_dir,
     .iterate_shared     = proc_root_readdir,
-    .llseek        = generic_file_llseek,
+    .llseek             = generic_file_llseek,
 };
 ```
 
@@ -14678,37 +14684,6 @@ end_instantiate:
 }
 ```
 
-### proc_dir_operations
-
-```c
-static const struct file_operations proc_dir_operations = {
-    .llseek                 = generic_file_llseek,
-    .read                   = generic_read_dir,
-    .iterate_shared         = proc_readdir,
-};
-
-int proc_readdir(struct file *file, struct dir_context *ctx)
-{
-    struct inode *inode = file_inode(file);
-    struct proc_fs_info *fs_info = proc_sb_info(inode->i_sb);
-
-    if (fs_info->pidonly == PROC_PIDONLY_ON)
-        return 1;
-
-    return proc_readdir_de(file, ctx, PDE(inode));
-}
-```
-
-### proc_dir_inode_operations
-
-```c
-static const struct inode_operations proc_dir_inode_operations = {
-    .lookup         = proc_lookup,
-    .getattr        = proc_getattr,
-    .setattr        = proc_notify_change,
-};
-```
-
 ### proc_create
 
 ```c
@@ -14719,169 +14694,171 @@ struct proc_dir_entry *proc_create(const char *name, umode_t mode,
     return proc_create_data(name, mode, parent, proc_ops, NULL) {
         struct proc_dir_entry *p;
 
-        p = proc_create_reg(name, mode, &parent, data) {
-            struct proc_dir_entry *p;
-
-            if ((mode & S_IFMT) == 0)
-                mode |= S_IFREG;
-            if ((mode & S_IALLUGO) == 0)
-                mode |= S_IRUGO;
-            if (WARN_ON_ONCE(!S_ISREG(mode)))
-                return NULL;
-
-            p = __proc_create(parent, name, mode, 1) {
-                struct proc_dir_entry *ent = NULL;
-                const char *fn;
-                struct qstr qstr;
-
-                ret = xlate_proc_name(name, parent, &fn) {
-                    int rv;
-
-                    read_lock(&proc_subdir_lock);
-                    rv = __xlate_proc_name(name, ret, residual) {
-                        const char              *cp = name, *next;
-                        struct proc_dir_entry   *de;
-
-                        de = *ret ?: &proc_root;
-                        while ((next = strchr(cp, '/')) != NULL) {
-                            de = pde_subdir_find(de, cp, next - cp) {
-                                struct rb_node *node = dir->subdir.rb_node;
-
-                                while (node) {
-                                    struct proc_dir_entry *de = rb_entry(node, struct proc_dir_entry, subdir_node);
-                                    int result = proc_match(name, de, len);
-
-                                    if (result < 0)
-                                        node = node->rb_left;
-                                    else if (result > 0)
-                                        node = node->rb_right;
-                                    else
-                                        return de;
-                                }
-                                return NULL;
-                            }
-                            if (!de) {
-                                WARN(1, "name '%s'\n", name);
-                                return -ENOENT;
-                            }
-                            cp = next + 1;
-                        }
-                        *residual = cp;
-                        *ret = de;
-                        return 0;
-                    }
-                    read_unlock(&proc_subdir_lock);
-                    return rv;
-                }
-                if (ret != 0)
-                    goto out;
-                qstr.name = fn;
-                qstr.len = strlen(fn);
-                if (qstr.len == 0 || qstr.len >= 256) {
-                    WARN(1, "name len %u\n", qstr.len);
-                    return NULL;
-                }
-                if (qstr.len == 1 && fn[0] == '.') {
-                    WARN(1, "name '.'\n");
-                    return NULL;
-                }
-                if (qstr.len == 2 && fn[0] == '.' && fn[1] == '.') {
-                    WARN(1, "name '..'\n");
-                    return NULL;
-                }
-                if (*parent == &proc_root && name_to_int(&qstr) != ~0U) {
-                    WARN(1, "create '/proc/%s' by hand\n", qstr.name);
-                    return NULL;
-                }
-                if (is_empty_pde(*parent)) {
-                    WARN(1, "attempt to add to permanently empty directory");
-                    return NULL;
-                }
-
-                ent = kmem_cache_zalloc(proc_dir_entry_cache, GFP_KERNEL);
-                if (!ent)
-                    goto out;
-
-                if (qstr.len + 1 <= SIZEOF_PDE_INLINE_NAME) {
-                    ent->name = ent->inline_name;
-                } else {
-                    ent->name = kmalloc(qstr.len + 1, GFP_KERNEL);
-                    if (!ent->name) {
-                        pde_free(ent);
-                        return NULL;
-                    }
-                }
-
-                memcpy(ent->name, fn, qstr.len + 1);
-                ent->namelen = qstr.len;
-                ent->mode = mode;
-                ent->nlink = nlink;
-                ent->subdir = RB_ROOT;
-                refcount_set(&ent->refcnt, 1);
-                spin_lock_init(&ent->pde_unload_lock);
-                INIT_LIST_HEAD(&ent->pde_openers);
-                proc_set_user(ent, (*parent)->uid, (*parent)->gid);
-
-                /* Revalidate everything under /proc/${pid}/net */
-                if ((*parent)->flags & PROC_ENTRY_FORCE_LOOKUP)
-                    pde_force_lookup(ent);
-            }
-            if (p) {
-                p->proc_iops = &proc_file_inode_operations;
-                p->data = data;
-            }
-            return p;
-        }
+        p = proc_create_reg(name, mode, &parent, data);
         if (!p)
             return NULL;
 
         p->proc_ops = proc_ops;
-        return proc_register(parent, p)  {
-            if (proc_alloc_inum(&dp->low_ino))
-                goto out_free_entry;
 
-            if (!S_ISDIR(dp->mode))
-                pde_set_flags(dp);
-
-            write_lock(&proc_subdir_lock);
-            dp->parent = dir;
-            ret = pde_subdir_insert(dir, dp) {
-                struct rb_root *root = &dir->subdir;
-                struct rb_node **new = &root->rb_node, *parent = NULL;
-
-                /* Figure out where to put new node */
-                while (*new) {
-                    struct proc_dir_entry *this =
-                        rb_entry(*new, struct proc_dir_entry, subdir_node);
-                    int result = proc_match(de->name, this, de->namelen);
-
-                    parent = *new;
-                    if (result < 0)
-                        new = &(*new)->rb_left;
-                    else if (result > 0)
-                        new = &(*new)->rb_right;
-                    else
-                        return false;
-                }
-
-                /* Add new node and rebalance tree. */
-                rb_link_node(&de->subdir_node, parent, new);
-                rb_insert_color(&de->subdir_node, root);
-                return true;
-            }
-
-            if (ret == false) {
-                WARN(1, "proc_dir_entry '%s/%s' already registered\n",
-                    dir->name, dp->name);
-                write_unlock(&proc_subdir_lock);
-                goto out_free_inum;
-            }
-            dir->nlink++;
-            write_unlock(&proc_subdir_lock);
-
-            return dp;
-        }
+        return proc_register(parent, p);
     }
+}
+```
+
+#### proc_create_reg
+
+```c
+struct proc_dir_entry *proc_create_reg(const char *name, umode_t mode,
+        struct proc_dir_entry **parent, void *data) {
+    struct proc_dir_entry *p;
+
+    if ((mode & S_IFMT) == 0)
+        mode |= S_IFREG;
+    if ((mode & S_IALLUGO) == 0)
+        mode |= S_IRUGO;
+    if (WARN_ON_ONCE(!S_ISREG(mode)))
+        return NULL;
+
+    p = __proc_create(parent, name, mode, 1) {
+        struct proc_dir_entry *ent = NULL;
+        const char *fn;
+        struct qstr qstr;
+
+        ret = xlate_proc_name(name, parent, &fn) {
+            int rv;
+
+            read_lock(&proc_subdir_lock);
+            rv = __xlate_proc_name(name, ret, residual) {
+                const char              *cp = name, *next;
+                struct proc_dir_entry   *de;
+
+                de = *ret ?: &proc_root;
+                while ((next = strchr(cp, '/')) != NULL) {
+                    de = pde_subdir_find(de, cp, next - cp);
+                    if (!de) {
+                        WARN(1, "name '%s'\n", name);
+                        return -ENOENT;
+                    }
+                    cp = next + 1;
+                }
+                *residual = cp;
+                *ret = de;
+                return 0;
+            }
+            read_unlock(&proc_subdir_lock);
+            return rv;
+        }
+        if (ret != 0)
+            goto out;
+        qstr.name = fn;
+        qstr.len = strlen(fn);
+        if (qstr.len == 0 || qstr.len >= 256) {
+            WARN(1, "name len %u\n", qstr.len);
+            return NULL;
+        }
+        if (qstr.len == 1 && fn[0] == '.') {
+            WARN(1, "name '.'\n");
+            return NULL;
+        }
+        if (qstr.len == 2 && fn[0] == '.' && fn[1] == '.') {
+            WARN(1, "name '..'\n");
+            return NULL;
+        }
+        if (*parent == &proc_root && name_to_int(&qstr) != ~0U) {
+            WARN(1, "create '/proc/%s' by hand\n", qstr.name);
+            return NULL;
+        }
+        if (is_empty_pde(*parent)) {
+            WARN(1, "attempt to add to permanently empty directory");
+            return NULL;
+        }
+
+        ent = kmem_cache_zalloc(proc_dir_entry_cache, GFP_KERNEL);
+        if (!ent)
+            goto out;
+
+        if (qstr.len + 1 <= SIZEOF_PDE_INLINE_NAME) {
+            ent->name = ent->inline_name;
+        } else {
+            ent->name = kmalloc(qstr.len + 1, GFP_KERNEL);
+            if (!ent->name) {
+                pde_free(ent);
+                return NULL;
+            }
+        }
+
+        memcpy(ent->name, fn, qstr.len + 1);
+        ent->namelen = qstr.len;
+        ent->mode = mode;
+        ent->nlink = nlink;
+        ent->subdir = RB_ROOT;
+        refcount_set(&ent->refcnt, 1);
+        spin_lock_init(&ent->pde_unload_lock);
+        INIT_LIST_HEAD(&ent->pde_openers);
+        proc_set_user(ent, (*parent)->uid, (*parent)->gid);
+
+        /* Revalidate everything under /proc/${pid}/net */
+        if ((*parent)->flags & PROC_ENTRY_FORCE_LOOKUP)
+            pde_force_lookup(ent);
+    }
+    if (p) {
+        p->proc_iops = &proc_file_inode_operations;
+        p->data = data;
+    }
+    return p;
+}
+```
+
+#### proc_register
+
+```c
+/* returns the registered entry, or frees dp and returns NULL on failure */
+struct proc_dir_entry *proc_register(struct proc_dir_entry *dir,
+        struct proc_dir_entry *dp)
+{
+    if (proc_alloc_inum(&dp->low_ino))
+        goto out_free_entry;
+
+    if (!S_ISDIR(dp->mode))
+        pde_set_flags(dp);
+
+    write_lock(&proc_subdir_lock);
+    dp->parent = dir;
+    ret = pde_subdir_insert(dir, dp) {
+        struct rb_root *root = &dir->subdir;
+        struct rb_node **new = &root->rb_node, *parent = NULL;
+
+        /* Figure out where to put new node */
+        while (*new) {
+            struct proc_dir_entry *this =
+                rb_entry(*new, struct proc_dir_entry, subdir_node);
+            int result = proc_match(de->name, this, de->namelen);
+
+            parent = *new;
+            if (result < 0)
+                new = &(*new)->rb_left;
+            else if (result > 0)
+                new = &(*new)->rb_right;
+            else
+                return false;
+        }
+
+        /* Add new node and rebalance tree. */
+        rb_link_node(&de->subdir_node, parent, new);
+        rb_insert_color(&de->subdir_node, root);
+        return true;
+    }
+
+    if (ret == false) {
+        WARN(1, "proc_dir_entry '%s/%s' already registered\n",
+            dir->name, dp->name);
+        write_unlock(&proc_subdir_lock);
+        goto out_free_inum;
+    }
+    dir->nlink++;
+    write_unlock(&proc_subdir_lock);
+
+    return dp;
 }
 ```
 
@@ -14901,8 +14878,8 @@ struct proc_dir_entry *proc_mkdir(const char *name,
             ent = __proc_create(&parent, name, S_IFDIR | mode, 2);
             if (ent) {
                 ent->data = data;
-                ent->proc_dir_ops = &proc_dir_operations;
-                ent->proc_iops = &proc_dir_inode_operations;
+                ent->proc_dir_ops   = &proc_dir_operations;
+                ent->proc_iops      = &proc_dir_inode_operations;
                 if (force_lookup) {
                     pde_force_lookup(ent);
                 }
@@ -14914,7 +14891,186 @@ struct proc_dir_entry *proc_mkdir(const char *name,
 }
 ```
 
-### proc_create_single
+#### proc_dir_operations
+
+```c
+static const struct file_operations proc_dir_operations = {
+    .llseek                 = generic_file_llseek,
+    .read                   = generic_read_dir,
+    .iterate_shared         = proc_readdir,
+};
+
+int proc_readdir(struct file *file, struct dir_context *ctx)
+{
+    struct inode *inode = file_inode(file);
+    struct proc_fs_info *fs_info = proc_sb_info(inode->i_sb);
+
+    if (fs_info->pidonly == PROC_PIDONLY_ON)
+        return 1;
+
+    return proc_readdir_de(file, ctx, PDE(inode));
+}
+
+int proc_readdir_de(struct file *file, struct dir_context *ctx,
+            struct proc_dir_entry *de)
+{
+    int i;
+
+    if (!dir_emit_dots(file, ctx))
+        return 0;
+
+    i = ctx->pos - 2;
+    read_lock(&proc_subdir_lock);
+    de = pde_subdir_first(de) {
+        return rb_entry_safe(rb_first(&dir->subdir), struct proc_dir_entry,
+                subdir_node);
+    }
+    for (;;) {
+        if (!de) {
+            read_unlock(&proc_subdir_lock);
+            return 0;
+        }
+        if (!i)
+            break;
+        de = pde_subdir_next(de);
+        i--;
+    }
+
+    do {
+        struct proc_dir_entry *next;
+        pde_get(de);
+        read_unlock(&proc_subdir_lock);
+        if (!dir_emit(ctx, de->name, de->namelen, de->low_ino, de->mode >> 12)) {
+            pde_put(de);
+            return 0;
+        }
+        ctx->pos++;
+        read_lock(&proc_subdir_lock);
+        next = pde_subdir_next(de) {
+            return rb_entry_safe(rb_next(&dir->subdir_node), struct proc_dir_entry, subdir_node);
+        }
+        pde_put(de);
+        de = next;
+    } while (de);
+    read_unlock(&proc_subdir_lock);
+    return 1;
+}
+```
+
+#### proc_dir_inode_operations
+
+```c
+static const struct inode_operations proc_dir_inode_operations = {
+    .lookup         = proc_lookup,
+    .getattr        = proc_getattr,
+    .setattr        = proc_notify_change,
+};
+```
+
+##### proc_lookup
+
+```c
+struct proc_fs_info {
+    struct pid_namespace    *pid_ns;
+    kgid_t                  pid_gid;
+    enum proc_hidepid       hide_pid;
+    enum proc_pidonly       pidonly;
+    struct rcu_head         rcu;
+};
+
+struct dentry *proc_lookup(struct inode *dir, struct dentry *dentry,
+        unsigned int flags)
+{
+    struct proc_fs_info *fs_info = proc_sb_info(dir->i_sb);
+
+    if (fs_info->pidonly == PROC_PIDONLY_ON)
+        return ERR_PTR(-ENOENT);
+
+    return proc_lookup_de(dir, dentry, PDE(dir));
+}
+
+struct dentry *proc_lookup_de(struct inode *dir, struct dentry *dentry,
+                  struct proc_dir_entry *de)
+{
+    struct inode *inode;
+
+    read_lock(&proc_subdir_lock);
+    de = pde_subdir_find(de, dentry->d_name.name, dentry->d_name.len)  {
+        struct rb_node *node = dir->subdir.rb_node;
+
+        while (node) {
+            struct proc_dir_entry *de = rb_entry(node, struct proc_dir_entry, subdir_node);
+            int result = proc_match(name, de, len);
+
+            if (result < 0)
+                node = node->rb_left;
+            else if (result > 0)
+                node = node->rb_right;
+            else
+                return de;
+        }
+        return NULL;
+    }
+    if (de) {
+        pde_get(de);
+        read_unlock(&proc_subdir_lock);
+        inode = proc_get_inode(dir->i_sb, de) {
+            struct inode *inode = new_inode(sb);
+
+            if (!inode) {
+                pde_put(de);
+                return NULL;
+            }
+
+            inode->i_private = de->data;
+            inode->i_ino = de->low_ino;
+            simple_inode_init_ts(inode);
+            PROC_I(inode)->pde = de;
+            if (is_empty_pde(de)) {
+                make_empty_dir_inode(inode);
+                return inode;
+            }
+
+            if (de->mode) {
+                inode->i_mode = de->mode;
+                inode->i_uid = de->uid;
+                inode->i_gid = de->gid;
+            }
+            if (de->size)
+                inode->i_size = de->size;
+            if (de->nlink)
+                set_nlink(inode, de->nlink);
+
+            if (S_ISREG(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                if (pde_has_proc_read_iter(de))
+                    inode->i_fop = &proc_iter_file_ops;
+                else
+                    inode->i_fop = &proc_reg_file_ops;
+            } else if (S_ISDIR(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                inode->i_fop = de->proc_dir_ops;
+            } else if (S_ISLNK(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                inode->i_fop = NULL;
+            } else {
+                BUG();
+            }
+            return inode;
+        }
+        if (!inode)
+            return ERR_PTR(-ENOMEM);
+        if (de->flags & PROC_ENTRY_FORCE_LOOKUP)
+            return d_splice_alias_ops(inode, dentry, &proc_net_dentry_ops);
+
+        return d_splice_alias_ops(inode, dentry, &proc_misc_dentry_ops);
+    }
+    read_unlock(&proc_subdir_lock);
+    return ERR_PTR(-ENOENT);
+}
+```
+
+### proc_create_xxx
 
 ```c
 #define proc_create_single(name, mode, parent, show) \
@@ -14935,6 +15091,108 @@ struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
 
     return proc_register(parent, p);
 }
+
+struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
+        struct proc_dir_entry *parent, const struct seq_operations *ops,
+        unsigned int state_size, void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    p->proc_ops = &proc_seq_ops;
+    p->seq_ops = ops;
+    p->state_size = state_size;
+    return proc_register(parent, p);
+}
+
+struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
+        struct proc_dir_entry *parent,
+        int (*show)(struct seq_file *, void *), void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    p->proc_ops = &proc_single_ops;
+    p->single_show = show;
+    return proc_register(parent, p);
+}
+
+struct proc_dir_entry *proc_create_net_data(const char *name, umode_t mode,
+        struct proc_dir_entry *parent, const struct seq_operations *ops,
+        unsigned int state_size, void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    pde_force_lookup(p);
+    p->proc_ops = &proc_net_seq_ops;
+    p->seq_ops = ops;
+    p->state_size = state_size;
+    return proc_register(parent, p);
+}
+
+struct proc_dir_entry *proc_create_net_single(const char *name, umode_t mode,
+        struct proc_dir_entry *parent,
+        int (*show)(struct seq_file *, void *), void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    pde_force_lookup(p);
+    p->proc_ops = &proc_net_single_ops;
+    p->single_show = show;
+    return proc_register(parent, p);
+}
+
+struct proc_dir_entry *proc_create_net_single_write(const char *name, umode_t mode,
+        struct proc_dir_entry *parent,
+        int (*show)(struct seq_file *, void *),
+        proc_write_t write,
+        void *data)
+{
+    struct proc_dir_entry *p;
+
+    p = proc_create_reg(name, mode, &parent, data);
+    if (!p)
+        return NULL;
+    pde_force_lookup(p);
+    p->proc_ops = &proc_net_single_ops;
+    p->single_show = show;
+    p->write = write;
+    return proc_register(parent, p);
+}
+```
+
+#### proc_seq_ops
+
+```c
+static const struct proc_ops proc_seq_ops = {
+    /* not permanent -- can call into arbitrary seq_operations */
+    .proc_open          = proc_seq_open,
+    .proc_read_iter     = seq_read_iter,
+    .proc_lseek         = seq_lseek,
+    .proc_release       = proc_seq_release,
+};
+```
+
+#### proc_single_ops
+
+```c
+static const struct proc_ops proc_single_ops = {
+    /* not permanent -- can call into arbitrary ->single_show */
+    .proc_open      = proc_single_open,
+    .proc_read_iter = seq_read_iter,
+    .proc_lseek     = seq_lseek,
+    .proc_release   = single_release,
+};
 ```
 
 ### proc_single_ops
@@ -14996,142 +15254,6 @@ static int proc_single_open(struct inode *inode, struct file *file)
         }
         return res;
     }
-}
-```
-
-#### seq_read_iter
-
-```c
-/* Ready-made ->f_op->read_iter() */
-ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
-{
-    struct seq_file *m = iocb->ki_filp->private_data;
-    size_t copied = 0;
-    size_t n;
-    void *p;
-    int err = 0;
-
-    if (!iov_iter_count(iter))
-        return 0;
-
-    mutex_lock(&m->lock);
-
-    /* if request is to read from zero offset, reset iterator to first
-    * record as it might have been already advanced by previous requests */
-    if (iocb->ki_pos == 0) {
-        m->index = 0;
-        m->count = 0;
-    }
-
-    /* Don't assume ki_pos is where we left it */
-    if (unlikely(iocb->ki_pos != m->read_pos)) {
-        while ((err = traverse(m, iocb->ki_pos)) == -EAGAIN)
-            ;
-        if (err) {
-            /* With prejudice... */
-            m->read_pos = 0;
-            m->index = 0;
-            m->count = 0;
-            goto Done;
-        } else {
-            m->read_pos = iocb->ki_pos;
-        }
-    }
-
-    /* grab buffer if we didn't have one */
-    if (!m->buf) {
-        m->buf = seq_buf_alloc(m->size = PAGE_SIZE) {
-          if (unlikely(size > MAX_RW_COUNT))
-                return NULL;
-
-            return kvmalloc(size, GFP_KERNEL_ACCOUNT);
-        }
-        if (!m->buf)
-            goto Enomem;
-    }
-    // something left in the buffer - copy it out first
-    if (m->count) {
-        n = copy_to_iter(m->buf + m->from, m->count, iter);
-        m->count -= n;
-        m->from += n;
-        copied += n;
-        if (m->count)    // hadn't managed to copy everything
-            goto Done;
-    }
-    // get a non-empty record in the buffer
-    m->from = 0;
-    p = m->op->start(m, &m->index);
-    while (1) {
-        err = PTR_ERR(p);
-        if (!p || IS_ERR(p))    // EOF or an error
-            break;
-        err = m->op->show(m, p);
-        if (err < 0)        // hard error
-            break;
-        if (unlikely(err))    // ->show() says "skip it"
-            m->count = 0;
-        if (unlikely(!m->count)) { // empty record
-            p = m->op->next(m, p, &m->index);
-            continue;
-        }
-        if (!seq_has_overflowed(m)) // got it
-            goto Fill;
-        // need a bigger buffer
-        m->op->stop(m, p);
-        kvfree(m->buf);
-        m->count = 0;
-        m->buf = seq_buf_alloc(m->size <<= 1);
-        if (!m->buf)
-            goto Enomem;
-        p = m->op->start(m, &m->index);
-    }
-    // EOF or an error
-    m->op->stop(m, p);
-    m->count = 0;
-    goto Done;
-Fill:
-    // one non-empty record is in the buffer; if they want more,
-    // try to fit more in, but in any case we need to advance
-    // the iterator once for every record shown.
-    while (1) {
-        size_t offs = m->count;
-        loff_t pos = m->index;
-
-        p = m->op->next(m, p, &m->index);
-        if (pos == m->index) {
-            pr_info_ratelimited("buggy .next function %ps did not update position index\n",
-                        m->op->next);
-            m->index++;
-        }
-        if (!p || IS_ERR(p))    // no next record for us
-            break;
-        if (m->count >= iov_iter_count(iter))
-            break;
-        err = m->op->show(m, p);
-        if (err > 0) {        // ->show() says "skip it"
-            m->count = offs;
-        } else if (err || seq_has_overflowed(m)) {
-            m->count = offs;
-            break;
-        }
-    }
-    m->op->stop(m, p);
-    n = copy_to_iter(m->buf, m->count, iter);
-    copied += n;
-    m->count -= n;
-    m->from = n;
-Done:
-    if (unlikely(!copied)) {
-        copied = m->count ? -EFAULT : err;
-    } else {
-        iocb->ki_pos += copied;
-        m->read_pos += copied;
-    }
-    mutex_unlock(&m->lock);
-    return copied;
-Enomem:
-    err = -ENOMEM;
-    goto Done;
 }
 ```
 
@@ -15516,18 +15638,18 @@ struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
 
 ```c
 struct seq_file {
-    char    *buf;
-    size_t  size;
-    size_t  from;
-    size_t  count;
-    size_t  pad_until;
-    loff_t  index;
-    loff_t  read_pos;
-    struct  mutex lock;
+    char        *buf;
+    size_t      size;
+    size_t      from;
+    size_t      count;
+    size_t      pad_until;
+    loff_t      index;
+    loff_t      read_pos;
+    struct      mutex lock;
     const struct seq_operations *op;
-    int                 poll_event;
-    const struct file   *file;
-    void                *private;
+    int                         poll_event;
+    const struct file           *file;
+    void                        *private;
 };
 
 struct seq_operations {
@@ -15538,42 +15660,30 @@ struct seq_operations {
 };
 ```
 
-### seq_open_private
+### seq_open
 
 ```c
-int seq_open_private(struct file *filp, const struct seq_operations *ops,
-        int psize)
+int single_open(struct file *file, int (*show)(struct seq_file *, void *),
+        void *data)
 {
-    return __seq_open_private(filp, ops, psize) ? 0 : -ENOMEM;
+    struct seq_operations *op = kmalloc_obj(*op, GFP_KERNEL_ACCOUNT);
+    int res = -ENOMEM;
+
+    if (op) {
+        op->start = single_start;
+        op->next = single_next;
+        op->stop = single_stop;
+        op->show = show;
+        res = seq_open(file, op);
+        if (!res)
+            ((struct seq_file *)file->private_data)->private = data;
+        else
+            kfree(op);
+    }
+    return res;
 }
-EXPORT_SYMBOL(seq_open_private);
+EXPORT_SYMBOL(single_open);
 
-void *__seq_open_private(struct file *f, const struct seq_operations *ops,
-        int psize)
-{
-    int rc;
-    void *private;
-    struct seq_file *seq;
-
-    private = kzalloc(psize, GFP_KERNEL_ACCOUNT);
-    if (private == NULL)
-        goto out;
-
-    rc = seq_open(f, ops);
-    if (rc < 0)
-        goto out_free;
-
-    seq = f->private_data;
-    seq->private = private;
-    return private;
-
-out_free:
-    kfree(private);
-out:
-}
-```
-
-```c
 int seq_open(struct file *file, const struct seq_operations *op)
 {
     struct seq_file *p;
@@ -15603,6 +15713,7 @@ int seq_open(struct file *file, const struct seq_operations *op)
     file->f_mode &= ~FMODE_PWRITE;
     return 0;
 }
+EXPORT_SYMBOL(seq_open);
 ```
 
 ### seq_read
@@ -15619,149 +15730,230 @@ ssize_t seq_read(struct file *file, char __user *buf, size_t size, loff_t *ppos)
         *kiocb = (struct kiocb) {
             .ki_filp = filp,
             .ki_flags = filp->f_iocb_flags,
-            .ki_ioprio = get_current_ioprio(),
+            .ki_ioprio = get_current_ioprio() {
+                struct io_context *ioc = p->io_context;
+                int prio;
+
+                if (!ioc)
+                    return IOPRIO_PRIO_VALUE(task_nice_ioclass(p), task_nice_ioprio(p));
+
+                if (p != current)
+                    lockdep_assert_held(&p->alloc_lock);
+
+                prio = ioc->ioprio;
+                if (IOPRIO_PRIO_CLASS(prio) == IOPRIO_CLASS_NONE)
+                    prio = IOPRIO_PRIO_VALUE(task_nice_ioclass(p),
+                                task_nice_ioprio(p));
+                return prio;
+            }
         };
     }
     iov_iter_init(&iter, ITER_DEST, &iov, 1, size) {
         WARN_ON(direction & ~(READ | WRITE));
         *i = (struct iov_iter) {
-            .iter_type = ITER_IOVEC,
-            .nofault = false,
-            .data_source = direction,
-            .__iov = iov,
-            .nr_segs = nr_segs,
-            .iov_offset = 0,
-            .count = count
+            .iter_type      = ITER_IOVEC,
+            .nofault        = false,
+            .data_source    = direction,
+            .__iov          = iov,
+            .nr_segs        = nr_segs,
+            .iov_offset     = 0,
+            .count          = count
         };
     }
 
     kiocb.ki_pos = *ppos;
-    ret = seq_read_iter(&kiocb, &iter) {
-        struct seq_file *m = iocb->ki_filp->private_data;
-        size_t copied = 0;
-        size_t n;
-        void *p;
-        int err = 0;
-
-        if (!iov_iter_count(iter))
-            return 0;
-
-        mutex_lock(&m->lock);
-
-        /* if request is to read from zero offset, reset iterator to first
-        * record as it might have been already advanced by previous requests */
-        if (iocb->ki_pos == 0) {
-            m->index = 0;
-            m->count = 0;
-        }
-
-        /* Don't assume ki_pos is where we left it */
-        if (unlikely(iocb->ki_pos != m->read_pos)) {
-            while ((err = traverse(m, iocb->ki_pos)) == -EAGAIN)
-                ;
-            if (err) {
-                /* With prejudice... */
-                m->read_pos = 0;
-                m->index = 0;
-                m->count = 0;
-                goto Done;
-            } else {
-                m->read_pos = iocb->ki_pos;
-            }
-        }
-
-        /* grab buffer if we didn't have one */
-        if (!m->buf) {
-            m->buf = seq_buf_alloc(m->size = PAGE_SIZE);
-            if (!m->buf)
-                goto Enomem;
-        }
-        // something left in the buffer - copy it out first
-        if (m->count) {
-            n = copy_to_iter(m->buf + m->from, m->count, iter);
-            m->count -= n;
-            m->from += n;
-            copied += n;
-            if (m->count)    // hadn't managed to copy everything
-                goto Done;
-        }
-        // get a non-empty record in the buffer
-        m->from = 0;
-        p = m->op->start(m, &m->index);
-        while (1) {
-            err = PTR_ERR(p);
-            if (!p || IS_ERR(p))    // EOF or an error
-                break;
-            err = m->op->show(m, p);
-            if (err < 0)        // hard error
-                break;
-            if (unlikely(err))    // ->show() says "skip it"
-                m->count = 0;
-            if (unlikely(!m->count)) { // empty record
-                p = m->op->next(m, p, &m->index);
-                continue;
-            }
-            if (!seq_has_overflowed(m)) // got it
-                goto Fill;
-            // need a bigger buffer
-            m->op->stop(m, p);
-            kvfree(m->buf);
-            m->count = 0;
-            m->buf = seq_buf_alloc(m->size <<= 1);
-            if (!m->buf)
-                goto Enomem;
-            p = m->op->start(m, &m->index);
-        }
-        // EOF or an error
-        m->op->stop(m, p);
-        m->count = 0;
-        goto Done;
-    Fill:
-        // one non-empty record is in the buffer; if they want more,
-        // try to fit more in, but in any case we need to advance
-        // the iterator once for every record shown.
-        while (1) {
-            size_t offs = m->count;
-            loff_t pos = m->index;
-
-            p = m->op->next(m, p, &m->index);
-            if (pos == m->index) {
-                pr_info_ratelimited("buggy .next function %ps did not update position index\n",
-                            m->op->next);
-                m->index++;
-            }
-            if (!p || IS_ERR(p))    // no next record for us
-                break;
-            if (m->count >= iov_iter_count(iter))
-                break;
-            err = m->op->show(m, p);
-            if (err > 0) {        // ->show() says "skip it"
-                m->count = offs;
-            } else if (err || seq_has_overflowed(m)) {
-                m->count = offs;
-                break;
-            }
-        }
-        m->op->stop(m, p);
-        n = copy_to_iter(m->buf, m->count, iter);
-        copied += n;
-        m->count -= n;
-        m->from = n;
-    Done:
-        if (unlikely(!copied)) {
-            copied = m->count ? -EFAULT : err;
-        } else {
-            iocb->ki_pos += copied;
-            m->read_pos += copied;
-        }
-        mutex_unlock(&m->lock);
-        return copied;
-    Enomem:
-        err = -ENOMEM;
-        goto Done;
-    }
+    ret = seq_read_iter(&kiocb, &iter);
     *ppos = kiocb.ki_pos;
     return ret;
+}
+EXPORT_SYMBOL(seq_read);
+
+/* Ready-made ->f_op->read_iter() */
+ssize_t seq_read_iter(struct kiocb *iocb, struct iov_iter *iter)
+{
+    struct seq_file *m = iocb->ki_filp->private_data;
+    size_t copied = 0;
+    size_t n;
+    void *p;
+    int err = 0;
+
+    if (!iov_iter_count(iter))
+        return 0;
+
+    mutex_lock(&m->lock);
+
+    /* if request is to read from zero offset, reset iterator to first
+     * record as it might have been already advanced by previous requests */
+    if (iocb->ki_pos == 0) {
+        m->index = 0;
+        m->count = 0;
+    }
+
+    /* Don't assume ki_pos is where we left it */
+    if (unlikely(iocb->ki_pos != m->read_pos)) {
+        while ((err = traverse(m, iocb->ki_pos)) == -EAGAIN)
+            ;
+        if (err) {
+            /* With prejudice... */
+            m->read_pos = 0;
+            m->index = 0;
+            m->count = 0;
+            goto Done;
+        } else {
+            m->read_pos = iocb->ki_pos;
+        }
+    }
+
+    /* grab buffer if we didn't have one */
+    if (!m->buf) {
+        m->buf = seq_buf_alloc(m->size = PAGE_SIZE);
+        if (!m->buf)
+            goto Enomem;
+    }
+    // something left in the buffer - copy it out first
+    if (m->count) {
+        n = copy_to_iter(m->buf + m->from, m->count, iter);
+        m->count -= n;
+        m->from += n;
+        copied += n;
+        if (m->count)    // hadn't managed to copy everything
+            goto Done;
+    }
+    // get a non-empty record in the buffer
+    m->from = 0;
+    p = m->op->start(m, &m->index);
+    while (1) {
+        err = PTR_ERR(p);
+        if (!p || IS_ERR(p))    // EOF or an error
+            break;
+        err = m->op->show(m, p);
+        if (err < 0)        // hard error
+            break;
+        if (unlikely(err))    // ->show() says "skip it"
+            m->count = 0;
+        if (unlikely(!m->count)) { // empty record
+            p = m->op->next(m, p, &m->index);
+            continue;
+        }
+        if (!seq_has_overflowed(m)) // got it
+            goto Fill;
+        // need a bigger buffer
+        m->op->stop(m, p);
+        kvfree(m->buf);
+        m->count = 0;
+        m->buf = seq_buf_alloc(m->size <<= 1);
+        if (!m->buf)
+            goto Enomem;
+        p = m->op->start(m, &m->index);
+    }
+    // EOF or an error
+    m->op->stop(m, p);
+    m->count = 0;
+    goto Done;
+Fill:
+    // one non-empty record is in the buffer; if they want more,
+    // try to fit more in, but in any case we need to advance
+    // the iterator once for every record shown.
+    while (1) {
+        size_t offs = m->count;
+        loff_t pos = m->index;
+
+        p = m->op->next(m, p, &m->index);
+        if (pos == m->index) {
+            pr_info_ratelimited("buggy .next function %ps did not update position index\n",
+                        m->op->next);
+            m->index++;
+        }
+        if (!p || IS_ERR(p))    // no next record for us
+            break;
+        if (m->count >= iov_iter_count(iter))
+            break;
+        err = m->op->show(m, p);
+        if (err > 0) {        // ->show() says "skip it"
+            m->count = offs;
+        } else if (err || seq_has_overflowed(m)) {
+            m->count = offs;
+            break;
+        }
+    }
+    m->op->stop(m, p);
+    n = copy_to_iter(m->buf, m->count, iter);
+    copied += n;
+    m->count -= n;
+    m->from = n;
+Done:
+    if (unlikely(!copied)) {
+        copied = m->count ? -EFAULT : err;
+    } else {
+        iocb->ki_pos += copied;
+        m->read_pos += copied;
+    }
+    mutex_unlock(&m->lock);
+    return copied;
+Enomem:
+    err = -ENOMEM;
+    goto Done;
+}
+EXPORT_SYMBOL(seq_read_iter);
+```
+
+#### traverse
+
+```c
+int traverse(struct seq_file *m, loff_t offset)
+{
+    loff_t pos = 0;
+    int error = 0;
+    void *p;
+
+    m->index = 0;
+    m->count = m->from = 0;
+    if (!offset)
+        return 0;
+
+    if (!m->buf) {
+        m->buf = seq_buf_alloc(m->size = PAGE_SIZE);
+        if (!m->buf)
+            return -ENOMEM;
+    }
+    p = m->op->start(m, &m->index);
+    while (p) {
+        error = PTR_ERR(p);
+        if (IS_ERR(p))
+            break;
+        error = m->op->show(m, p);
+        if (error < 0)
+            break;
+        if (unlikely(error)) {
+            error = 0;
+            m->count = 0;
+        }
+
+        ret = seq_has_overflowed(struct seq_file *m) {
+            return m->count == m->size;
+        }
+        if (ret)
+            goto Eoverflow;
+        p = m->op->next(m, p, &m->index);
+        if (pos + m->count > offset) {
+            m->from = offset - pos;
+            m->count -= m->from;
+            break;
+        }
+        pos += m->count;
+        m->count = 0;
+        if (pos == offset)
+            break;
+    }
+    m->op->stop(m, p);
+    return error;
+
+Eoverflow:
+    m->op->stop(m, p);
+    kvfree(m->buf);
+    m->count = 0;
+    m->buf = seq_buf_alloc(m->size <<= 1);
+    return !m->buf ? -ENOMEM : -EAGAIN;
 }
 ```
 
