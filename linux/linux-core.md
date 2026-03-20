@@ -6098,6 +6098,19 @@ pi_faulted:
 
 ---
 
+```sh
+31          24 23        16 15     8 7       0
++-------------+------------+--------+--------+
+|  tail idx   | tail cpu   | pending| locked |
++-------------+------------+--------+--------+
+
+_Q_LOCKED_VAL     = 0x00000001
+_Q_PENDING_VAL    = 0x00000100
+_Q_TAIL_MASK      = 0xFFFF0000
+_Q_TAIL_CPU_BITS  ≈ 12–14 bits (depends on CONFIG)
+_Q_TAIL_IDX_BITS  = 4 bits (usually — allows 16 nested contexts per CPU)
+```
+
 ![](../images/kernel/lock-spinlock-qued-bits.png)
 
 ---
@@ -6261,6 +6274,16 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     u32 old, tail;
     int idx;
 
+    BUILD_BUG_ON(CONFIG_NR_CPUS >= (1U << _Q_TAIL_CPU_BITS));
+
+/* 1. Very first thing — special slowpath cases */
+	if (pv_enabled())
+		goto pv_queue;
+
+	if (virt_spin_lock(lock))
+		return;
+
+/* 2. Pending -> locked handover optimistic spinning (very important!) */
     /* Wait for in-progress pending->locked hand-overs with a bounded
      * number of spins so that we guarantee forward progress.
      * 0,1,0 -> 0,0,1 */
@@ -6271,14 +6294,17 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
         );
     }
 
+/* 3. Already clearly contended -> straight to queue */
     /* If we observe any contention; queue. */
     if (val & ~_Q_LOCKED_MASK)
         goto queue;
 
+/* 4. Optimistic pending acquisition (very common fast-slow transition) */
     /* trylock || pending
      * * 0,0,* -> 0,1,* -> 0,0,1 pending, trylock
      * fetch the whole lock value and set pending */
     val = queued_fetch_set_pending_acquire(lock) {
+        /* return old val */
         return atomic_fetch_or_acquire(_Q_PENDING_VAL, &lock->val);
     }
 
@@ -6296,7 +6322,7 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
         goto queue;
     }
 
-    /* We're pending, wait for the owner to go away.
+/* 5. We're pending, wait for the owner to go away.
      *
      * 0,1,1 -> *,1,0
      *
@@ -6331,6 +6357,8 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
 queue:
     lockevent_inc(lock_slowpath);
 pv_queue:
+
+/* 6. Get our per-cpu MCS node */
     node = this_cpu_ptr(&qnodes[0].mcs);
     idx = node->count++;
     tail = encode_tail(smp_processor_id(), idx) {
@@ -6342,6 +6370,7 @@ pv_queue:
         return tail;
     }
 
+/* 7. Safety fallback when nesting too deep */
     /* 4 nodes are allocated based on the assumption that there will
      * not be nested NMIs taking spinlocks. That may not be true in
      * some architectures even though the chance of needing more than
@@ -6349,13 +6378,14 @@ pv_queue:
      * we fall back to spinning on the lock directly without using
      * any MCS node. This is not the most elegant solution, but is
      * simple enough. */
-    if (unlikely(idx >= MAX_NODES)) {
+    if (unlikely(idx >= _Q_MAX_NODES)) {
         lockevent_inc(lock_no_node);
         while (!queued_spin_trylock(lock))
             cpu_relax();
         goto release;
     }
 
+/* 8. Initialize our node */
     node = grab_mcs_node(node, idx) {
         return &((struct qnode *)base + idx)->mcs;
     }
@@ -6369,6 +6399,7 @@ pv_queue:
     node->next = NULL;
     pv_init_node(node);
 
+/* 9. One last optimistic trylock (very effective in practice!) */
     /* We touched a (possibly) cold cacheline in the per-cpu queue node;
      * attempt the trylock once more in the hope someone let go while we
      * weren't watching.
@@ -6389,7 +6420,7 @@ pv_queue:
      * @node into the waitqueue via WRITE_ONCE(prev->next, node) below.*/
     smp_wmb();
 
-    /* Publish the updated tail.
+/* 10. Publish our tail
      * We have already touched the queueing cacheline; don't bother with
      * pending stuff.
      *
@@ -6397,10 +6428,15 @@ pv_queue:
     old = xchg_tail(lock, tail);
     next = NULL;
 
-    /* if there was a previous node; link it and wait until reaching the
+/* 11. if there was a previous node; link it and wait until reaching the
      * head of the waitqueue. */
     if (old & _Q_TAIL_MASK) {
-        prev = decode_tail(old);
+        prev = decode_tail(old, qnodes) {
+            int cpu = (tail >> _Q_TAIL_CPU_OFFSET) - 1;
+            int idx = (tail &  _Q_TAIL_IDX_MASK) >> _Q_TAIL_IDX_OFFSET;
+
+            return per_cpu_ptr(&qnodes[idx].mcs, cpu);
+        }
 
         /* Link @node into the waitqueue. */
         WRITE_ONCE(prev->next, node);
@@ -6430,7 +6466,7 @@ pv_queue:
             prefetchw(next);
     }
 
-    /* we're at the head of the waitqueue, wait for the owner & pending to
+/* 12. we're at the head of the waitqueue, wait for the owner & pending to
      * go away.
      *
      * *,x,y -> *,0,0
@@ -6471,6 +6507,7 @@ pv_queue:
     }
 
 locked:
+/* 13. Try to become uncontended owner */
     /* claim the lock:
      *
      * n,0,0 -> 0,0,1 : lock, uncontended
@@ -6493,19 +6530,27 @@ locked:
             goto release; /* No contention */
     }
 
+/* 14. Contended case — we become the new owner anyway */
     /* Either somebody is queued behind us or _Q_PENDING_VAL got set
      * which will then detect the remaining tail and queue behind us
      * ensuring we'll see a @next. */
-    set_locked(lock);
+    set_locked(lock) {
+        WRITE_ONCE(lock->locked, _Q_LOCKED_VAL);
+    }
 
+/* 15. Wake up the next waiter (classic MCS unlock) */
     /* contended path; wait for next if not observed yet, release. */
     if (!next)
         next = smp_cond_load_relaxed(&node->next, (VAL));
 
-    arch_mcs_spin_unlock_contended(&next->locked);
+    arch_mcs_spin_unlock_contended(&next->locked) {
+        smp_store_release((l), 1)
+    }
     pv_kick_node(lock, next);
 
 release:
+    trace_contention_end(lock, 0);
+
     __this_cpu_dec(qnodes[0].mcs.count);
 }
 ```
