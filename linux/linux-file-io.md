@@ -388,7 +388,7 @@ void __init mnt_init(void) {
 
 ## mount
 
-![](../images/kernel/io-mount.svg)
+![](../images/kernel/file-fs-hierarchy.svg)
 
 <img src='../images/kernel/io-mount-example.png' height='600'/>
 
@@ -14374,7 +14374,10 @@ void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 }
 ```
 
-## proc
+## proc_fs
+
+
+![](../images/kernel/file-proc_fs.drawio.svg)
 
 ```c
 struct proc_dir_entry proc_root = {
@@ -14681,6 +14684,100 @@ bool proc_fill_cache(struct file *file, struct dir_context *ctx,
     dput(child);
 end_instantiate:
     return dir_emit(ctx, name, len, ino, type);
+}
+```
+
+### proc_vfs
+
+#### proc_reg_file_ops
+
+```c
+static const struct file_operations proc_reg_file_ops = {
+    .llseek             = proc_reg_llseek,
+    .read               = proc_reg_read() {
+        return pde_read(pde, file, buf, count, ppos) {
+            const auto read = pde->proc_ops->proc_read;
+            if (read)
+                return read(file, buf, count, ppos);
+            return -EIO;
+        }
+    }
+    .write              = proc_reg_write() {
+        return pde_write(pde, file, buf, count, ppos) {
+            const auto write = pde->proc_ops->proc_write;
+            if (write)
+                return write(file, buf, count, ppos);
+            return -EIO;
+        }
+    }
+    .poll               = proc_reg_poll,
+    .unlocked_ioctl     = proc_reg_unlocked_ioctl,
+    .mmap               = proc_reg_mmap,
+    .get_unmapped_area  = proc_reg_get_unmapped_area,
+    .open               = proc_reg_open,
+    .release            = proc_reg_release,
+};
+```
+
+```c
+int proc_reg_open(struct inode *inode, struct file *file)
+{
+    struct proc_dir_entry *pde = PDE(inode);
+    int rv = 0;
+    typeof_member(struct proc_ops, proc_open) open;
+    struct pde_opener *pdeo;
+
+    if (!pde_has_proc_lseek(pde))
+        file->f_mode &= ~FMODE_LSEEK;
+
+    if (pde_is_permanent(pde)) {
+        open = pde->proc_ops->proc_open;
+        if (open)
+            rv = open(inode, file);
+        return rv;
+    }
+
+    /* Ensure that
+     * 1) PDE's ->release hook will be called no matter what
+     *    either normally by close()/->release, or forcefully by
+     *    rmmod/remove_proc_entry.
+     *
+     * 2) rmmod isn't blocked by opening file in /proc and sitting on
+     *    the descriptor (including "rmmod foo </proc/foo" scenario).
+     *
+     * Save every "struct file" with custom ->release hook. */
+    if (!use_pde(pde))
+        return -ENOENT;
+
+    const auto release = pde->proc_ops->proc_release;
+    if (release) {
+        pdeo = kmem_cache_alloc(pde_opener_cache, GFP_KERNEL);
+        if (!pdeo) {
+            rv = -ENOMEM;
+            goto out_unuse;
+        }
+    }
+
+    open = pde->proc_ops->proc_open;
+    if (open)
+        rv = open(inode, file);
+
+    if (release) {
+        if (rv == 0) {
+            /* To know what to release. */
+            pdeo->file = file;
+            pdeo->closing = false;
+            pdeo->c = NULL;
+            spin_lock(&pde->pde_unload_lock);
+            list_add(&pdeo->lh, &pde->pde_openers);
+            spin_unlock(&pde->pde_unload_lock);
+        } else
+            kmem_cache_free(pde_opener_cache, pdeo);
+    }
+
+out_unuse:
+    unuse_pde(pde);
+    return rv;
 }
 ```
 

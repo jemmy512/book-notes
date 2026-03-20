@@ -6572,7 +6572,7 @@ int proc_do_uts_string(struct ctl_table *table, int write,
 
 ## mnt_namespace
 
-![](../images/kernel/io-mount.svg)
+![](../images/kernel/file-fs-hierarchy.svg)
 
 ```c
 struct mnt_namespace {
