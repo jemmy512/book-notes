@@ -1122,473 +1122,6 @@ int rcu_pending(int user)
 }
 ```
 
-#### check_cpu_stall
-
-```sh
-rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
-rcu:     2-...!: (0 ticks this GP) idle=80d4/0/0x1 softirq=846094/846094 fqs=26
-rcu: rcu_preempt kthread starved for 5194 jiffies! g1369893 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x0 ->cpu=4
-rcu:     Unless rcu_preempt kthread gets sufficient CPU time, OOM is now expected behavior.
-rcu: RCU grace-period kthread stack dump:
-rcu: Stack dump where RCU GP kthread last ran:
-```
-
-```c
-void check_cpu_stall(struct rcu_data *rdp)
-{
-    bool self_detected;
-    unsigned long gs1;
-    unsigned long gs2;
-    unsigned long gps;
-    unsigned long j;
-    unsigned long jn;
-    unsigned long js;
-    struct rcu_node *rnp;
-
-    lockdep_assert_irqs_disabled();
-    if ((rcu_stall_is_suppressed() && !READ_ONCE(rcu_kick_kthreads)) || !rcu_gp_in_progress())
-        return;
-
-    rcu_stall_kick_kthreads() {
-        unsigned long j;
-
-        if (!READ_ONCE(rckick_kthreads))
-            return;
-        j = READ_ONCE(rcu_state.jiffies_kick_kthreads);
-        if (time_after(jiffies, j) && rcu_state.gp_kthread &&
-            (rcu_gp_in_progress() || READ_ONCE(rcu_state.gp_flags))) {
-            WARN_ONCE(1, "Kicking %s grace-period kthread\n",
-                rcu_state.name);
-            rcu_ftrace_dump(DUMP_ALL);
-            wake_up_process(rcu_state.gp_kthread);
-            WRITE_ONCE(rcu_state.jiffies_kick_kthreads, j + HZ);
-        }
-    }
-
-    /* Check if it was requested (via rcu_cpu_stall_reset()) that the FQS
-     * loop has to set jiffies to ensure a non-stale jiffies value. This
-     * is required to have good jiffies value after coming out of long
-     * breaks of jiffies updates. Not doing so can cause false positives. */
-    if (READ_ONCE(rcu_state.nr_fqs_jiffies_stall) > 0)
-        return;
-
-    j = jiffies;
-
-    /* Lots of memory barriers to reject false positives.
-     *
-     * The idea is to pick up rcu_state.gp_seq, then
-     * rcu_state.jiffies_stall, then rcu_state.gp_start, and finally
-     * another copy of rcu_state.gp_seq.  These values are updated in
-     * the opposite order with memory barriers (or equivalent) during
-     * grace-period initialization and cleanup.  Now, a false positive
-     * can occur if we get an new value of rcu_state.gp_start and a old
-     * value of rcu_state.jiffies_stall.  But given the memory barriers,
-     * the only way that this can happen is if one grace period ends
-     * and another starts between these two fetches.  This is detected
-     * by comparing the second fetch of rcu_state.gp_seq with the
-     * previous fetch from rcu_state.gp_seq.
-     *
-     * Given this check, comparisons of jiffies, rcu_state.jiffies_stall,
-     * and rcu_state.gp_start suffice to forestall false positives. */
-    gs1 = READ_ONCE(rcu_state.gp_seq);
-    smp_rmb(); /* Pick up ->gp_seq first... */
-    js = READ_ONCE(rcu_state.jiffies_stall);
-    smp_rmb(); /* ...then ->jiffies_stall before the rest... */
-    gps = READ_ONCE(rcu_state.gp_start);
-    smp_rmb(); /* ...and finally ->gp_start before ->gp_seq again. */
-    gs2 = READ_ONCE(rcu_state.gp_seq);
-    if (gs1 != gs2 ||
-        ULONG_CMP_LT(j, js) ||
-        ULONG_CMP_GE(gps, js) ||
-        !rcu_seq_state(gs2))
-        return; /* No stall or GP completed since entering function. */
-
-    rnp = rdp->mynode;
-    jn = jiffies + ULONG_MAX / 2;
-    self_detected = READ_ONCE(rnp->qsmask) & rdp->grpmask;
-    if (rcu_gp_in_progress() &&
-        (self_detected || ULONG_CMP_GE(j, js + RCU_STALL_RAT_DELAY)) &&
-        cmpxchg(&rcu_state.jiffies_stall, js, jn) == js) {
-        /* If a virtual machine is stopped by the host it can look to
-         * the watchdog like an RCU stall. Check to see if the host
-         * stopped the vm. */
-        if (kvm_check_and_clear_guest_paused())
-            return;
-
-#ifdef CONFIG_SYSFS
-        ++rcu_stall_count;
-#endif
-
-        rcu_stall_notifier_call_chain(RCU_STALL_NOTIFY_NORM, (void *)j - gps);
-        if (READ_ONCE(csd_lock_suppress_rcu_stall) && csd_lock_is_stuck()) {
-            pr_err("INFO: %s detected stall, but suppressed full report due to a stuck CSD-lock.\n", rcu_state.name);
-        } else if (self_detected) {
-            /* We haven't checked in, so go dump stack. */
-            print_cpu_stall(gs2, gps);
-        } else {
-            /* They had a few time units to dump stack, so complain. */
-            print_other_cpu_stall(gs2, gps);
-                --->
-        }
-
-        if (READ_ONCE(rcu_cpu_stall_ftrace_dump))
-            rcu_ftrace_dump(DUMP_ALL);
-
-        if (READ_ONCE(rcu_state.jiffies_stall) == jn) {
-            jn = jiffies + 3 * rcu_jiffies_till_stall_check() + 3;
-            WRITE_ONCE(rcu_state.jiffies_stall, jn);
-        }
-    }
-}
-
- void print_other_cpu_stall(unsigned long gp_seq, unsigned long gps)
-{
-    int cpu;
-    unsigned long flags;
-    unsigned long gpa;
-    unsigned long j;
-    int ndetected = 0;
-    struct rcu_node *rnp;
-    long totqlen = 0;
-
-    lockdep_assert_irqs_disabled();
-
-    /* Kick and suppress, if so configured. */
-    rcu_stall_kick_kthreads();
-    if (rcu_stall_is_suppressed())
-        return;
-
-    nbcon_cpu_emergency_enter();
-
-    /* OK, time to rat on our buddy...
-     * See Documentation/RCU/stallwarn.rst for info on how to debug
-     * RCU CPU stall warnings. */
-    pr_err("INFO: %s detected stalls on CPUs/tasks:\n", rcu_state.name);
-    rcu_for_each_leaf_node(rnp) {
-        raw_spin_lock_irqsave_rcu_node(rnp, flags);
-        if (rnp->qsmask != 0) {
-            for_each_leaf_node_possible_cpu(rnp, cpu)
-                if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
-                    print_cpu_stall_info(cpu);
-                    ndetected++;
-                }
-        }
-        ndetected += rcu_print_task_stall(rnp, flags); // Releases rnp->lock.
-        lockdep_assert_irqs_disabled();
-    }
-
-    for_each_possible_cpu(cpu)
-        totqlen += rcu_get_n_cbs_cpu(cpu);
-    pr_err("\t(detected by %d, t=%ld jiffies, g=%ld, q=%lu ncpus=%d)\n",
-           smp_processor_id(), (long)(jiffies - gps),
-           (long)rcu_seq_current(&rcu_state.gp_seq), totqlen,
-           data_race(rcu_state.n_online_cpus)); // Diagnostic read
-    if (ndetected) {
-        rcu_dump_cpu_stacks(gp_seq);
-
-        /* Complain about tasks blocking the grace period. */
-        rcu_for_each_leaf_node(rnp)
-            rcu_print_detail_task_stall_rnp(rnp);
-    } else {
-        if (rcu_seq_current(&rcu_state.gp_seq) != gp_seq) {
-            pr_err("INFO: Stall ended before state dump start\n");
-        } else {
-            j = jiffies;
-            gpa = data_race(READ_ONCE(rcu_state.gp_activity));
-            pr_err("All QSes seen, last %s kthread activity %ld (%ld-%ld), jiffies_till_next_fqs=%ld, root ->qsmask %#lx\n",
-                   rcu_state.name, j - gpa, j, gpa,
-                   data_race(READ_ONCE(jiffies_till_next_fqs)),
-                   data_race(READ_ONCE(rcu_get_root()->qsmask)));
-        }
-    }
-    /* Rewrite if needed in case of slow consoles. */
-    if (ULONG_CMP_GE(jiffies, READ_ONCE(rcu_state.jiffies_stall)))
-        WRITE_ONCE(rcu_state.jiffies_stall,
-               jiffies + 3 * rcu_jiffies_till_stall_check() + 3);
-
-    rcu_check_gp_kthread_expired_fqs_timer();
-    rcu_check_gp_kthread_starvation();
-        --->
-
-    nbcon_cpu_emergency_exit();
-
-    panic_on_rcu_stall() {
-        static int cpu_stall;
-
-        if (scx_rcu_cpu_stall())
-            return;
-
-        if (++cpu_stall < sysctl_max_rcu_stall_to_panic)
-            return;
-
-        if (sysctl_panic_on_rcu_stall)
-            panic("RCU Stall\n");
-    }
-
-    rcu_force_quiescent_state();  /* Kick them all. */
-}
-
-void rcu_check_gp_kthread_starvation(void)
-{
-    int cpu;
-    struct task_struct *gpk = rcu_state.gp_kthread;
-    unsigned long j;
-
-    if (rcu_is_gp_kthread_starving(&j)) {
-        cpu = gpk ? task_cpu(gpk) : -1;
-        pr_err("%s kthread starved for %ld jiffies! g%ld f%#x %s(%d) ->state=%#x ->cpu=%d\n",
-               rcu_state.name, j,
-               (long)rcu_seq_current(&rcu_state.gp_seq),
-               data_race(READ_ONCE(rcu_state.gp_flags)),
-               gp_state_getname(rcu_state.gp_state),
-               data_race(READ_ONCE(rcu_state.gp_state)),
-               gpk ? data_race(READ_ONCE(gpk->__state)) : ~0, cpu);
-        if (gpk) {
-            struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
-
-            pr_err("\tUnless %s kthread gets sufficient CPU time, OOM is now expected behavior.\n", rcu_state.name);
-            pr_err("RCU grace-period kthread stack dump:\n");
-            sched_show_task(gpk);
-            if (cpu_is_offline(cpu)) {
-                pr_err("RCU GP kthread last ran on offline CPU %d.\n", cpu);
-            } else if (!(data_race(READ_ONCE(rdp->mynode->qsmask)) & rdp->grpmask)) {
-                pr_err("Stack dump where RCU GP kthread last ran:\n");
-                dump_cpu_task(cpu);
-            }
-            wake_up_process(gpk);
-        }
-    }
-}
-```
-
-##### print_cpu_stall_info
-
-```c
-void print_cpu_stall_info(int cpu)
-{
-    unsigned long delta;
-    bool falsepositive;
-    struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
-    char *ticks_title;
-    unsigned long ticks_value;
-    bool rcuc_starved;
-    unsigned long j;
-    char buf[32];
-
-    /* We could be printing a lot while holding a spinlock.  Avoid
-     * triggering hard lockup. */
-    touch_nmi_watchdog();
-
-    ticks_value = rcu_seq_ctr(rcu_state.gp_seq - rdp->gp_seq);
-    if (ticks_value) {
-        ticks_title = "GPs behind";
-    } else {
-        ticks_title = "ticks this GP";
-        ticks_value = rdp->ticks_this_gp;
-    }
-    delta = rcu_seq_ctr(rdp->mynode->gp_seq - rdp->rcu_iw_gp_seq);
-    falsepositive = rcu_is_gp_kthread_starving(NULL) &&
-            rcu_watching_snap_in_eqs(ct_rcu_watching_cpu(cpu));
-    rcuc_starved = rcu_is_rcuc_kthread_starving(rdp, &j);
-    if (rcuc_starved)
-        // Print signed value, as negative values indicate a probable bug.
-        snprintf(buf, sizeof(buf), " rcuc=%ld jiffies(starved)", j);
-
-    pr_err("\t%d-%c%c%c%c: (%lu %s) idle=%04x/%ld/%#lx softirq=%u/%u fqs=%ld%s%s\n",
-           cpu,
-           "O."[!!cpu_online(cpu)],
-           "o."[!!(rdp->grpmask & rdp->mynode->qsmaskinit)],
-           "N."[!!(rdp->grpmask & rdp->mynode->qsmaskinitnext)],
-           !IS_ENABLED(CONFIG_IRQ_WORK) ? '?' :
-            rdp->rcu_iw_pending ? (int)min(delta, 9UL) + '0' :
-                "!."[!delta],
-           ticks_value, ticks_title,
-           ct_rcu_watching_cpu(cpu) & 0xffff,
-           ct_nesting_cpu(cpu), ct_nmi_nesting_cpu(cpu),
-           rdp->softirq_snap, kstat_softirqs_cpu(RCU_SOFTIRQ, cpu),
-           data_race(rcu_state.n_force_qs) - rcu_state.n_force_qs_gpstart,
-           rcuc_starved ? buf : "",
-           falsepositive ? " (false positive?)" : "");
-
-    print_cpu_stat_info(cpu) {
-        struct rcu_snap_record rsr, *rsrp;
-        struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
-        struct kernel_cpustat *kcsp = &kcpustat_cpu(cpu);
-
-        if (!rcu_cpu_stall_cputime)
-            return;
-
-        rsrp = &rdp->snap_record;
-        if (rsrp->gp_seq != rdp->gp_seq)
-            return;
-
-        rsr.cputime_irq     = kcpustat_field(kcsp, CPUTIME_IRQ, cpu);
-        rsr.cputime_softirq = kcpustat_field(kcsp, CPUTIME_SOFTIRQ, cpu);
-        rsr.cputime_system  = kcpustat_field(kcsp, CPUTIME_SYSTEM, cpu);
-
-        pr_err("\t         hardirqs   softirqs   csw/system\n");
-        pr_err("\t number: %8lld %10d %12lld\n",
-            kstat_cpu_irqs_sum(cpu) + arch_irq_stat_cpu(cpu) - rsrp->nr_hardirqs,
-            kstat_cpu_softirqs_sum(cpu) - rsrp->nr_softirqs,
-            nr_context_switches_cpu(cpu) - rsrp->nr_csw);
-        pr_err("\tcputime: %8lld %10lld %12lld   ==> %d(ms)\n",
-            div_u64(rsr.cputime_irq - rsrp->cputime_irq, NSEC_PER_MSEC),
-            div_u64(rsr.cputime_softirq - rsrp->cputime_softirq, NSEC_PER_MSEC),
-            div_u64(rsr.cputime_system - rsrp->cputime_system, NSEC_PER_MSEC),
-            jiffies_to_msecs(jiffies - rsrp->jiffies));
-    }
-}
-```
-
-##### rcu_print_task_stall
-
-```c
-int rcu_print_task_stall(struct rcu_node *rnp, unsigned long flags)
-    __releases(rnp->lock)
-{
-    int i = 0;
-    int ndetected = 0;
-    struct rcu_stall_chk_rdr rscr;
-    struct task_struct *t;
-    struct task_struct *ts[8];
-
-    lockdep_assert_irqs_disabled();
-    if (!rcu_preempt_blocked_readers_cgp(rnp)) {
-        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
-        return 0;
-    }
-    pr_err("\tTasks blocked on level-%d rcu_node (CPUs %d-%d):",
-           rnp->level, rnp->grplo, rnp->grphi);
-    t = list_entry(rnp->gp_tasks->prev, struct task_struct, rcu_node_entry);
-    list_for_each_entry_continue(t, &rnp->blkd_tasks, rcu_node_entry) {
-        get_task_struct(t);
-        ts[i++] = t;
-        if (i >= ARRAY_SIZE(ts))
-            break;
-    }
-    raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
-    while (i) {
-        t = ts[--i];
-        if (task_call_func(t, check_slow_task, &rscr))
-            pr_cont(" P%d", t->pid);
-        else
-            pr_cont(" P%d/%d:%c%c%c%c",
-                t->pid, rscr.nesting,
-                ".b"[rscr.rs.b.blocked],
-                ".q"[rscr.rs.b.need_qs],
-                ".e"[rscr.rs.b.exp_hint],
-                ".l"[rscr.on_blkd_list]);
-        lockdep_assert_irqs_disabled();
-        put_task_struct(t);
-        ndetected++;
-    }
-    pr_cont("\n");
-    return ndetected;
-}
-```
-
-### rcu_dump_cpu_stacks
-
-```c
-void rcu_dump_cpu_stacks(unsigned long gp_seq)
-{
-    int cpu;
-    unsigned long flags;
-    struct rcu_node *rnp;
-
-    rcu_for_each_leaf_node(rnp) {
-        printk_deferred_enter();
-        for_each_leaf_node_possible_cpu(rnp, cpu) {
-            if (gp_seq != data_race(rcu_state.gp_seq)) {
-                printk_deferred_exit();
-                pr_err("INFO: Stall ended during stack backtracing.\n");
-                return;
-            }
-            if (!(data_race(rnp->qsmask) & leaf_node_cpu_bit(rnp, cpu)))
-                continue;
-
-            raw_spin_lock_irqsave_rcu_node(rnp, flags);
-            if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
-                if (cpu_is_offline(cpu))
-                    pr_err("Offline CPU %d blocking current GP.\n", cpu);
-                else
-                    dump_cpu_task(cpu);
-            }
-            raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
-        }
-        printk_deferred_exit();
-    }
-}
-
-void dump_cpu_task(int cpu)
-{
-    if (in_hardirq() && cpu == smp_processor_id()) {
-        struct pt_regs *regs;
-
-        regs = get_irq_regs() {
-            return __this_cpu_read(__irq_regs);
-        }
-        if (regs) {
-            show_regs(regs);
-                --->
-            return;
-        }
-    }
-
-    if (trigger_single_cpu_backtrace(cpu))
-        return;
-
-    pr_info("Task dump for CPU %d:\n", cpu);
-    sched_show_task(cpu_curr(cpu)) {
-        unsigned long free;
-        int ppid;
-
-        if (!try_get_task_stack(p))
-            return;
-
-        pr_info("task:%-15.15s state:%c", p->comm, task_state_to_char(p));
-
-        if (task_is_running(p))
-            pr_cont("  running task    ");
-        free = stack_not_used(p);
-        ppid = 0;
-        rcu_read_lock();
-        if (pid_alive(p))
-            ppid = task_pid_nr(rcu_dereference(p->real_parent));
-        rcu_read_unlock();
-        pr_cont(" stack:%-5lu pid:%-5d tgid:%-5d ppid:%-6d task_flags:0x%04x flags:0x%08lx\n",
-            free, task_pid_nr(p), task_tgid_nr(p),
-            ppid, p->flags, read_task_thread_flags(p));
-
-        print_worker_info(KERN_INFO, p);
-        print_stop_info(KERN_INFO, p);
-        print_scx_info(KERN_INFO, p);
-        show_stack(p, NULL, KERN_INFO) {
-            dump_backtrace(NULL, tsk, loglvl) {
-                pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
-
-                if (regs && user_mode(regs))
-                    return;
-
-                if (!tsk)
-                    tsk = current;
-
-                if (!try_get_task_stack(tsk))
-                    return;
-
-                printk("%sCall trace:\n", loglvl);
-                kunwind_stack_walk(dump_backtrace_entry, (void *)loglvl, tsk, regs);
-                    --->
-
-                put_task_stack(tsk);
-            }
-            barrier();
-        }
-        put_task_stack(p);
-    }
-}
-```
-
 ### rcu_note_context_switch
 
 ```c
@@ -5319,6 +4852,476 @@ void call_rcu_tasks_generic(struct rcu_head *rhp, rcu_callback_t func,
 ```c
 ```
 
+### check_cpu_stall
+
+```sh
+rcu: INFO: rcu_preempt detected stalls on CPUs/tasks:
+rcu:     2-...!: (0 ticks this GP) idle=80d4/0/0x1 softirq=846094/846094 fqs=26
+rcu: rcu_preempt kthread starved for 5194 jiffies! g1369893 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x0 ->cpu=4
+rcu:     Unless rcu_preempt kthread gets sufficient CPU time, OOM is now expected behavior.
+rcu: RCU grace-period kthread stack dump:
+rcu: Stack dump where RCU GP kthread last ran:
+```
+
+```c
+void check_cpu_stall(struct rcu_data *rdp)
+{
+    bool self_detected;
+    unsigned long gs1;
+    unsigned long gs2;
+    unsigned long gps;
+    unsigned long j;
+    unsigned long jn;
+    unsigned long js;
+    struct rcu_node *rnp;
+
+    lockdep_assert_irqs_disabled();
+    if ((rcu_stall_is_suppressed() && !READ_ONCE(rcu_kick_kthreads)) || !rcu_gp_in_progress())
+        return;
+
+    rcu_stall_kick_kthreads() {
+        unsigned long j;
+
+        if (!READ_ONCE(rckick_kthreads))
+            return;
+        j = READ_ONCE(rcu_state.jiffies_kick_kthreads);
+        if (time_after(jiffies, j) && rcu_state.gp_kthread &&
+            (rcu_gp_in_progress() || READ_ONCE(rcu_state.gp_flags))) {
+            WARN_ONCE(1, "Kicking %s grace-period kthread\n",
+                rcu_state.name);
+            rcu_ftrace_dump(DUMP_ALL);
+            wake_up_process(rcu_state.gp_kthread);
+            WRITE_ONCE(rcu_state.jiffies_kick_kthreads, j + HZ);
+        }
+    }
+
+    /* Check if it was requested (via rcu_cpu_stall_reset()) that the FQS
+     * loop has to set jiffies to ensure a non-stale jiffies value. This
+     * is required to have good jiffies value after coming out of long
+     * breaks of jiffies updates. Not doing so can cause false positives. */
+    if (READ_ONCE(rcu_state.nr_fqs_jiffies_stall) > 0)
+        return;
+
+    j = jiffies;
+
+    /* Lots of memory barriers to reject false positives.
+     *
+     * The idea is to pick up rcu_state.gp_seq, then
+     * rcu_state.jiffies_stall, then rcu_state.gp_start, and finally
+     * another copy of rcu_state.gp_seq.  These values are updated in
+     * the opposite order with memory barriers (or equivalent) during
+     * grace-period initialization and cleanup.  Now, a false positive
+     * can occur if we get an new value of rcu_state.gp_start and a old
+     * value of rcu_state.jiffies_stall.  But given the memory barriers,
+     * the only way that this can happen is if one grace period ends
+     * and another starts between these two fetches.  This is detected
+     * by comparing the second fetch of rcu_state.gp_seq with the
+     * previous fetch from rcu_state.gp_seq.
+     *
+     * Given this check, comparisons of jiffies, rcu_state.jiffies_stall,
+     * and rcu_state.gp_start suffice to forestall false positives. */
+    gs1 = READ_ONCE(rcu_state.gp_seq);
+    smp_rmb(); /* Pick up ->gp_seq first... */
+    js = READ_ONCE(rcu_state.jiffies_stall);
+    smp_rmb(); /* ...then ->jiffies_stall before the rest... */
+    gps = READ_ONCE(rcu_state.gp_start);
+    smp_rmb(); /* ...and finally ->gp_start before ->gp_seq again. */
+    gs2 = READ_ONCE(rcu_state.gp_seq);
+    if (gs1 != gs2 ||
+        ULONG_CMP_LT(j, js) ||
+        ULONG_CMP_GE(gps, js) ||
+        !rcu_seq_state(gs2))
+        return; /* No stall or GP completed since entering function. */
+
+    rnp = rdp->mynode;
+    jn = jiffies + ULONG_MAX / 2;
+    self_detected = READ_ONCE(rnp->qsmask) & rdp->grpmask;
+    if (rcu_gp_in_progress()
+        && (self_detected || ULONG_CMP_GE(j, js + RCU_STALL_RAT_DELAY))
+        && cmpxchg(&rcu_state.jiffies_stall, js, jn) == js) {
+        /* If a virtual machine is stopped by the host it can look to
+         * the watchdog like an RCU stall. Check to see if the host
+         * stopped the vm. */
+        if (kvm_check_and_clear_guest_paused())
+            return;
+
+#ifdef CONFIG_SYSFS
+        ++rcu_stall_count;
+#endif
+
+        rcu_stall_notifier_call_chain(RCU_STALL_NOTIFY_NORM, (void *)j - gps);
+        if (READ_ONCE(csd_lock_suppress_rcu_stall) && csd_lock_is_stuck()) {
+            pr_err("INFO: %s detected stall, but suppressed full report due to a stuck CSD-lock.\n", rcu_state.name);
+        } else if (self_detected) {
+            /* We haven't checked in, so go dump stack. */
+            print_cpu_stall(gs2, gps);
+        } else {
+            /* They had a few time units to dump stack, so complain. */
+            print_other_cpu_stall(gs2, gps);
+                --->
+        }
+
+        if (READ_ONCE(rcu_cpu_stall_ftrace_dump))
+            rcu_ftrace_dump(DUMP_ALL);
+
+        if (READ_ONCE(rcu_state.jiffies_stall) == jn) {
+            jn = jiffies + 3 * rcu_jiffies_till_stall_check() + 3;
+            WRITE_ONCE(rcu_state.jiffies_stall, jn);
+        }
+    }
+}
+
+ void print_other_cpu_stall(unsigned long gp_seq, unsigned long gps)
+{
+    int cpu;
+    unsigned long flags;
+    unsigned long gpa;
+    unsigned long j;
+    int ndetected = 0;
+    struct rcu_node *rnp;
+    long totqlen = 0;
+
+    lockdep_assert_irqs_disabled();
+
+    /* Kick and suppress, if so configured. */
+    rcu_stall_kick_kthreads();
+    if (rcu_stall_is_suppressed())
+        return;
+
+    nbcon_cpu_emergency_enter();
+
+    /* OK, time to rat on our buddy...
+     * See Documentation/RCU/stallwarn.rst for info on how to debug
+     * RCU CPU stall warnings. */
+    pr_err("INFO: %s detected stalls on CPUs/tasks:\n", rcu_state.name);
+    rcu_for_each_leaf_node(rnp) {
+        raw_spin_lock_irqsave_rcu_node(rnp, flags);
+        if (rnp->qsmask != 0) {
+            for_each_leaf_node_possible_cpu(rnp, cpu)
+                if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
+                    print_cpu_stall_info(cpu);
+                        --->
+                    ndetected++;
+                }
+        }
+        ndetected += rcu_print_task_stall(rnp, flags); // Releases rnp->lock.
+            --->
+        lockdep_assert_irqs_disabled();
+    }
+
+    for_each_possible_cpu(cpu)
+        totqlen += rcu_get_n_cbs_cpu(cpu);
+    pr_err("\t(detected by %d, t=%ld jiffies, g=%ld, q=%lu ncpus=%d)\n",
+           smp_processor_id(), (long)(jiffies - gps),
+           (long)rcu_seq_current(&rcu_state.gp_seq), totqlen,
+           data_race(rcu_state.n_online_cpus)); // Diagnostic read
+    if (ndetected) {
+        rcu_dump_cpu_stacks(gp_seq);
+            --->
+
+        /* Complain about tasks blocking the grace period. */
+        rcu_for_each_leaf_node(rnp)
+            rcu_print_detail_task_stall_rnp(rnp);
+    } else {
+        if (rcu_seq_current(&rcu_state.gp_seq) != gp_seq) {
+            pr_err("INFO: Stall ended before state dump start\n");
+        } else {
+            j = jiffies;
+            gpa = data_race(READ_ONCE(rcu_state.gp_activity));
+            pr_err("All QSes seen, last %s kthread activity %ld (%ld-%ld), jiffies_till_next_fqs=%ld, root ->qsmask %#lx\n",
+                   rcu_state.name, j - gpa, j, gpa,
+                   data_race(READ_ONCE(jiffies_till_next_fqs)),
+                   data_race(READ_ONCE(rcu_get_root()->qsmask)));
+        }
+    }
+    /* Rewrite if needed in case of slow consoles. */
+    if (ULONG_CMP_GE(jiffies, READ_ONCE(rcu_state.jiffies_stall)))
+        WRITE_ONCE(rcu_state.jiffies_stall,
+               jiffies + 3 * rcu_jiffies_till_stall_check() + 3);
+
+    rcu_check_gp_kthread_expired_fqs_timer();
+    rcu_check_gp_kthread_starvation();
+        --->
+
+    nbcon_cpu_emergency_exit();
+
+    panic_on_rcu_stall() {
+        static int cpu_stall;
+
+        if (scx_rcu_cpu_stall())
+            return;
+
+        if (++cpu_stall < sysctl_max_rcu_stall_to_panic)
+            return;
+
+        if (sysctl_panic_on_rcu_stall)
+            panic("RCU Stall\n");
+    }
+
+    rcu_force_quiescent_state();  /* Kick them all. */
+}
+
+void rcu_check_gp_kthread_starvation(void)
+{
+    int cpu;
+    struct task_struct *gpk = rcu_state.gp_kthread;
+    unsigned long j;
+
+    if (rcu_is_gp_kthread_starving(&j)) {
+        cpu = gpk ? task_cpu(gpk) : -1;
+        pr_err("%s kthread starved for %ld jiffies! g%ld f%#x %s(%d) ->state=%#x ->cpu=%d\n",
+               rcu_state.name, j,
+               (long)rcu_seq_current(&rcu_state.gp_seq),
+               data_race(READ_ONCE(rcu_state.gp_flags)),
+               gp_state_getname(rcu_state.gp_state),
+               data_race(READ_ONCE(rcu_state.gp_state)),
+               gpk ? data_race(READ_ONCE(gpk->__state)) : ~0, cpu);
+        if (gpk) {
+            struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+
+            pr_err("\tUnless %s kthread gets sufficient CPU time, OOM is now expected behavior.\n", rcu_state.name);
+            pr_err("RCU grace-period kthread stack dump:\n");
+            sched_show_task(gpk);
+            if (cpu_is_offline(cpu)) {
+                pr_err("RCU GP kthread last ran on offline CPU %d.\n", cpu);
+            } else if (!(data_race(READ_ONCE(rdp->mynode->qsmask)) & rdp->grpmask)) {
+                pr_err("Stack dump where RCU GP kthread last ran:\n");
+                dump_cpu_task(cpu);
+            }
+            wake_up_process(gpk);
+        }
+    }
+}
+```
+
+##### print_cpu_stall_info
+
+```c
+void print_cpu_stall_info(int cpu)
+{
+    unsigned long delta;
+    bool falsepositive;
+    struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+    char *ticks_title;
+    unsigned long ticks_value;
+    bool rcuc_starved;
+    unsigned long j;
+    char buf[32];
+
+    /* We could be printing a lot while holding a spinlock.  Avoid
+     * triggering hard lockup. */
+    touch_nmi_watchdog();
+
+    ticks_value = rcu_seq_ctr(rcu_state.gp_seq - rdp->gp_seq);
+    if (ticks_value) {
+        ticks_title = "GPs behind";
+    } else {
+        ticks_title = "ticks this GP";
+        ticks_value = rdp->ticks_this_gp;
+    }
+    delta = rcu_seq_ctr(rdp->mynode->gp_seq - rdp->rcu_iw_gp_seq);
+    falsepositive = rcu_is_gp_kthread_starving(NULL) &&
+            rcu_watching_snap_in_eqs(ct_rcu_watching_cpu(cpu));
+    rcuc_starved = rcu_is_rcuc_kthread_starving(rdp, &j);
+    if (rcuc_starved)
+        // Print signed value, as negative values indicate a probable bug.
+        snprintf(buf, sizeof(buf), " rcuc=%ld jiffies(starved)", j);
+
+    pr_err("\t%d-%c%c%c%c: (%lu %s) idle=%04x/%ld/%#lx softirq=%u/%u fqs=%ld%s%s\n",
+           cpu,
+           "O."[!!cpu_online(cpu)],
+           "o."[!!(rdp->grpmask & rdp->mynode->qsmaskinit)],
+           "N."[!!(rdp->grpmask & rdp->mynode->qsmaskinitnext)],
+           !IS_ENABLED(CONFIG_IRQ_WORK) ? '?' :
+            rdp->rcu_iw_pending ? (int)min(delta, 9UL) + '0' :
+                "!."[!delta],
+           ticks_value, ticks_title,
+           ct_rcu_watching_cpu(cpu) & 0xffff,
+           ct_nesting_cpu(cpu), ct_nmi_nesting_cpu(cpu),
+           rdp->softirq_snap, kstat_softirqs_cpu(RCU_SOFTIRQ, cpu),
+           data_race(rcu_state.n_force_qs) - rcu_state.n_force_qs_gpstart,
+           rcuc_starved ? buf : "",
+           falsepositive ? " (false positive?)" : "");
+
+    print_cpu_stat_info(cpu) {
+        struct rcu_snap_record rsr, *rsrp;
+        struct rcu_data *rdp = per_cpu_ptr(&rcu_data, cpu);
+        struct kernel_cpustat *kcsp = &kcpustat_cpu(cpu);
+
+        if (!rcu_cpu_stall_cputime)
+            return;
+
+        rsrp = &rdp->snap_record;
+        if (rsrp->gp_seq != rdp->gp_seq)
+            return;
+
+        rsr.cputime_irq     = kcpustat_field(kcsp, CPUTIME_IRQ, cpu);
+        rsr.cputime_softirq = kcpustat_field(kcsp, CPUTIME_SOFTIRQ, cpu);
+        rsr.cputime_system  = kcpustat_field(kcsp, CPUTIME_SYSTEM, cpu);
+
+        pr_err("\t         hardirqs   softirqs   csw/system\n");
+        pr_err("\t number: %8lld %10d %12lld\n",
+            kstat_cpu_irqs_sum(cpu) + arch_irq_stat_cpu(cpu) - rsrp->nr_hardirqs,
+            kstat_cpu_softirqs_sum(cpu) - rsrp->nr_softirqs,
+            nr_context_switches_cpu(cpu) - rsrp->nr_csw);
+        pr_err("\tcputime: %8lld %10lld %12lld   ==> %d(ms)\n",
+            div_u64(rsr.cputime_irq - rsrp->cputime_irq, NSEC_PER_MSEC),
+            div_u64(rsr.cputime_softirq - rsrp->cputime_softirq, NSEC_PER_MSEC),
+            div_u64(rsr.cputime_system - rsrp->cputime_system, NSEC_PER_MSEC),
+            jiffies_to_msecs(jiffies - rsrp->jiffies));
+    }
+}
+```
+
+##### rcu_print_task_stall
+
+```c
+int rcu_print_task_stall(struct rcu_node *rnp, unsigned long flags)
+    __releases(rnp->lock)
+{
+    int i = 0;
+    int ndetected = 0;
+    struct rcu_stall_chk_rdr rscr;
+    struct task_struct *t;
+    struct task_struct *ts[8];
+
+    lockdep_assert_irqs_disabled();
+    if (!rcu_preempt_blocked_readers_cgp(rnp)) {
+        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        return 0;
+    }
+    pr_err("\tTasks blocked on level-%d rcu_node (CPUs %d-%d):",
+           rnp->level, rnp->grplo, rnp->grphi);
+    t = list_entry(rnp->gp_tasks->prev, struct task_struct, rcu_node_entry);
+    list_for_each_entry_continue(t, &rnp->blkd_tasks, rcu_node_entry) {
+        get_task_struct(t);
+        ts[i++] = t;
+        if (i >= ARRAY_SIZE(ts))
+            break;
+    }
+    raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+    while (i) {
+        t = ts[--i];
+        if (task_call_func(t, check_slow_task, &rscr))
+            pr_cont(" P%d", t->pid);
+        else
+            pr_cont(" P%d/%d:%c%c%c%c",
+                t->pid, rscr.nesting,
+                ".b"[rscr.rs.b.blocked],
+                ".q"[rscr.rs.b.need_qs],
+                ".e"[rscr.rs.b.exp_hint],
+                ".l"[rscr.on_blkd_list]);
+        lockdep_assert_irqs_disabled();
+        put_task_struct(t);
+        ndetected++;
+    }
+    pr_cont("\n");
+    return ndetected;
+}
+```
+
+##### rcu_dump_cpu_stacks
+
+```c
+void rcu_dump_cpu_stacks(unsigned long gp_seq)
+{
+    int cpu;
+    unsigned long flags;
+    struct rcu_node *rnp;
+
+    rcu_for_each_leaf_node(rnp) {
+        printk_deferred_enter();
+        for_each_leaf_node_possible_cpu(rnp, cpu) {
+            if (gp_seq != data_race(rcu_state.gp_seq)) {
+                printk_deferred_exit();
+                pr_err("INFO: Stall ended during stack backtracing.\n");
+                return;
+            }
+            if (!(data_race(rnp->qsmask) & leaf_node_cpu_bit(rnp, cpu)))
+                continue;
+
+            raw_spin_lock_irqsave_rcu_node(rnp, flags);
+            if (rnp->qsmask & leaf_node_cpu_bit(rnp, cpu)) {
+                if (cpu_is_offline(cpu))
+                    pr_err("Offline CPU %d blocking current GP.\n", cpu);
+                else
+                    dump_cpu_task(cpu);
+            }
+            raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        }
+        printk_deferred_exit();
+    }
+}
+
+void dump_cpu_task(int cpu)
+{
+    if (in_hardirq() && cpu == smp_processor_id()) {
+        struct pt_regs *regs;
+
+        regs = get_irq_regs() {
+            return __this_cpu_read(__irq_regs);
+        }
+        if (regs) {
+            show_regs(regs);
+                --->
+            return;
+        }
+    }
+
+    if (trigger_single_cpu_backtrace(cpu))
+        return;
+
+    pr_info("Task dump for CPU %d:\n", cpu);
+    sched_show_task(cpu_curr(cpu)) {
+        unsigned long free;
+        int ppid;
+
+        if (!try_get_task_stack(p))
+            return;
+
+        pr_info("task:%-15.15s state:%c", p->comm, task_state_to_char(p));
+
+        if (task_is_running(p))
+            pr_cont("  running task    ");
+        free = stack_not_used(p);
+        ppid = 0;
+        rcu_read_lock();
+        if (pid_alive(p))
+            ppid = task_pid_nr(rcu_dereference(p->real_parent));
+        rcu_read_unlock();
+        pr_cont(" stack:%-5lu pid:%-5d tgid:%-5d ppid:%-6d task_flags:0x%04x flags:0x%08lx\n",
+            free, task_pid_nr(p), task_tgid_nr(p),
+            ppid, p->flags, read_task_thread_flags(p));
+
+        print_worker_info(KERN_INFO, p);
+        print_stop_info(KERN_INFO, p);
+        print_scx_info(KERN_INFO, p);
+        show_stack(p, NULL, KERN_INFO) {
+            dump_backtrace(NULL, tsk, loglvl) {
+                pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
+
+                if (regs && user_mode(regs))
+                    return;
+
+                if (!tsk)
+                    tsk = current;
+
+                if (!try_get_task_stack(tsk))
+                    return;
+
+                printk("%sCall trace:\n", loglvl);
+                kunwind_stack_walk(dump_backtrace_entry, (void *)loglvl, tsk, regs);
+                    --->
+
+                put_task_stack(tsk);
+            }
+            barrier();
+        }
+        put_task_stack(p);
+    }
+}
+```
+
 ### rcu-QA
 
 * Do we need to wait for all CPUs to report quescent states in a grace period even if there're two readers in a 4 CPUs system
@@ -6091,6 +6094,12 @@ pi_faulted:
 
 * [[PATCH v16 00/14] qspinlock: a 4-byte queue spinlock with PV support](https://lore.kernel.org/1429901803-29771-1-git-send-email-Waiman.Long@hp.com/)
 * [[PATCH bpf-next v4 00/25] Resilient Queued Spin Lock](https://lore.kernel.org/20250316040541.108729-1-memxor@gmail.com/)
+* [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
+* [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s/viUgMAnVgC_bHyVifkHqsQ)
+* [spinlock - 术道经纬](https://www.zhihu.com/column/c_1108400140804726784) [:one: CSA spinlock](https://zhuanlan.zhihu.com/p/80727111) [:two: MCS spinlock](https://zhuanlan.zhihu.com/p/89058726) [:three: qspinlock](https://zhuanlan.zhihu.com/p/100546935) [:four: API](https://zhuanlan.zhihu.com/p/90634198) [:five: deadlock](https://zhuanlan.zhihu.com/p/103971328)
+* [wowo tech - spinklock](http://www.wowotech.net/kernel_synchronization/spinlock.html)  [qspinlock](http://www.wowotech.net/kernel_synchronization/queued_spinlock.html)
+
+![](../images/kernel/lock-spinlock.svg)
 
 ---
 
@@ -6130,13 +6139,6 @@ _Q_TAIL_IDX_BITS  = 4 bits (usually — allows 16 nested contexts per CPU)
 ![](../images/kernel/lock-spinlock-qued-status-trans.png)
 
 ---
-
-![](../images/kernel/lock-spinlock.svg)
-
-* [LWN: spinlock](https://lwn.net/Kernel/Index/#Spinlocks)
-* [自旋锁探秘 - 内核工匠](https://mp.weixin.qq.com/s/viUgMAnVgC_bHyVifkHqsQ)
-* [spinlock - 术道经纬](https://www.zhihu.com/column/c_1108400140804726784) [:one: CSA spinlock](https://zhuanlan.zhihu.com/p/80727111) [:two: MCS spinlock](https://zhuanlan.zhihu.com/p/89058726) [:three: qspinlock](https://zhuanlan.zhihu.com/p/100546935) [:four: API](https://zhuanlan.zhihu.com/p/90634198) [:five: deadlock](https://zhuanlan.zhihu.com/p/103971328)
-* [wowo tech - spinklock](http://www.wowotech.net/kernel_synchronization/spinlock.html)  [qspinlock](http://www.wowotech.net/kernel_synchronization/queued_spinlock.html)
 
 ```c
 #ifdef CONFIG_PREEMPT_RT
@@ -6184,6 +6186,7 @@ static DEFINE_PER_CPU_ALIGNED(struct qnode, qnodes[_Q_MAX_NODES]);
 ```
 
 ### spin_lock
+
 ```c
 /* include/linux/spinlock.h */
 static  void spin_lock(spinlock_t *lock)
@@ -6575,6 +6578,116 @@ spin_unlock(spinlock_t *lock) {
             preempt_enable();
         }
     }
+}
+```
+
+### paravirtual
+
+```c
+static inline u64 paravirt_steal_clock(int cpu)
+{
+	return static_call(pv_steal_clock)(cpu);
+}
+
+int __init pv_time_init(void)
+{
+	int ret;
+
+	if (!has_pv_steal_clock())
+		return 0;
+
+	ret = pv_time_init_stolen_time() {
+        cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
+            "hypervisor/arm/pvtime:online",
+            stolen_time_cpu_online,
+            stolen_time_cpu_down_prepare);
+    }
+	if (ret)
+		return ret;
+
+	static_call_update(pv_steal_clock, para_steal_clock);
+
+	static_key_slow_inc(&paravirt_steal_enabled);
+	if (steal_acc)
+		static_key_slow_inc(&paravirt_steal_rq_enabled);
+
+	pr_info("using stolen time PV\n");
+
+	return 0;
+}
+
+u64 para_steal_clock(int cpu)
+{
+	struct pvclock_vcpu_stolen_time *kaddr = NULL;
+	struct pv_time_stolen_time_region *reg;
+	u64 ret = 0;
+
+	reg = per_cpu_ptr(&stolen_time_region, cpu);
+
+	/*
+	 * paravirt_steal_clock() may be called before the CPU
+	 * online notification callback runs. Until the callback
+	 * has run we just return zero.
+	 */
+	rcu_read_lock();
+	kaddr = rcu_dereference(reg->kaddr);
+	if (!kaddr) {
+		rcu_read_unlock();
+		return 0;
+	}
+
+	ret = le64_to_cpu(READ_ONCE(kaddr->stolen_time));
+	rcu_read_unlock();
+	return ret;
+}
+
+int stolen_time_cpu_online(unsigned int cpu)
+{
+	struct pvclock_vcpu_stolen_time *kaddr = NULL;
+	struct pv_time_stolen_time_region *reg;
+	struct arm_smccc_res res;
+
+	reg = this_cpu_ptr(&stolen_time_region);
+
+	arm_smccc_1_1_invoke(ARM_SMCCC_HV_PV_TIME_ST, &res);
+
+	if (res.a0 == SMCCC_RET_NOT_SUPPORTED)
+		return -EINVAL;
+
+	kaddr = memremap(res.a0,
+			      sizeof(struct pvclock_vcpu_stolen_time),
+			      MEMREMAP_WB);
+
+	rcu_assign_pointer(reg->kaddr, kaddr);
+
+	if (!reg->kaddr) {
+		pr_warn("Failed to map stolen time data structure\n");
+		return -ENOMEM;
+	}
+
+	if (le32_to_cpu(kaddr->revision) != 0 ||
+	    le32_to_cpu(kaddr->attributes) != 0) {
+		pr_warn_once("Unexpected revision or attributes in stolen time data\n");
+		return -ENXIO;
+	}
+
+	return 0;
+}
+
+int stolen_time_cpu_down_prepare(unsigned int cpu)
+{
+	struct pvclock_vcpu_stolen_time *kaddr = NULL;
+	struct pv_time_stolen_time_region *reg;
+
+	reg = this_cpu_ptr(&stolen_time_region);
+	if (!reg->kaddr)
+		return 0;
+
+	kaddr = rcu_replace_pointer(reg->kaddr, NULL, true);
+	synchronize_rcu();
+	memunmap(kaddr);
+
+	return 0;
 }
 ```
 
