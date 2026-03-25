@@ -8140,6 +8140,73 @@ int build_detached_freelist(struct kmem_cache *s, size_t size,
 }
 ```
 
+## slab_debug
+
+```c
+static const struct kernel_param_ops param_ops_slab_debug __initconst = {
+    .flags = KERNEL_PARAM_OPS_FL_NOARG,
+    .set = setup_slub_debug,
+};
+__core_param_cb(slab_debug, &param_ops_slab_debug, NULL, 0);
+__core_param_cb(slub_debug, &param_ops_slab_debug, NULL, 0);
+
+int __init setup_slub_debug(const char *str, const struct kernel_param *kp)
+{
+    slab_flags_t flags;
+    slab_flags_t global_flags;
+    const char *saved_str;
+    const char *slab_list;
+    bool global_slub_debug_changed = false;
+    bool slab_list_specified = false;
+
+    global_flags = DEBUG_DEFAULT_FLAGS;
+    if (!str || !*str)
+        /* No options specified. Switch on full debugging. */
+        goto out;
+
+    saved_str = str;
+    while (str) {
+        str = parse_slub_debug_flags(str, &flags, &slab_list, true);
+
+        if (!slab_list) {
+            global_flags = flags;
+            global_slub_debug_changed = true;
+        } else {
+            slab_list_specified = true;
+            if (flags & SLAB_STORE_USER) {
+                stack_depot_request_early_init() {
+                    __stack_depot_early_init_requested = true;
+                }
+            }
+        }
+    }
+
+    /* For backwards compatibility, a single list of flags with list of
+     * slabs means debugging is only changed for those slabs, so the global
+     * slab_debug should be unchanged (0 or DEBUG_DEFAULT_FLAGS, depending
+     * on CONFIG_SLUB_DEBUG_ON). We can extended that to multiple lists as
+     * long as there is no option specifying flags without a slab list. */
+    if (slab_list_specified) {
+        if (!global_slub_debug_changed)
+            global_flags = slub_debug;
+        slub_debug_string = saved_str;
+    }
+out:
+    slub_debug = global_flags;
+    if (slub_debug & SLAB_STORE_USER)
+        stack_depot_request_early_init();
+    if (slub_debug != 0 || slub_debug_string)
+        static_branch_enable(&slub_debug_enabled);
+    else
+        static_branch_disable(&slub_debug_enabled);
+    if ((static_branch_unlikely(&init_on_alloc) ||
+         static_branch_unlikely(&init_on_free)) &&
+        (slub_debug & SLAB_POISON))
+        pr_info("mem auto-init: SLAB_POISON will take precedence over init_on_alloc/init_on_free\n");
+    return 0;
+}
+```
+
 ## slub-fs
 
 * /proc/slabinfo            Stats & visibility
@@ -8181,190 +8248,6 @@ int build_detached_freelist(struct kmem_cache *s, size_t size,
 ├── usersize                   # Usable object size for users
 └── validate                   # Validate all slabs now
 
-```
-
-## alloc_traces
-
-```c
-/* /sys/kernel/debug/slab/<cache>/alloc_traces */
-
-static void debugfs_slab_add(struct kmem_cache *s)
-{
-    struct dentry *slab_cache_dir;
-
-    if (unlikely(!slab_debugfs_root))
-        return;
-
-    slab_cache_dir = debugfs_create_dir(s->name, slab_debugfs_root);
-
-    debugfs_create_file_aux_num("alloc_traces", 0400, slab_cache_dir, s,
-                    TRACK_ALLOC, &slab_debugfs_fops);
-
-    debugfs_create_file_aux_num("free_traces", 0400, slab_cache_dir, s,
-                    TRACK_FREE, &slab_debugfs_fops);
-}
-
-static const struct file_operations slab_debugfs_fops = {
-    .open       = slab_debug_trace_open,
-    .read       = seq_read,
-    .llseek     = seq_lseek,
-    .release    = slab_debug_trace_release,
-};
-
-int slab_debug_trace_open(struct inode *inode, struct file *filep)
-{
-
-    struct kmem_cache_node *n;
-    enum track_item alloc;
-    int node;
-    struct loc_track *t = __seq_open_private(filep, &slab_debugfs_sops,
-                        sizeof(struct loc_track));
-    struct kmem_cache *s = file_inode(filep)->i_private;
-    unsigned long *obj_map;
-
-    if (!t)
-        return -ENOMEM;
-
-    obj_map = bitmap_alloc(oo_objects(s->oo), GFP_KERNEL);
-    if (!obj_map) {
-        seq_release_private(inode, filep);
-        return -ENOMEM;
-    }
-
-    alloc = debugfs_get_aux_num(filep);
-
-    if (!alloc_loc_track(t, PAGE_SIZE / sizeof(struct location), GFP_KERNEL)) {
-        bitmap_free(obj_map);
-        seq_release_private(inode, filep);
-        return -ENOMEM;
-    }
-
-    for_each_kmem_cache_node(s, node, n) {
-        unsigned long flags;
-        struct slab *slab;
-
-        if (!node_nr_slabs(n))
-            continue;
-
-        spin_lock_irqsave(&n->list_lock, flags);
-        list_for_each_entry(slab, &n->partial, slab_list)
-            process_slab(t, s, slab, alloc, obj_map);
-        list_for_each_entry(slab, &n->full, slab_list)
-            process_slab(t, s, slab, alloc, obj_map);
-        spin_unlock_irqrestore(&n->list_lock, flags);
-    }
-
-    /* Sort locations by count */
-    sort(t->loc, t->count, sizeof(struct location),
-         cmp_loc_by_count, NULL);
-
-    bitmap_free(obj_map);
-    return 0;
-}
-
-void process_slab(struct loc_track *t, struct kmem_cache *s,
-        struct slab *slab, enum track_item alloc,
-        unsigned long *obj_map)
-{
-    void *addr = slab_address(slab);
-    bool is_alloc = (alloc == TRACK_ALLOC);
-    void *p;
-
-    __fill_map(obj_map, s, slab);
-
-    for_each_object(p, s, addr, slab->objects)
-        if (!test_bit(__obj_to_index(s, addr, p), obj_map))
-            add_location(t, s, get_track(s, p, alloc),
-                is_alloc ? get_orig_size(s, p) : s->object_size);
-}
-
-int add_location(struct loc_track *t, struct kmem_cache *s,
-                const struct track *track,
-                unsigned int orig_size)
-{
-    long start, end, pos;
-    struct location *l;
-    unsigned long caddr, chandle, cwaste;
-    unsigned long age = jiffies - track->when;
-    depot_stack_handle_t handle = 0;
-    unsigned int waste = s->object_size - orig_size;
-
-#ifdef CONFIG_STACKDEPOT
-    handle = READ_ONCE(track->handle);
-#endif
-    start = -1;
-    end = t->count;
-
-    for ( ; ; ) {
-        pos = start + (end - start + 1) / 2;
-
-        /* There is nothing at "end". If we end up there
-         * we need to add something to before end. */
-        if (pos == end)
-            break;
-
-        l = &t->loc[pos];
-        caddr = l->addr;
-        chandle = l->handle;
-        cwaste = l->waste;
-        if ((track->addr == caddr) && (handle == chandle) &&
-            (waste == cwaste)) {
-
-            l->count++;
-            if (track->when) {
-                l->sum_time += age;
-                if (age < l->min_time)
-                    l->min_time = age;
-                if (age > l->max_time)
-                    l->max_time = age;
-
-                if (track->pid < l->min_pid)
-                    l->min_pid = track->pid;
-                if (track->pid > l->max_pid)
-                    l->max_pid = track->pid;
-
-                cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
-            }
-            node_set(page_to_nid(virt_to_page(track)), l->nodes);
-            return 1;
-        }
-
-        if (track->addr < caddr)
-            end = pos;
-        else if (track->addr == caddr && handle < chandle)
-            end = pos;
-        else if (track->addr == caddr && handle == chandle &&
-                waste < cwaste)
-            end = pos;
-        else
-            start = pos;
-    }
-
-    /* Not found. Insert new tracking element. */
-    if (t->count >= t->max && !alloc_loc_track(t, 2 * t->max, GFP_ATOMIC))
-        return 0;
-
-    l = t->loc + pos;
-    if (pos < t->count)
-        memmove(l + 1, l, (t->count - pos) * sizeof(struct location));
-    t->count++;
-    l->count = 1;
-    l->addr = track->addr;
-    l->sum_time = age;
-    l->min_time = age;
-    l->max_time = age;
-    l->min_pid = track->pid;
-    l->max_pid = track->pid;
-    l->handle = handle;
-    l->waste = waste;
-
-    cpumask_clear(to_cpumask(l->cpus));
-    cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
-    nodes_clear(l->nodes);
-    node_set(page_to_nid(virt_to_page(track)), l->nodes);
-
-    return 1;
-}
 ```
 
 # kmalloc
@@ -30543,6 +30426,7 @@ void __init hugetlb_folio_init_vmemmap(struct folio *folio,
 ## THP
 
 * [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
+* [开了 THP，数据库反而卡了——透明大页的延迟陷阱](https://mp.weixin.qq.com/s/meTkKfSEQFb1TRni228bUA)
 
 **Config Macro**
 * CONFIG_TRANSPARENT_HUGEPAGE

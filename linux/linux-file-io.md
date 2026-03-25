@@ -17104,3 +17104,383 @@ int path_pivot_root(struct path *new, struct path *old)
     return 0;
 }
 ```
+
+## /sys/kernel/slab/
+
+```sh
+/sys/kernel/slab/kmalloc-64
+├── aliases
+├── align
+├── cpu_partial
+├── cpu_slabs
+├── ctor
+├── destroy_by_rcu
+├── hwcache_align
+├── min_partial
+├── object_size
+├── objects
+├── objects_partial
+├── objs_per_slab
+├── order
+├── partial
+├── poison
+├── reclaim_account
+├── red_zone
+├── remote_node_defrag_ratio
+├── sanity_checks
+├── sheaf_capacity
+├── shrink
+├── slab_size
+├── slabs
+├── slabs_cpu_partial
+├── store_user
+├── total_objects
+├── trace
+├── usersize
+└── validate
+```
+
+### slab_sysfs_init
+
+```c
+static struct saved_alias *alias_list;
+
+int __init slab_sysfs_init(void)
+{
+    struct kmem_cache *s;
+    int err;
+
+    mutex_lock(&slab_mutex);
+
+    slab_kset = kset_create_and_add("slab", NULL, kernel_kobj);
+    if (!slab_kset) {
+        mutex_unlock(&slab_mutex);
+        pr_err("Cannot register slab subsystem.\n");
+        return -ENOMEM;
+    }
+
+    slab_state = FULL;
+
+    list_for_each_entry(s, &slab_caches, list) {
+        err = sysfs_slab_add(s);
+        if (err)
+            pr_err("SLUB: Unable to add boot slab %s to sysfs\n",
+                   s->name);
+    }
+
+    while (alias_list) {
+        struct saved_alias *al = alias_list;
+
+        alias_list = alias_list->next;
+        err = sysfs_slab_alias(al->s, al->name);
+        if (err)
+            pr_err("SLUB: Unable to add boot slab alias %s to sysfs\n",
+                   al->name);
+        kfree(al);
+    }
+
+    mutex_unlock(&slab_mutex);
+    return 0;
+}
+
+int sysfs_slab_add(struct kmem_cache *s)
+{
+    int err;
+    const char *name;
+    struct kset *kset = cache_kset(s);
+    int unmergeable = slab_unmergeable(s);
+
+    if (!unmergeable && disable_higher_order_debug && (slub_debug & DEBUG_METADATA_FLAGS))
+        unmergeable = 1;
+
+    if (unmergeable) {
+        /* Slabcache can never be merged so we can use the name proper.
+         * This is typically the case for debug situations. In that
+         * case we can catch duplicate names easily. */
+        sysfs_remove_link(&slab_kset->kobj, s->name);
+        name = s->name;
+    } else {
+        /* Create a unique name for the slab as a target
+         * for the symlinks. */
+        name = create_unique_id(s);
+        if (IS_ERR(name))
+            return PTR_ERR(name);
+    }
+
+    s->kobj.kset = kset;
+    err = kobject_init_and_add(&s->kobj, &slab_ktype, NULL, "%s", name);
+    if (err)
+        goto out;
+
+    err = sysfs_create_group(&s->kobj, &slab_attr_group);
+    if (err)
+        goto out_del_kobj;
+
+    if (!unmergeable) {
+        /* Setup first alias */
+        sysfs_slab_alias(s, s->name);
+    }
+out:
+    if (!unmergeable)
+        kfree(name);
+    return err;
+out_del_kobj:
+    kobject_del(&s->kobj);
+    goto out;
+}
+
+static const struct attribute_group slab_attr_group = {
+    .attrs = slab_attrs,
+};
+
+static struct attribute *slab_attrs[] = {
+    &slab_size_attr.attr,
+    &object_size_attr.attr,
+    &objs_per_slab_attr.attr,
+    &order_attr.attr,
+    &sheaf_capacity_attr.attr,
+    &min_partial_attr.attr,
+    NULL
+};
+
+#define SLAB_ATTR_RO(_name) \
+    static struct slab_attribute _name##_attr = __ATTR_RO_MODE(_name, 0400)
+
+#define SLAB_ATTR(_name) \
+    static struct slab_attribute _name##_attr = __ATTR_RW_MODE(_name, 0600)
+
+#define __ATTR_RW_MODE(_name, _mode)                    \
+    __ATTR(_name, _mode, _name##_show, _name##_store)
+
+#define __ATTR(_name, _mode, _show, _store) {           \
+    .attr   = {.name = __stringify(_name),              \
+    .mode   = VERIFY_OCTAL_PERMISSIONS(_mode) },        \
+    .show   = _show,                                    \
+    .store  = _store,                                   \
+}
+
+struct attribute {
+    const char        *name;
+    umode_t            mode;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    bool            ignore_lockdep:1;
+    struct lock_class_key    *key;
+    struct lock_class_key    skey;
+#endif
+};
+
+struct slab_attribute {
+    struct attribute attr;
+    ssize_t (*show)(struct kmem_cache *s, char *buf);
+    ssize_t (*store)(struct kmem_cache *s, const char *x, size_t count);
+};
+
+static ssize_t slab_size_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->size);
+}
+SLAB_ATTR_RO(slab_size);
+
+static ssize_t align_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->align);
+}
+SLAB_ATTR_RO(align);
+
+static ssize_t object_size_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->object_size);
+}
+SLAB_ATTR_RO(object_size);
+```
+
+## /sys/kernel/debug/slab/
+
+```sh
+/sys/kernel/slab/kmalloc-64
+├── alloc_traces
+├── free_traces
+```
+
+### alloc_traces
+
+```c
+static void debugfs_slab_add(struct kmem_cache *s)
+{
+    struct dentry *slab_cache_dir;
+
+    if (unlikely(!slab_debugfs_root))
+        return;
+
+    slab_cache_dir = debugfs_create_dir(s->name, slab_debugfs_root);
+
+    debugfs_create_file_aux_num("alloc_traces", 0400, slab_cache_dir, s,
+                    TRACK_ALLOC, &slab_debugfs_fops);
+
+    debugfs_create_file_aux_num("free_traces", 0400, slab_cache_dir, s,
+                    TRACK_FREE, &slab_debugfs_fops);
+}
+
+static const struct file_operations slab_debugfs_fops = {
+    .open       = slab_debug_trace_open,
+    .read       = seq_read,
+    .llseek     = seq_lseek,
+    .release    = slab_debug_trace_release,
+};
+
+int slab_debug_trace_open(struct inode *inode, struct file *filep)
+{
+
+    struct kmem_cache_node *n;
+    enum track_item alloc;
+    int node;
+    struct loc_track *t = __seq_open_private(filep, &slab_debugfs_sops,
+                        sizeof(struct loc_track));
+    struct kmem_cache *s = file_inode(filep)->i_private;
+    unsigned long *obj_map;
+
+    if (!t)
+        return -ENOMEM;
+
+    obj_map = bitmap_alloc(oo_objects(s->oo), GFP_KERNEL);
+    if (!obj_map) {
+        seq_release_private(inode, filep);
+        return -ENOMEM;
+    }
+
+    alloc = debugfs_get_aux_num(filep);
+
+    if (!alloc_loc_track(t, PAGE_SIZE / sizeof(struct location), GFP_KERNEL)) {
+        bitmap_free(obj_map);
+        seq_release_private(inode, filep);
+        return -ENOMEM;
+    }
+
+    for_each_kmem_cache_node(s, node, n) {
+        unsigned long flags;
+        struct slab *slab;
+
+        if (!node_nr_slabs(n))
+            continue;
+
+        spin_lock_irqsave(&n->list_lock, flags);
+        list_for_each_entry(slab, &n->partial, slab_list)
+            process_slab(t, s, slab, alloc, obj_map);
+        list_for_each_entry(slab, &n->full, slab_list)
+            process_slab(t, s, slab, alloc, obj_map);
+        spin_unlock_irqrestore(&n->list_lock, flags);
+    }
+
+    /* Sort locations by count */
+    sort(t->loc, t->count, sizeof(struct location),
+         cmp_loc_by_count, NULL);
+
+    bitmap_free(obj_map);
+    return 0;
+}
+
+void process_slab(struct loc_track *t, struct kmem_cache *s,
+        struct slab *slab, enum track_item alloc,
+        unsigned long *obj_map)
+{
+    void *addr = slab_address(slab);
+    bool is_alloc = (alloc == TRACK_ALLOC);
+    void *p;
+
+    __fill_map(obj_map, s, slab);
+
+    for_each_object(p, s, addr, slab->objects)
+        if (!test_bit(__obj_to_index(s, addr, p), obj_map))
+            add_location(t, s, get_track(s, p, alloc),
+                is_alloc ? get_orig_size(s, p) : s->object_size);
+}
+
+int add_location(struct loc_track *t, struct kmem_cache *s,
+                const struct track *track,
+                unsigned int orig_size)
+{
+    long start, end, pos;
+    struct location *l;
+    unsigned long caddr, chandle, cwaste;
+    unsigned long age = jiffies - track->when;
+    depot_stack_handle_t handle = 0;
+    unsigned int waste = s->object_size - orig_size;
+
+#ifdef CONFIG_STACKDEPOT
+    handle = READ_ONCE(track->handle);
+#endif
+    start = -1;
+    end = t->count;
+
+    for ( ; ; ) {
+        pos = start + (end - start + 1) / 2;
+
+        /* There is nothing at "end". If we end up there
+         * we need to add something to before end. */
+        if (pos == end)
+            break;
+
+        l = &t->loc[pos];
+        caddr = l->addr;
+        chandle = l->handle;
+        cwaste = l->waste;
+        if ((track->addr == caddr) && (handle == chandle) &&
+            (waste == cwaste)) {
+
+            l->count++;
+            if (track->when) {
+                l->sum_time += age;
+                if (age < l->min_time)
+                    l->min_time = age;
+                if (age > l->max_time)
+                    l->max_time = age;
+
+                if (track->pid < l->min_pid)
+                    l->min_pid = track->pid;
+                if (track->pid > l->max_pid)
+                    l->max_pid = track->pid;
+
+                cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
+            }
+            node_set(page_to_nid(virt_to_page(track)), l->nodes);
+            return 1;
+        }
+
+        if (track->addr < caddr)
+            end = pos;
+        else if (track->addr == caddr && handle < chandle)
+            end = pos;
+        else if (track->addr == caddr && handle == chandle &&
+                waste < cwaste)
+            end = pos;
+        else
+            start = pos;
+    }
+
+    /* Not found. Insert new tracking element. */
+    if (t->count >= t->max && !alloc_loc_track(t, 2 * t->max, GFP_ATOMIC))
+        return 0;
+
+    l = t->loc + pos;
+    if (pos < t->count)
+        memmove(l + 1, l, (t->count - pos) * sizeof(struct location));
+    t->count++;
+    l->count = 1;
+    l->addr = track->addr;
+    l->sum_time = age;
+    l->min_time = age;
+    l->max_time = age;
+    l->min_pid = track->pid;
+    l->max_pid = track->pid;
+    l->handle = handle;
+    l->waste = waste;
+
+    cpumask_clear(to_cpumask(l->cpus));
+    cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
+    nodes_clear(l->nodes);
+    node_set(page_to_nid(virt_to_page(track)), l->nodes);
+
+    return 1;
+}
+```
+
