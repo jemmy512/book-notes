@@ -1952,7 +1952,9 @@ int __init shmem_init(void)
         if (!tmpfs_kobj)
             return -ENOMEM;
 
-        ret = sysfs_create_group(tmpfs_kobj, &tmpfs_attribute_group);
+        ret = sysfs_create_group(tmpfs_kobj, &tmpfs_attribute_group) {
+            return internal_create_groups(kobj, 0, groups);
+        }
         if (ret)
             kobject_put(tmpfs_kobj);
 

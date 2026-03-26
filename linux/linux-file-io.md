@@ -7763,94 +7763,7 @@ int bus_add_device(struct device *dev)
     pr_debug("bus: '%s': add device %s\n", sp->bus->name, dev_name(dev));
 
     error = device_add_groups(dev, sp->bus->dev_groups) {
-        return sysfs_create_groups(&dev->kobj, groups) {
-            return internal_create_groups(kobj, 0, groups) {
-                int error = 0;
-                int i;
-
-                if (!groups)
-                    return 0;
-
-                for (i = 0; groups[i]; i++) {
-                    error = internal_create_group(kobj, update, groups[i]) {
-                        struct kernfs_node *kn;
-                        kuid_t uid;
-                        kgid_t gid;
-                        int error;
-
-                        if (WARN_ON(!kobj || (!update && !kobj->sd)))
-                            return -EINVAL;
-
-                        /* Updates may happen before the object has been instantiated */
-                        if (unlikely(update && !kobj->sd))
-                            return -EINVAL;
-
-                        if (!grp->attrs && !grp->bin_attrs) {
-                            pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
-                                kobj->name, grp->name ?: "");
-                            return 0;
-                        }
-
-                        kobject_get_ownership(kobj, &uid, &gid);
-                        if (grp->name) {
-                            umode_t mode = __first_visible(grp, kobj);
-
-                            if (mode & SYSFS_GROUP_INVISIBLE)
-                                mode = 0;
-                            else
-                                mode = S_IRWXU | S_IRUGO | S_IXUGO;
-
-                            if (update) {
-                                kn = kernfs_find_and_get(kobj->sd, grp->name);
-                                if (!kn) {
-                                    pr_debug("attr grp %s/%s not created yet\n",
-                                        kobj->name, grp->name);
-                                    /* may have been invisible prior to this update */
-                                    update = 0;
-                                } else if (!mode) {
-                                    sysfs_remove_group(kobj, grp);
-                                    kernfs_put(kn);
-                                    return 0;
-                                }
-                            }
-
-                            if (!update) {
-                                if (!mode)
-                                    return 0;
-                                kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode, uid, gid, kobj, NULL);
-                                    --->
-                                if (IS_ERR(kn)) {
-                                    if (PTR_ERR(kn) == -EEXIST)
-                                        sysfs_warn_dup(kobj->sd, grp->name);
-                                    return PTR_ERR(kn);
-                                }
-                            }
-                        } else {
-                            kn = kobj->sd;
-                        }
-
-                        kernfs_get(kn);
-                        error = create_files(kn, kobj, uid, gid, grp, update);
-                        if (error) {
-                            if (grp->name)
-                                kernfs_remove(kn);
-                        }
-                        kernfs_put(kn);
-
-                        if (grp->name && update)
-                            kernfs_put(kn);
-
-                        return error;
-                    }
-                    if (error) {
-                        while (--i >= 0)
-                            sysfs_remove_group(kobj, groups[i]);
-                        break;
-                    }
-                }
-                return error;
-            }
-        }
+        return sysfs_create_groups(&dev->kobj, groups);
     }
     if (error)
         goto out_put;
@@ -12815,77 +12728,50 @@ struct kobj_type {
 };
 ```
 
-### kobject_init_and_add
-
-```sh
-object_init_and_add(kobj, ktype, ...)
-       |
-       ▼
-sysfs_create_file(kobj, attr)
-       |
-       ▼
-kernfs_create_file(parent_kn, name, &sysfs_file_kfops_ro, ...)
-       |
-       ▼
-kernfs allocates kernfs_node, hooks it into the filesystem tree
-```
+### kset_create_and_add
 
 ```c
-int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
-             struct kobject *parent, const char *fmt, ...)
+struct kset *kset_create_and_add(const char *name,
+				 const struct kset_uevent_ops *uevent_ops,
+				 struct kobject *parent_kobj)
 {
-    va_list args;
+	struct kset *kset;
+	int error;
+
+	kset = kset_create(name, uevent_ops, parent_kobj);
+	if (!kset)
+		return NULL;
+	error = kset_register(kset);
+	if (error) {
+		kfree(kset);
+		return NULL;
+	}
+	return kset;
+}
+```
+
+### kobject_add
+
+```c
+struct kobject *kobject_create_and_add(const char *name, struct kobject *parent)
+{
+    struct kobject *kobj;
     int retval;
 
-    kobject_init(kobj, ktype);
+    kobj = kobject_create();
+    if (!kobj)
+        return NULL;
 
-    va_start(args, fmt);
-    retval = kobject_add_varg(kobj, parent, fmt, args);
-    va_end(args);
-
-    return retval;
+    retval = kobject_add(kobj, parent, "%s", name);
+        --->
+    if (retval) {
+        pr_warn("%s: kobject_add error: %d\n", __func__, retval);
+        kobject_put(kobj);
+        kobj = NULL;
+    }
+    return kobj;
 }
 
-void kobject_init(struct kobject *kobj, const struct kobj_type *ktype)
-{
-    char *err_str;
-
-    if (!kobj) {
-        err_str = "invalid kobject pointer!";
-        goto error;
-    }
-    if (!ktype) {
-        err_str = "must have a ktype to be initialized properly!\n";
-        goto error;
-    }
-    if (kobj->state_initialized) {
-        /* do not error out as sometimes we can recover */
-        pr_err("kobject (%p): tried to init an initialized object, something is seriously wrong.\n",
-               kobj);
-        dump_stack_lvl(KERN_ERR);
-    }
-
-    kobject_init_internal(kobj) {
-        if (!kobj)
-            return;
-        kref_init(&kobj->kref);
-        INIT_LIST_HEAD(&kobj->entry);
-        kobj->state_in_sysfs = 0;
-        kobj->state_add_uevent_sent = 0;
-        kobj->state_remove_uevent_sent = 0;
-        kobj->state_initialized = 1;
-    }
-    kobj->ktype = ktype;
-    return;
-
-error:
-    pr_err("kobject (%p): %s\n", kobj, err_str);
-    dump_stack_lvl(KERN_ERR);
-}
-EXPORT_SYMBOL(kobject_init);
-```
-
-```c
 int kobject_add(struct kobject *kobj, struct kobject *parent,
         const char *fmt, ...)
 {
@@ -13022,27 +12908,6 @@ int create_dir(struct kobject *kobj)
 }
 ```
 
-### kobject_create_and_add
-
-```c
-struct kobject *kobject_create_and_add(const char *name, struct kobject *parent)
-{
-    struct kobject *kobj;
-    int retval;
-
-    kobj = kobject_create();
-    if (!kobj)
-        return NULL;
-
-    retval = kobject_add(kobj, parent, "%s", name);
-    if (retval) {
-        pr_warn("%s: kobject_add error: %d\n", __func__, retval);
-        kobject_put(kobj);
-        kobj = NULL;
-    }
-    return kobj;
-}
-```
 
 ### kobject_move
 
@@ -13112,6 +12977,8 @@ void kobject_del(struct kobject *kobj)
 ```
 
 ## sysfs
+
+![](../images/kernel/file-sysfs.drwaio.svg)
 
 | Step | Layer | Function |
 |------|-------|----------|
@@ -13214,6 +13081,121 @@ int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
 
     kobj->sd = kn;
     return 0;
+}
+```
+
+### sysfs_create_file_ns
+
+```c
+int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
+			 const void *ns)
+{
+	kuid_t uid;
+	kgid_t gid;
+
+	if (WARN_ON(!kobj || !kobj->sd || !attr))
+		return -EINVAL;
+
+	kobject_get_ownership(kobj, &uid, &gid);
+	return sysfs_add_file_mode_ns(kobj->sd, attr, attr->mode, uid, gid, ns);
+}
+
+int sysfs_add_file_mode_ns(struct kernfs_node *parent,
+		const struct attribute *attr, umode_t mode, kuid_t uid,
+		kgid_t gid, const void *ns)
+{
+	struct kobject *kobj = parent->priv;
+	const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
+	struct lock_class_key *key = NULL;
+	const struct kernfs_ops *ops = NULL;
+	struct kernfs_node *kn;
+
+	/* every kobject with an attribute needs a ktype assigned */
+	if (WARN(!sysfs_ops, KERN_ERR
+			"missing sysfs attribute operations for kobject: %s\n",
+			kobject_name(kobj)))
+		return -EINVAL;
+
+	if (mode & SYSFS_PREALLOC) {
+		if (sysfs_ops->show && sysfs_ops->store)
+			ops = &sysfs_prealloc_kfops_rw;
+		else if (sysfs_ops->show)
+			ops = &sysfs_prealloc_kfops_ro;
+		else if (sysfs_ops->store)
+			ops = &sysfs_prealloc_kfops_wo;
+	} else {
+		if (sysfs_ops->show && sysfs_ops->store)
+			ops = &sysfs_file_kfops_rw;
+		else if (sysfs_ops->show)
+			ops = &sysfs_file_kfops_ro;
+		else if (sysfs_ops->store)
+			ops = &sysfs_file_kfops_wo;
+	}
+
+	if (!ops)
+		ops = &sysfs_file_kfops_empty;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+	if (!attr->ignore_lockdep)
+		key = attr->key ?: (struct lock_class_key *)&attr->skey;
+#endif
+
+	kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid,
+				  PAGE_SIZE, ops, (void *)attr, ns, key);
+	if (IS_ERR(kn)) {
+		if (PTR_ERR(kn) == -EEXIST)
+			sysfs_warn_dup(parent, attr->name);
+		return PTR_ERR(kn);
+	}
+	return 0;
+}
+
+struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
+                     const char *name,
+                     umode_t mode, kuid_t uid, kgid_t gid,
+                     loff_t size,
+                     const struct kernfs_ops *ops,
+                     void *priv, const void *ns,
+                     struct lock_class_key *key)
+{
+    struct kernfs_node *kn;
+    unsigned flags;
+    int rc;
+
+    flags = KERNFS_FILE;
+
+    kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG, uid, gid, flags);
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    kn->attr.ops = ops;
+    kn->attr.size = size;
+    kn->ns = ns;
+    kn->priv = priv;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    if (key) {
+        lockdep_init_map(&kn->dep_map, "kn->active", key, 0);
+        kn->flags |= KERNFS_LOCKDEP;
+    }
+#endif
+
+    /* kn->attr.ops is accessible only while holding active ref.  We
+     * need to know whether some ops are implemented outside active
+     * ref.  Cache their existence in flags. */
+    if (ops->seq_show)
+        kn->flags |= KERNFS_HAS_SEQ_SHOW;
+    if (ops->mmap)
+        kn->flags |= KERNFS_HAS_MMAP;
+    if (ops->release)
+        kn->flags |= KERNFS_HAS_RELEASE;
+
+    rc = kernfs_add_one(kn);
+    if (rc) {
+        kernfs_put(kn);
+        return ERR_PTR(rc);
+    }
+    return kn;
 }
 ```
 
@@ -13907,58 +13889,6 @@ out_unlock:
 }
 ```
 
-### kernfs_create_file
-
-```c
-struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
-                     const char *name,
-                     umode_t mode, kuid_t uid, kgid_t gid,
-                     loff_t size,
-                     const struct kernfs_ops *ops,
-                     void *priv, const void *ns,
-                     struct lock_class_key *key)
-{
-    struct kernfs_node *kn;
-    unsigned flags;
-    int rc;
-
-    flags = KERNFS_FILE;
-
-    kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG, uid, gid, flags);
-    if (!kn)
-        return ERR_PTR(-ENOMEM);
-
-    kn->attr.ops = ops;
-    kn->attr.size = size;
-    kn->ns = ns;
-    kn->priv = priv;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-    if (key) {
-        lockdep_init_map(&kn->dep_map, "kn->active", key, 0);
-        kn->flags |= KERNFS_LOCKDEP;
-    }
-#endif
-
-    /* kn->attr.ops is accessible only while holding active ref.  We
-     * need to know whether some ops are implemented outside active
-     * ref.  Cache their existence in flags. */
-    if (ops->seq_show)
-        kn->flags |= KERNFS_HAS_SEQ_SHOW;
-    if (ops->mmap)
-        kn->flags |= KERNFS_HAS_MMAP;
-    if (ops->release)
-        kn->flags |= KERNFS_HAS_RELEASE;
-
-    rc = kernfs_add_one(kn);
-    if (rc) {
-        kernfs_put(kn);
-        return ERR_PTR(rc);
-    }
-    return kn;
-}
-```
-
 ### kernfs_create_link
 
 ```c
@@ -14542,7 +14472,7 @@ void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 ## proc_fs
 
 
-![](../images/kernel/file-proc_fs.drawio.svg)
+![](../images/kernel/file-procfs.drawio.svg)
 
 ```c
 struct proc_dir_entry proc_root = {
