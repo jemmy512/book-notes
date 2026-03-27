@@ -11683,6 +11683,10 @@ iostat -x 1
 
 ![](../images/kernel/perf-events-map.png)
 
+* [:cn: Deep in perf :one: cycles and instructions](https://mp.weixin.qq.com/s/NG85pb4dC9JQ2jIcW9_sbw) ⊙ [:two: Raw Event](https://mp.weixin.qq.com/s/vGmUSJF7DtI6gDdgPgd7jg) ⊙ [:three: branch prediction](https://mp.weixin.qq.com/s/I8vFSWRjTyZre1evv14gHw) ⊙ [:four: L1 - DRAM](https://mp.weixin.qq.com/s/yeTXuPfTrXragxpD5ryvQA) ⊙ [:five: ARM64 spinlock](https://mp.weixin.qq.com/s/saRsJavoGqRqcEwKPloeRQ) ⊙ [:six: 9 performace black holes](https://mp.weixin.qq.com/s/sS1BCWFU5PtaKzTimfuB6g) ⊙ [:seven: EL3, SMM](https://mp.weixin.qq.com/s/OSPq-jTmBSrU1ySXi2Uahg) ⊙ [:eight: Phone tunning](https://mp.weixin.qq.com/s/x-FD8QoS53Nm-cnaCS6tpQ)
+
+---
+
 ```sh
 sudo pacman -S linux-headers
 

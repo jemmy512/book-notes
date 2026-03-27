@@ -1573,25 +1573,7 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
                     error = may_open(mnt_userns, &nd->path, acc_mode, open_flag);
 
                     if (!error && !(file->f_mode & FMODE_OPENED)) {
-                        error = vfs_open(&nd->path, file) {
-                            struct dentry *dentry = d_real(path->dentry, NULL, file->f_flags, 0);
-                            file->f_path = *path;
-
-                            return do_dentry_open(file, d_backing_inode(dentry), NULL, cred) {
-                                f->f_mode = OPEN_FMODE(f->f_flags) | FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
-                                path_get(&f->f_path);
-                                f->f_inode = inode;
-                                f->f_mapping = inode->i_mapping;
-                                f->f_op = fops_get(inode->i_fop);
-                                open = f->f_op->open;
-                                error = open(inode, f) {
-                                    ext4_file_open();
-                                }
-                                f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
-                                file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
-                                return 0;
-                            }
-                        }
+                        error = vfs_open(&nd->path, file);
                     }
                     if (!error)
                         error = ima_file_check(file, op->acc_mode);
@@ -1653,6 +1635,140 @@ return do_sys_open(AT_FDCWD/*dfd*/, filename, flags, mode) {
 
     putname(tmp);
     return fd;
+}
+
+int vfs_open(const struct path *path, struct file *file)
+{
+    int ret;
+
+    file->__f_path = *path;
+    ret = do_dentry_open(file, NULL);
+    if (!ret) {
+        /* Once we return a file with FMODE_OPENED, __fput() will call
+         * fsnotify_close(), so we need fsnotify_open() here for
+         * symmetry. */
+        fsnotify_open(file);
+    }
+    return ret;
+}
+
+int do_dentry_open(struct file *f, int (*open)(struct inode *, struct file *))
+{
+    static const struct file_operations empty_fops = {};
+    struct inode *inode = f->f_path.dentry->d_inode;
+    int error;
+
+    path_get(&f->f_path);
+    f->f_inode = inode;
+    f->f_mapping = inode->i_mapping;
+    f->f_wb_err = filemap_sample_wb_err(f->f_mapping);
+    f->f_sb_err = file_sample_sb_err(f);
+
+    if (unlikely(f->f_flags & O_PATH)) {
+        f->f_mode = FMODE_PATH | FMODE_OPENED;
+        file_set_fsnotify_mode(f, FMODE_NONOTIFY);
+        f->f_op = &empty_fops;
+        return 0;
+    }
+
+    if ((f->f_mode & (FMODE_READ | FMODE_WRITE)) == FMODE_READ) {
+        i_readcount_inc(inode);
+    } else if (f->f_mode & FMODE_WRITE && !special_file(inode->i_mode)) {
+        error = file_get_write_access(f);
+        if (unlikely(error))
+            goto cleanup_file;
+        f->f_mode |= FMODE_WRITER;
+    }
+
+    /* POSIX.1-2008/SUSv4 Section XSI 2.9.7 */
+    if (S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode))
+        f->f_mode |= FMODE_ATOMIC_POS;
+
+    f->f_op = fops_get(inode->i_fop);
+    if (WARN_ON(!f->f_op)) {
+        error = -ENODEV;
+        goto cleanup_all;
+    }
+
+    error = security_file_open(f);
+    if (unlikely(error))
+        goto cleanup_all;
+
+    /* Call fsnotify open permission hook and set FMODE_NONOTIFY_* bits
+     * according to existing permission watches.
+     * If FMODE_NONOTIFY mode was already set for an fanotify fd or for a
+     * pseudo file, this call will not change the mode. */
+    error = fsnotify_open_perm_and_set_mode(f);
+    if (unlikely(error))
+        goto cleanup_all;
+
+    error = break_lease(file_inode(f), f->f_flags);
+    if (unlikely(error))
+        goto cleanup_all;
+
+    /* normally all 3 are set; ->open() can clear them if needed */
+    f->f_mode |= FMODE_LSEEK | FMODE_PREAD | FMODE_PWRITE;
+    if (!open)
+        open = f->f_op->open;
+    if (open) {
+        error = open(inode, f);
+        if (error)
+            goto cleanup_all;
+    }
+    f->f_mode |= FMODE_OPENED;
+    if ((f->f_mode & FMODE_READ) &&
+         likely(f->f_op->read || f->f_op->read_iter))
+        f->f_mode |= FMODE_CAN_READ;
+    if ((f->f_mode & FMODE_WRITE) &&
+         likely(f->f_op->write || f->f_op->write_iter))
+        f->f_mode |= FMODE_CAN_WRITE;
+    if ((f->f_mode & FMODE_LSEEK) && !f->f_op->llseek)
+        f->f_mode &= ~FMODE_LSEEK;
+    if (f->f_mapping->a_ops && f->f_mapping->a_ops->direct_IO)
+        f->f_mode |= FMODE_CAN_ODIRECT;
+
+    f->f_flags &= ~(O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC);
+    f->f_iocb_flags = iocb_flags(f);
+
+    file_ra_state_init(&f->f_ra, f->f_mapping->host->i_mapping);
+
+    if ((f->f_flags & O_DIRECT) && !(f->f_mode & FMODE_CAN_ODIRECT))
+        return -EINVAL;
+
+    /* XXX: Huge page cache doesn't support writing yet. Drop all page
+     * cache for this file before processing writes. */
+    if (f->f_mode & FMODE_WRITE) {
+        /* Depends on full fence from get_write_access() to synchronize
+         * against collapse_file() regarding i_writecount and nr_thps
+         * updates. Ensures subsequent insertion of THPs into the page
+         * cache will fail. */
+        if (filemap_nr_thps(inode->i_mapping)) {
+            struct address_space *mapping = inode->i_mapping;
+
+            filemap_invalidate_lock(inode->i_mapping);
+            /* unmap_mapping_range just need to be called once
+             * here, because the private pages is not need to be
+             * unmapped mapping (e.g. data segment of dynamic
+             * shared libraries here). */
+            unmap_mapping_range(mapping, 0, 0, 0);
+            truncate_inode_pages(mapping, 0);
+            filemap_invalidate_unlock(inode->i_mapping);
+        }
+    }
+
+    return 0;
+
+cleanup_all:
+    if (WARN_ON_ONCE(error > 0))
+        error = -EINVAL;
+    fops_put(f->f_op);
+    put_file_access(f);
+cleanup_file:
+    path_put(&f->f_path);
+    f->__f_path.mnt = NULL;
+    f->__f_path.dentry = NULL;
+    f->f_inode = NULL;
+    return error;
 }
 
 const struct inode_operations ext4_dir_inode_operations = {
@@ -2679,6 +2795,117 @@ void d_invalidate(struct dentry *dentry)
         detach_mounts(victim);
         dput(victim);
     }
+}
+```
+
+### handle_dots
+
+```c
+const char *handle_dots(struct nameidata *nd, int type)
+{
+    if (type == LAST_DOTDOT) {
+        const char *error = NULL;
+        struct dentry *parent;
+
+        if (!nd->root.mnt) {
+            error = ERR_PTR(set_root(nd));
+            if (unlikely(error))
+                return error;
+        }
+        if (nd->flags & LOOKUP_RCU)
+            parent = follow_dotdot_rcu(nd);
+        else
+            parent = follow_dotdot(nd);
+        if (IS_ERR(parent))
+            return ERR_CAST(parent);
+        error = step_into(nd, WALK_NOFOLLOW, parent);
+        if (unlikely(error))
+            return error;
+
+        if (unlikely(nd->flags & LOOKUP_IS_SCOPED)) {
+            /* If there was a racing rename or mount along our
+             * path, then we can't be sure that ".." hasn't jumped
+             * above nd->root (and so userspace should retry or use
+             * some fallback). */
+            smp_rmb();
+            if (__read_seqcount_retry(&mount_lock.seqcount, nd->m_seq))
+                return ERR_PTR(-EAGAIN);
+            if (__read_seqcount_retry(&rename_lock.seqcount, nd->r_seq))
+                return ERR_PTR(-EAGAIN);
+        }
+    }
+    return NULL;
+}
+
+struct dentry *follow_dotdot(struct nameidata *nd)
+{
+    struct dentry *parent;
+
+    if (path_equal(&nd->path, &nd->root))
+        goto in_root;
+    if (unlikely(nd->path.dentry == nd->path.mnt->mnt_root)) {
+        struct path path;
+
+        if (!choose_mountpoint(real_mount(nd->path.mnt), &nd->root, &path))
+            goto in_root;
+        path_put(&nd->path);
+        nd->path = path;
+        nd->inode = path.dentry->d_inode;
+        if (unlikely(nd->flags & LOOKUP_NO_XDEV))
+            return ERR_PTR(-EXDEV);
+    }
+    /* rare case of legitimate dget_parent()... */
+    parent = dget_parent(nd->path.dentry);
+    if (unlikely(!path_connected(nd->path.mnt, parent))) {
+        dput(parent);
+        return ERR_PTR(-ENOENT);
+    }
+    return parent;
+
+in_root:
+    if (unlikely(nd->flags & LOOKUP_BENEATH))
+        return ERR_PTR(-EXDEV);
+    return dget(nd->path.dentry);
+}
+
+bool choose_mountpoint(struct mount *m, const struct path *root,
+                  struct path *path)
+{
+    bool found;
+
+    rcu_read_lock();
+    while (1) {
+        unsigned seq, mseq = read_seqbegin(&mount_lock);
+
+        found = choose_mountpoint_rcu(m, root, path, &seq) {
+            while (mnt_has_parent(m)) {
+                struct dentry *mountpoint = m->mnt_mountpoint;
+
+                m = m->mnt_parent;
+                if (unlikely(root->dentry == mountpoint && root->mnt == &m->mnt))
+                    break;
+                if (mountpoint != m->mnt.mnt_root) {
+                    path->mnt = &m->mnt;
+                    path->dentry = mountpoint;
+                    *seqp = read_seqcount_begin(&mountpoint->d_seq);
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (unlikely(!found)) {
+            if (!read_seqretry(&mount_lock, mseq))
+                break;
+        } else {
+            if (likely(__legitimize_path(path, seq, mseq)))
+                break;
+            rcu_read_unlock();
+            path_put(path);
+            rcu_read_lock();
+        }
+    }
+    rcu_read_unlock();
+    return found;
 }
 ```
 
@@ -5631,6 +5858,7 @@ struct dentry *d_alloc_parallel(struct dentry *parent,
     }
     struct hlist_bl_node *node;
     struct dentry *new = __d_alloc(parent->d_sb, name);
+        --->
     struct dentry *dentry;
     unsigned seq, r_seq, d_seq;
 
@@ -5744,6 +5972,82 @@ mismatch:
 }
 ```
 
+#### __d_alloc
+
+```c
+struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
+{
+    struct dentry *dentry;
+    char *dname;
+    int err;
+
+    dentry = kmem_cache_alloc_lru(dentry_cache, &sb->s_dentry_lru,
+                      GFP_KERNEL);
+    if (!dentry)
+        return NULL;
+
+    /* We guarantee that the inline name is always NUL-terminated.
+     * This way the memcpy() done by the name switching in rename
+     * will still always have a NUL at the end, even if we might
+     * be overwriting an internal NUL character */
+    dentry->d_shortname.string[DNAME_INLINE_LEN-1] = 0;
+    if (unlikely(!name)) {
+        name = &slash_name;
+        dname = dentry->d_shortname.string;
+    } else if (name->len > DNAME_INLINE_LEN-1) {
+        size_t size = offsetof(struct external_name, name[1]);
+        struct external_name *p = kmalloc(size + name->len,
+                          GFP_KERNEL_ACCOUNT |
+                          __GFP_RECLAIMABLE);
+        if (!p) {
+            kmem_cache_free(dentry_cache, dentry);
+            return NULL;
+        }
+        atomic_set(&p->count, 1);
+        dname = p->name;
+    } else  {
+        dname = dentry->d_shortname.string;
+    }
+
+    dentry->__d_name.len = name->len;
+    dentry->__d_name.hash = name->hash;
+    memcpy(dname, name->name, name->len);
+    dname[name->len] = 0;
+
+    /* Make sure we always see the terminating NUL character */
+    smp_store_release(&dentry->__d_name.name, dname); /* ^^^ */
+
+    dentry->d_flags = 0;
+    lockref_init(&dentry->d_lockref);
+    seqcount_spinlock_init(&dentry->d_seq, &dentry->d_lock);
+    dentry->d_inode = NULL;
+    dentry->d_parent = dentry;
+    dentry->d_sb = sb;
+    dentry->d_op = sb->__s_d_op;
+    dentry->d_flags = sb->s_d_flags;
+    dentry->d_fsdata = NULL;
+    INIT_HLIST_BL_NODE(&dentry->d_hash);
+    INIT_LIST_HEAD(&dentry->d_lru);
+    INIT_HLIST_HEAD(&dentry->d_children);
+    INIT_HLIST_NODE(&dentry->d_u.d_alias);
+    INIT_HLIST_NODE(&dentry->d_sib);
+
+    if (dentry->d_op && dentry->d_op->d_init) {
+        err = dentry->d_op->d_init(dentry);
+        if (err) {
+            if (dname_external(dentry))
+                kfree(external_name(dentry));
+            kmem_cache_free(dentry_cache, dentry);
+            return NULL;
+        }
+    }
+
+    this_cpu_inc(nr_dentry);
+
+    return dentry;
+}
+```
+
 ### d_walk
 
 ```c
@@ -5846,6 +6150,263 @@ rename_retry:
         return;
     seq = 1;
     goto again;
+}
+```
+
+### d_move
+
+```c
+void d_move(struct dentry *dentry, struct dentry *target)
+{
+    write_seqlock(&rename_lock);
+    __d_move(dentry, target, false);
+    write_sequnlock(&rename_lock);
+}
+
+static void __d_move(struct dentry *dentry, struct dentry *target,
+             bool exchange)
+{
+    struct dentry *old_parent, *p;
+    wait_queue_head_t *d_wait;
+    struct inode *dir = NULL;
+    unsigned n;
+
+    WARN_ON(!dentry->d_inode);
+    if (WARN_ON(dentry == target))
+        return;
+
+    BUG_ON(d_ancestor(target, dentry));
+    old_parent = dentry->d_parent;
+    p = d_ancestor(old_parent, target);
+    if (IS_ROOT(dentry)) {
+        BUG_ON(p);
+        spin_lock(&target->d_parent->d_lock);
+    } else if (!p) {
+        /* target is not a descendent of dentry->d_parent */
+        spin_lock(&target->d_parent->d_lock);
+        spin_lock_nested(&old_parent->d_lock, DENTRY_D_LOCK_NESTED);
+    } else {
+        BUG_ON(p == dentry);
+        spin_lock(&old_parent->d_lock);
+        if (p != target)
+            spin_lock_nested(&target->d_parent->d_lock,
+                    DENTRY_D_LOCK_NESTED);
+    }
+    spin_lock_nested(&dentry->d_lock, 2);
+    spin_lock_nested(&target->d_lock, 3);
+
+    if (unlikely(d_in_lookup(target))) {
+        dir = target->d_parent->d_inode;
+        n = start_dir_add(dir);
+        d_wait = __d_lookup_unhash(target);
+    }
+
+    write_seqcount_begin(&dentry->d_seq);
+    write_seqcount_begin_nested(&target->d_seq, DENTRY_D_LOCK_NESTED);
+
+    /* unhash both */
+    if (!d_unhashed(dentry))
+        ___d_drop(dentry);
+    if (!d_unhashed(target))
+        ___d_drop(target);
+
+    /* ... and switch them in the tree */
+    dentry->d_parent = target->d_parent;
+    if (!exchange) {
+        copy_name(dentry, target);
+        target->d_hash.pprev = NULL;
+        dentry->d_parent->d_lockref.count++;
+        if (dentry != old_parent) /* wasn't IS_ROOT */
+            WARN_ON(!--old_parent->d_lockref.count);
+    } else {
+        target->d_parent = old_parent;
+        swap_names(dentry, target);
+        if (!hlist_unhashed(&target->d_sib))
+            __hlist_del(&target->d_sib);
+        hlist_add_head(&target->d_sib, &target->d_parent->d_children);
+        __d_rehash(target);
+        fsnotify_update_flags(target);
+    }
+    if (!hlist_unhashed(&dentry->d_sib))
+        __hlist_del(&dentry->d_sib);
+    hlist_add_head(&dentry->d_sib, &dentry->d_parent->d_children);
+    __d_rehash(dentry);
+    fsnotify_update_flags(dentry);
+    fscrypt_handle_d_move(dentry);
+
+    write_seqcount_end(&target->d_seq);
+    write_seqcount_end(&dentry->d_seq);
+
+    if (dir)
+        end_dir_add(dir, n, d_wait);
+
+    if (dentry->d_parent != old_parent)
+        spin_unlock(&dentry->d_parent->d_lock);
+    if (dentry != old_parent)
+        spin_unlock(&old_parent->d_lock);
+    spin_unlock(&target->d_lock);
+    spin_unlock(&dentry->d_lock);
+}
+```
+
+### d_add
+
+```c
+void d_add(struct dentry *entry, struct inode *inode)
+{
+    if (inode) {
+        security_d_instantiate(entry, inode);
+        spin_lock(&inode->i_lock);
+    }
+    __d_add(entry, inode, NULL);
+}
+
+void __d_add(struct dentry *dentry, struct inode *inode,
+               const struct dentry_operations *ops)
+{
+    wait_queue_head_t *d_wait;
+    struct inode *dir = NULL;
+    unsigned n;
+    spin_lock(&dentry->d_lock);
+    if (unlikely(d_in_lookup(dentry))) {
+        dir = dentry->d_parent->d_inode;
+        n = start_dir_add(dir) {
+            preempt_disable_nested();
+            for (;;) {
+                unsigned n = READ_ONCE(dir->i_dir_seq);
+                if (!(n & 1) && try_cmpxchg(&dir->i_dir_seq, &n, n + 1))
+                    return n;
+                cpu_relax();
+            }
+        }
+        d_wait = __d_lookup_unhash(dentry) {
+            wait_queue_head_t *d_wait;
+            struct hlist_bl_head *b;
+
+            lockdep_assert_held(&dentry->d_lock);
+
+            b = in_lookup_hash(dentry->d_parent, dentry->d_name.hash);
+            hlist_bl_lock(b);
+            dentry->d_flags &= ~DCACHE_PAR_LOOKUP;
+            __hlist_bl_del(&dentry->d_u.d_in_lookup_hash);
+            d_wait = dentry->d_wait;
+            dentry->d_wait = NULL;
+            hlist_bl_unlock(b);
+            INIT_HLIST_NODE(&dentry->d_u.d_alias);
+            INIT_LIST_HEAD(&dentry->d_lru);
+            return d_wait;
+        }
+    }
+    if (unlikely(ops)) {
+        d_set_d_op(dentry, ops) {
+            unsigned int flags = d_op_flags(op);
+            WARN_ON_ONCE(dentry->d_op);
+            WARN_ON_ONCE(dentry->d_flags & DCACHE_OP_FLAGS);
+            dentry->d_op = op;
+            if (flags)
+                dentry->d_flags |= flags;
+        }
+    }
+
+    if (inode) {
+        unsigned add_flags = d_flags_for_inode(inode);
+        hlist_add_head(&dentry->d_u.d_alias, &inode->i_dentry);
+        raw_write_seqcount_begin(&dentry->d_seq);
+        __d_set_inode_and_type(dentry, inode, add_flags) {
+            unsigned flags;
+
+            dentry->d_inode = inode;
+            flags = READ_ONCE(dentry->d_flags);
+            flags &= ~DCACHE_ENTRY_TYPE;
+            flags |= type_flags;
+            smp_store_release(&dentry->d_flags, flags);
+        }
+        raw_write_seqcount_end(&dentry->d_seq);
+        fsnotify_update_flags(dentry);
+    }
+
+    __d_rehash(dentry);
+
+    if (dir) {
+        end_dir_add(dir, n, d_wait) {
+            smp_store_release(&dir->i_dir_seq, n + 2);
+            preempt_enable_nested();
+            if (wq_has_sleeper(d_wait))
+                wake_up_all(d_wait);
+        }
+    }
+
+    spin_unlock(&dentry->d_lock);
+    if (inode)
+        spin_unlock(&inode->i_lock);
+}
+```
+
+### d_splice_alias
+
+```c
+struct dentry *d_splice_alias(struct inode *inode, struct dentry *dentry)
+{
+    return d_splice_alias_ops(inode, dentry, NULL);
+}
+struct dentry *d_splice_alias_ops(struct inode *inode, struct dentry *dentry,
+                  const struct dentry_operations *ops)
+{
+    if (IS_ERR(inode))
+        return ERR_CAST(inode);
+
+    BUG_ON(!d_unhashed(dentry));
+
+    if (!inode)
+        goto out;
+
+    security_d_instantiate(dentry, inode);
+    spin_lock(&inode->i_lock);
+    if (S_ISDIR(inode->i_mode)) {
+        struct dentry *new = __d_find_any_alias(inode) {
+            struct dentry *alias;
+
+            if (hlist_empty(&inode->i_dentry))
+                return NULL;
+            alias = hlist_entry(inode->i_dentry.first, struct dentry, d_u.d_alias);
+            lockref_get(&alias->d_lockref);
+            return alias;
+        }
+
+        if (unlikely(new)) {
+            /* The reference to new ensures it remains an alias */
+            spin_unlock(&inode->i_lock);
+            write_seqlock(&rename_lock);
+            if (unlikely(d_ancestor(new, dentry))) {
+                write_sequnlock(&rename_lock);
+                dput(new);
+                new = ERR_PTR(-ELOOP);
+                pr_warn_ratelimited(
+                    "VFS: Lookup of '%s' in %s %s"
+                    " would have caused loop\n",
+                    dentry->d_name.name,
+                    inode->i_sb->s_type->name,
+                    inode->i_sb->s_id);
+            } else if (!IS_ROOT(new)) {
+                struct dentry *old_parent = dget(new->d_parent);
+                int err = __d_unalias(dentry, new);
+                write_sequnlock(&rename_lock);
+                if (err) {
+                    dput(new);
+                    new = ERR_PTR(err);
+                }
+                dput(old_parent);
+            } else {
+                __d_move(new, dentry, false);
+                write_sequnlock(&rename_lock);
+            }
+            iput(inode);
+            return new;
+        }
+    }
+out:
+    __d_add(dentry, inode, ops);
+    return NULL;
 }
 ```
 
@@ -12686,7 +13247,12 @@ done:
 ```c
 /* /sys/fs */
 struct kobject *fs_kobj __ro_after_init;
+
 EXPORT_SYMBOL_GPL(fs_kobj);
+EXPORT_SYMBOL_GPL(dmi_kaobj);
+EXPORT_SYMBOL_GPL(acpi_kobj);
+EXPORT_SYMBOL_GPL(kernel_kobj);
+EXPORT_SYMBOL_GPL(get_governor_parent_kobj);
 
 /* /sys/kernel/sched_ext interface */
 static struct kset *scx_kset;
@@ -12719,9 +13285,10 @@ struct kobject {
 };
 
 struct kobj_type {
+    const struct sysfs_ops          *sysfs_ops;
+    const struct attribute_group    **default_groups;
+
     void (*release)(struct kobject *kobj);
-    const struct sysfs_ops *sysfs_ops;
-    const struct attribute_group **default_groups;
     const struct kobj_ns_type_operations *(*child_ns_type)(const struct kobject *kobj);
     const void *(*namespace)(const struct kobject *kobj);
     void (*get_ownership)(const struct kobject *kobj, kuid_t *uid, kgid_t *gid);
@@ -12732,21 +13299,21 @@ struct kobj_type {
 
 ```c
 struct kset *kset_create_and_add(const char *name,
-				 const struct kset_uevent_ops *uevent_ops,
-				 struct kobject *parent_kobj)
+                 const struct kset_uevent_ops *uevent_ops,
+                 struct kobject *parent_kobj)
 {
-	struct kset *kset;
-	int error;
+    struct kset *kset;
+    int error;
 
-	kset = kset_create(name, uevent_ops, parent_kobj);
-	if (!kset)
-		return NULL;
-	error = kset_register(kset);
-	if (error) {
-		kfree(kset);
-		return NULL;
-	}
-	return kset;
+    kset = kset_create(name, uevent_ops, parent_kobj);
+    if (!kset)
+        return NULL;
+    error = kset_register(kset);
+    if (error) {
+        kfree(kset);
+        return NULL;
+    }
+    return kset;
 }
 ```
 
@@ -13088,66 +13655,66 @@ int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
 
 ```c
 int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
-			 const void *ns)
+             const void *ns)
 {
-	kuid_t uid;
-	kgid_t gid;
+    kuid_t uid;
+    kgid_t gid;
 
-	if (WARN_ON(!kobj || !kobj->sd || !attr))
-		return -EINVAL;
+    if (WARN_ON(!kobj || !kobj->sd || !attr))
+        return -EINVAL;
 
-	kobject_get_ownership(kobj, &uid, &gid);
-	return sysfs_add_file_mode_ns(kobj->sd, attr, attr->mode, uid, gid, ns);
+    kobject_get_ownership(kobj, &uid, &gid);
+    return sysfs_add_file_mode_ns(kobj->sd, attr, attr->mode, uid, gid, ns);
 }
 
 int sysfs_add_file_mode_ns(struct kernfs_node *parent,
-		const struct attribute *attr, umode_t mode, kuid_t uid,
-		kgid_t gid, const void *ns)
+        const struct attribute *attr, umode_t mode, kuid_t uid,
+        kgid_t gid, const void *ns)
 {
-	struct kobject *kobj = parent->priv;
-	const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
-	struct lock_class_key *key = NULL;
-	const struct kernfs_ops *ops = NULL;
-	struct kernfs_node *kn;
+    struct kobject *kobj = parent->priv;
+    const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
+    struct lock_class_key *key = NULL;
+    const struct kernfs_ops *ops = NULL;
+    struct kernfs_node *kn;
 
-	/* every kobject with an attribute needs a ktype assigned */
-	if (WARN(!sysfs_ops, KERN_ERR
-			"missing sysfs attribute operations for kobject: %s\n",
-			kobject_name(kobj)))
-		return -EINVAL;
+    /* every kobject with an attribute needs a ktype assigned */
+    if (WARN(!sysfs_ops, KERN_ERR
+            "missing sysfs attribute operations for kobject: %s\n",
+            kobject_name(kobj)))
+        return -EINVAL;
 
-	if (mode & SYSFS_PREALLOC) {
-		if (sysfs_ops->show && sysfs_ops->store)
-			ops = &sysfs_prealloc_kfops_rw;
-		else if (sysfs_ops->show)
-			ops = &sysfs_prealloc_kfops_ro;
-		else if (sysfs_ops->store)
-			ops = &sysfs_prealloc_kfops_wo;
-	} else {
-		if (sysfs_ops->show && sysfs_ops->store)
-			ops = &sysfs_file_kfops_rw;
-		else if (sysfs_ops->show)
-			ops = &sysfs_file_kfops_ro;
-		else if (sysfs_ops->store)
-			ops = &sysfs_file_kfops_wo;
-	}
+    if (mode & SYSFS_PREALLOC) {
+        if (sysfs_ops->show && sysfs_ops->store)
+            ops = &sysfs_prealloc_kfops_rw;
+        else if (sysfs_ops->show)
+            ops = &sysfs_prealloc_kfops_ro;
+        else if (sysfs_ops->store)
+            ops = &sysfs_prealloc_kfops_wo;
+    } else {
+        if (sysfs_ops->show && sysfs_ops->store)
+            ops = &sysfs_file_kfops_rw;
+        else if (sysfs_ops->show)
+            ops = &sysfs_file_kfops_ro;
+        else if (sysfs_ops->store)
+            ops = &sysfs_file_kfops_wo;
+    }
 
-	if (!ops)
-		ops = &sysfs_file_kfops_empty;
+    if (!ops)
+        ops = &sysfs_file_kfops_empty;
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
-	if (!attr->ignore_lockdep)
-		key = attr->key ?: (struct lock_class_key *)&attr->skey;
+    if (!attr->ignore_lockdep)
+        key = attr->key ?: (struct lock_class_key *)&attr->skey;
 #endif
 
-	kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid,
-				  PAGE_SIZE, ops, (void *)attr, ns, key);
-	if (IS_ERR(kn)) {
-		if (PTR_ERR(kn) == -EEXIST)
-			sysfs_warn_dup(parent, attr->name);
-		return PTR_ERR(kn);
-	}
-	return 0;
+    kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid,
+                  PAGE_SIZE, ops, (void *)attr, ns, key);
+    if (IS_ERR(kn)) {
+        if (PTR_ERR(kn) == -EEXIST)
+            sysfs_warn_dup(parent, attr->name);
+        return PTR_ERR(kn);
+    }
+    return 0;
 }
 
 struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
@@ -13481,6 +14048,39 @@ int sysfs_add_file_mode_ns(struct kernfs_node *parent,
     }
     return 0;
 }
+
+static const struct kernfs_ops sysfs_prealloc_kfops_rw = {
+    .read           = sysfs_kf_read() {
+        const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
+        struct kobject *kobj = sysfs_file_kobj(of->kn);
+        ssize_t len;
+
+        /* If buf != of->prealloc_buf, we don't know how
+        * large it is, so cannot safely pass it to ->show */
+        if (WARN_ON_ONCE(buf != of->prealloc_buf))
+            return 0;
+        len = ops->show(kobj, of->kn->priv, buf);
+        if (len < 0)
+            return len;
+        if (pos) {
+            if (len <= pos)
+                return 0;
+            len -= pos;
+            memmove(buf, buf + pos, len);
+        }
+        return min_t(ssize_t, count, len);
+    },
+    .write          = sysfs_kf_write() {
+        const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
+        struct kobject *kobj = sysfs_file_kobj(of->kn);
+
+        if (!count)
+            return 0;
+
+        return ops->store(kobj, of->kn->priv, buf, count);
+    },
+    .prealloc       = true,
+};
 ```
 
 ### sysfs_add_bin_file_mode_ns
@@ -14381,7 +14981,11 @@ int kernfs_get_tree(struct fs_context *fc)
                 return res;
             }
             sb->s_root = root;
-            sb->s_d_op = &kernfs_dops;
+            set_default_d_op(sb, &kernfs_dops) {
+                unsigned int flags = d_op_flags(ops);
+                s->__s_d_op = ops;
+                s->s_d_flags = (s->s_d_flags & ~DCACHE_OP_FLAGS) | flags;
+            }
             return 0;
         }
         sb->s_flags |= SB_ACTIVE;
@@ -14465,11 +15069,80 @@ void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
         BUG();
     }
 
-    unlock_new_inode(inode);
+    unlock_new_inode(inode) {
+        lockdep_annotate_inode_mutex_key(inode);
+        spin_lock(&inode->i_lock);
+        WARN_ON(!(inode_state_read(inode) & I_NEW));
+        inode_state_clear(inode, I_NEW | I_CREATING);
+        inode_wake_up_bit(inode, __I_NEW);
+        spin_unlock(&inode->i_lock);
+    }
 }
 ```
 
-## proc_fs
+### kernfs_dir_iops
+
+```c
+const struct inode_operations kernfs_dir_iops = {
+    .lookup         = kernfs_iop_lookup,
+    .permission     = kernfs_iop_permission,
+    .setattr        = kernfs_iop_setattr,
+    .getattr        = kernfs_iop_getattr,
+    .listxattr      = kernfs_iop_listxattr,
+
+    .mkdir          = kernfs_iop_mkdir,
+    .rmdir          = kernfs_iop_rmdir,
+    .rename         = kernfs_iop_rename,
+};
+```
+
+#### kernfs_iop_lookup
+
+```c
+struct dentry *kernfs_iop_lookup(struct inode *dir,
+                    struct dentry *dentry,
+                    unsigned int flags)
+{
+    struct kernfs_node *parent = dir->i_private;
+    struct kernfs_node *kn;
+    struct kernfs_root *root;
+    struct inode *inode = NULL;
+    const void *ns = NULL;
+
+    root = kernfs_root(parent);
+    down_read(&root->kernfs_rwsem);
+    if (kernfs_ns_enabled(parent))
+        ns = kernfs_info(dir->i_sb)->ns;
+
+    kn = kernfs_find_ns(parent, dentry->d_name.name, ns);
+        --->
+    /* attach dentry and inode */
+    if (kn) {
+        /* Inactive nodes are invisible to the VFS so don't
+         * create a negative. */
+        if (!kernfs_active(kn)) {
+            up_read(&root->kernfs_rwsem);
+            return NULL;
+        }
+        inode = kernfs_get_inode(dir->i_sb, kn);
+            --->
+        if (!inode)
+            inode = ERR_PTR(-ENOMEM);
+    }
+    /* Needed for negative dentry validation.
+     * The negative dentry can be created in kernfs_iop_lookup()
+     * or transforms from positive dentry in dentry_unlink_inode()
+     * called from vfs_rmdir(). */
+    if (!IS_ERR(inode))
+        kernfs_set_rev(parent, dentry);
+    up_read(&root->kernfs_rwsem);
+
+    /* instantiate and hash (possibly negative) dentry */
+    return d_splice_alias(inode, dentry);
+}
+```
+
+## procfs
 
 
 ![](../images/kernel/file-procfs.drawio.svg)
@@ -16941,6 +17614,199 @@ struct eventfs_inode *eventfs_create_dir(const char *name, struct eventfs_inode 
 }
 ```
 
+## debugfs
+
+### debugfs_init
+
+```c
+int __init debugfs_init(void)
+{
+    int retval;
+
+    if (!debugfs_enabled)
+        return -EPERM;
+
+    retval = sysfs_create_mount_point(kernel_kobj, "debug");
+    if (retval)
+        return retval;
+
+    debugfs_inode_cachep = kmem_cache_create("debugfs_inode_cache",
+                sizeof(struct debugfs_inode_info), 0,
+                SLAB_RECLAIM_ACCOUNT | SLAB_ACCOUNT,
+                init_once);
+    if (debugfs_inode_cachep == NULL) {
+        sysfs_remove_mount_point(kernel_kobj, "debug");
+        return -ENOMEM;
+    }
+
+    retval = register_filesystem(&debug_fs_type);
+    if (retval) { // Really not going to happen
+        sysfs_remove_mount_point(kernel_kobj, "debug");
+        kmem_cache_destroy(debugfs_inode_cachep);
+        return retval;
+    }
+    debugfs_registered = true;
+    return 0;
+}
+core_initcall(debugfs_init);
+
+static struct file_system_type debug_fs_type = {
+    .owner              = THIS_MODULE,
+    .name               = "debugfs",
+    .init_fs_context    = debugfs_init_fs_context,
+    .parameters         = debugfs_param_specs,
+    .kill_sb            = kill_anon_super,
+};
+
+static int debugfs_init_fs_context(struct fs_context *fc)
+{
+    struct debugfs_fs_info *fsi;
+
+    fsi = kzalloc_obj(struct debugfs_fs_info);
+    if (!fsi)
+        return -ENOMEM;
+
+    fsi->mode = DEBUGFS_DEFAULT_MODE;
+
+    fc->s_fs_info = fsi;
+    fc->ops = &debugfs_context_ops;
+    return 0;
+}
+
+static const struct fs_context_operations debugfs_context_ops = {
+    .free           = debugfs_free_fc,
+    .parse_param    = debugfs_parse_param,
+    .get_tree       = debugfs_get_tree,
+    .reconfigure    = debugfs_reconfigure,
+};
+
+static int debugfs_get_tree(struct fs_context *fc)
+{
+    int err;
+
+    err = get_tree_single(fc, debugfs_fill_super);
+    if (err)
+        return err;
+
+    return debugfs_reconfigure(fc);
+}
+
+static int debugfs_fill_super(struct super_block *sb, struct fs_context *fc)
+{
+    static const struct tree_descr debug_files[] = {{""}};
+    int err;
+
+    err = simple_fill_super(sb, DEBUGFS_MAGIC, debug_files);
+    if (err)
+        return err;
+
+    sb->s_op = &debugfs_super_operations;
+    set_default_d_op(sb, &debugfs_dops);
+    sb->s_d_flags |= DCACHE_DONTCACHE;
+
+    debugfs_apply_options(sb);
+
+    return 0;
+}
+
+static const struct dentry_operations debugfs_dops = {
+    .d_release      = debugfs_release_dentry,
+    .d_automount    = debugfs_automount,
+};
+```
+
+### debugfs_create_file
+
+```c
+#define debugfs_create_file(name, mode, parent, data, fops)             \
+    _Generic(fops,                                                      \
+         const struct file_operations *: debugfs_create_file_full,      \
+         const struct debugfs_short_fops *: debugfs_create_file_short,  \
+         struct file_operations *: debugfs_create_file_full,            \
+         struct debugfs_short_fops *: debugfs_create_file_short)        \
+        (name, mode, parent, data, NULL, fops)
+
+struct dentry *debugfs_create_file_full(const char *name, umode_t mode,
+                    struct dentry *parent, void *data,
+                    const void *aux,
+                    const struct file_operations *fops)
+{
+    return __debugfs_create_file(name, mode, parent, data, aux,
+                &debugfs_full_proxy_file_operations,
+                fops);
+}
+
+struct dentry *__debugfs_create_file(const char *name, umode_t mode,
+                struct dentry *parent, void *data,
+                const void *aux,
+                const struct file_operations *proxy_fops,
+                const void *real_fops)
+{
+    struct dentry *dentry;
+    struct inode *inode;
+
+    if (!(mode & S_IFMT))
+        mode |= S_IFREG;
+    BUG_ON(!S_ISREG(mode));
+    dentry = debugfs_start_creating(name, parent);
+
+    if (IS_ERR(dentry))
+        return dentry;
+
+    inode = debugfs_get_inode(dentry->d_sb);
+    if (unlikely(!inode)) {
+        pr_err("out of free dentries, can not create file '%s'\n",
+               name);
+        return debugfs_failed_creating(dentry);
+    }
+
+    inode->i_mode = mode;
+    inode->i_private = data;
+
+    inode->i_op = &debugfs_file_inode_operations;
+    if (!real_fops)
+        proxy_fops = &debugfs_noop_file_operations;
+    inode->i_fop = proxy_fops;
+    DEBUGFS_I(inode)->raw = real_fops;
+    DEBUGFS_I(inode)->aux = (void *)aux;
+
+    d_make_persistent(dentry, inode);
+    fsnotify_create(d_inode(dentry->d_parent), dentry);
+    return debugfs_end_creating(dentry);
+}
+```
+
+### debugfs_create_dir
+
+```c
+struct dentry *debugfs_create_dir(const char *name, struct dentry *parent)
+{
+    struct dentry *dentry = debugfs_start_creating(name, parent);
+    struct inode *inode;
+
+    if (IS_ERR(dentry))
+        return dentry;
+
+    inode = debugfs_get_inode(dentry->d_sb);
+    if (unlikely(!inode)) {
+        pr_err("out of free dentries, can not create directory '%s'\n",
+               name);
+        return debugfs_failed_creating(dentry);
+    }
+
+    inode->i_mode = S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO;
+    inode->i_op = &debugfs_dir_inode_operations;
+    inode->i_fop = &simple_dir_operations;
+
+    /* directory inodes start off with i_nlink == 2 (for "." entry) */
+    inc_nlink(inode);
+    d_make_persistent(dentry, inode);
+    inc_nlink(d_inode(dentry->d_parent));
+    fsnotify_mkdir(d_inode(dentry->d_parent), dentry);
+    return debugfs_end_creating(dentry);
+}
+```
+
 ## nullfs
 
 * [[PATCH v2 0/4] fs: add immutable rootfs](https://lore.kernel.org/20260112-work-immutable-rootfs-v2-0-88dd1c34a204@kernel.org/)
@@ -17159,8 +18025,18 @@ out_del_kobj:
     goto out;
 }
 
+static const struct sysfs_ops slab_sysfs_ops = {
+    .show       = slab_attr_show,
+    .store      = slab_attr_store,
+};
+
+static const struct kobj_type slab_ktype = {
+    .sysfs_ops  = &slab_sysfs_ops,
+    .release    = kmem_cache_release,
+};
+
 static const struct attribute_group slab_attr_group = {
-    .attrs = slab_attrs,
+    .attrs      = slab_attrs,
 };
 
 static struct attribute *slab_attrs[] = {

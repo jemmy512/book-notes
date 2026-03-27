@@ -13092,6 +13092,21 @@ update_rq_clock(rq) {
         delayacct_irq(rq->curr, irq_delta);
     #endif
 
+    #ifdef CONFIG_PARAVIRT_TIME_ACCOUNTING
+        if (static_key_false((&paravirt_steal_rq_enabled))) {
+            u64 prev_steal;
+
+            steal = prev_steal = paravirt_steal_clock(cpu_of(rq));
+            steal -= rq->prev_steal_time_rq;
+
+            if (unlikely(steal > delta))
+                steal = delta;
+
+            rq->prev_steal_time_rq = prev_steal;
+            delta -= steal;
+        }
+    #endif
+
         /* real task exec clock exclude irq */
         rq->clock_task += delta;
 
