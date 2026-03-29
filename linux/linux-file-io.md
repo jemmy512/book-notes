@@ -13439,11 +13439,13 @@ int create_dir(struct kobject *kobj)
     int error;
 
     error = sysfs_create_dir_ns(kobj, kobject_namespace(kobj));
+        --->
     if (error)
         return error;
 
     if (ktype) {
         error = sysfs_create_groups(kobj, ktype->default_groups);
+            --->
         if (error) {
             sysfs_remove_dir(kobj);
             return error;
@@ -13545,7 +13547,7 @@ void kobject_del(struct kobject *kobj)
 
 ## sysfs
 
-![](../images/kernel/file-sysfs.drwaio.svg)
+![](../images/kernel/file-sysfs.drawio.svg)
 
 | Step | Layer | Function |
 |------|-------|----------|
@@ -14052,7 +14054,9 @@ int sysfs_add_file_mode_ns(struct kernfs_node *parent,
 static const struct kernfs_ops sysfs_prealloc_kfops_rw = {
     .read           = sysfs_kf_read() {
         const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-        struct kobject *kobj = sysfs_file_kobj(of->kn);
+        struct kobject *kobj = sysfs_file_kobj(of->kn) {
+            return rcu_dereference(kn->__parent)->priv;
+        }
         ssize_t len;
 
         /* If buf != of->prealloc_buf, we don't know how
@@ -18289,4 +18293,3 @@ int add_location(struct loc_track *t, struct kmem_cache *s,
     return 1;
 }
 ```
-
