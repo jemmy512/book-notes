@@ -1113,12 +1113,12 @@ void irqentry_exit(struct pt_regs *regs, irqentry_state_t state)
 void irqentry_exit_to_user_mode(struct pt_regs *regs)
 {
   instrumentation_begin();
-  exit_to_user_mode_prepare(regs);
+  __exit_to_user_mode_prepare(regs);
   instrumentation_end();
   __exit_to_user_mode();
 }
 
-void exit_to_user_mode_prepare(struct pt_regs *regs)
+void __exit_to_user_mode_prepare(struct pt_regs *regs)
 {
   unsigned long ti_work = read_thread_flags();
 
@@ -1230,7 +1230,7 @@ void __exit_to_user_mode(void)
         irqentry_exit(regs, state);
             if (user_mode(regs)) {
                 irqentry_exit_to_user_mode(regs);
-                    exit_to_user_mode_prepare(regs);
+                    __exit_to_user_mode_prepare(regs);
                         if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
                             ti_work = exit_to_user_mode_loop(regs, ti_work);
                                 if (ti_work & _TIF_NEED_RESCHED)

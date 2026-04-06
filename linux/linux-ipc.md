@@ -1250,7 +1250,7 @@ struct rt_sigframe_user_layout {
 ```
 
 ```c
-static void exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
+static void __exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
 {
     ti_work = read_thread_flags();
     if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {

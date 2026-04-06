@@ -1,132 +1,5 @@
 # Table of Contents
 
-<details>
-<summary>▾ Expand ▴ Collapse</summary>
-
-* [CPU](#cpu)
-* [bios](#bios)
-* [start_kernel](#start_kernel)
-    * [smp_boot](#smp_boot)
-* [syscall](#syscall)
-    * [glibs](#glibc)
-    * [64](#64)
-
-* [process](#process)
-* [thread](#thread)
-* [task_struct](#task_struct)
-* [sched](#sched)
-    * [voluntary schedule](#voluntary-schedule)
-    * [preempt schedule](#preempt-schedule)
-        * [user preempt](#user-preempt)
-            * [set_tsk_need_resched](#set_tsk_need_resched)
-                * [sched_tick](#sched_tick)
-                * [try_to_wake_up](#try_to_wake_upp)
-                * [sched_setscheduler](#sched_setscheduler)
-            * [prempt time](#preempt-time)
-                * [return from system call](#return-from-system-call)
-                * [return from interrupt](#return-from-interrupt)
-        * [kernel preempt](#kernel-preempt)
-            * [preempt_enable](#preempt_enble)
-            * [preempt_schedule_irq](#preempt_schedule_irq)
-
-* [SCHED_RT](#SCHED_RR)
-    * [enqueue_task_rt](#enqueue_task_rt)
-    * [dequeue_task_rt](#dequeue_task_rt)
-    * [put_prev_task_rt](#put_prev_task_rt)
-    * [pick_next_task_rt](#pick_next_task_rt)
-    * [set_next_task_rt](#set_next_task_rt)
-    * [select_task_rq_rt](#select_task_rq_rt)
-    * [wakeup_preempt_rt](#wakeup_preempt_rt)
-    * [task_tick_rt](#task_tick_rt)
-    * [yield_task_rt](#yield_task_rt)
-    * [prio_changed_rt](#prio_changed_rt)
-    * [check_class_changed_rt](#check_class_changed_rt)
-        * [switched_from_rt](#switched_from_rt)
-        * [switched_to_rt](#switched_to_rq)
-    * [balance_rt](#balance_rt)
-        * [push_rt_task](#push_rt_task)
-        * [pull_rt_task](#pull_rt_task)
-* [SCHED_CFS](#SCHED_CFS)
-    * [enqueue_task_fair](#enqueue_task_fair)
-    * [dequeue_task_fair](#dequeue_task_fair)
-    * [put_prev_task_fair](#put_prev_task_fair)
-    * [pick_next_task_fair](#pick_next_task_fair)
-    * [set_next_task_fair](#set_next_task_fair)
-    * [select_task_rq_fair](#select_task_rq_fair)
-        * [sched_balance_find_dst_cpu](#sched_balance_find_dst_cpu)
-            * [sched_balance_find_dst_group](#sched_balance_find_dst_group)
-            * [sched_balance_find_dst_group_cpu](#sched_balance_find_dst_group_cpu)
-        * [select_idle_sibling](#select_idle_sibling)
-    * [wakeup_preempt_fair](#wakeup_preempt_fair)
-    * [task_tick_fair](#task_tick_fair)
-    * [task_fork_fair](#task_fork_fair)
-    * [yield_task_fair](#yield_task_fair)
-    * [prio_changed_fair](#prio_changed_fair)
-    * [check_class_changed_fair](#check_class_changed_fair)
-        * [switched_from_fair](#switched_from_fair)
-        * [switched_to_fair](#switched_to_fair)
-    * [balance_fair](#balance_fair)
-    * [sched_vslice](#sched_vslice)
-
-* [sched_domain](#sched_domain)
-* [cpu_topology](#cpu_topology)
-    * [init_cpu_topology](#init_cpu_topology)
-    * [parse_dt_topology](#parse_dt_topology)
-    * [parse_socket](#parse_socket)
-    * [parse_cluster](#parse_cluster)
-    * [parse_core](#parse_core)
-
-* [PELT](#PELT)
-    * [update_load_sum_avg](#update_load_sum_avg)
-    * [update_load_avg](#update_load_avg)
-        * [update_cfs_rq_load_avg](#update_cfs_rq_load_avg)
-    * [rq_clock](#rq_clock)
-
-* [sched_balance_rq](#sched_balance_rq)
-    * [tick_balance](#tick_balance)
-    * [nohz_idle_balance](#nohz_idle_balance)
-    * [sched_balance_newidle](#sched_balance_newidle)
-    * [sched_balance_rq](#sched_balance_rq)
-        * [should_we_balance](#should_we_balance)
-        * [sched_balance_find_src_group](#sched_balance_find_src_group)
-            * [update_sd_lb_stats](#update_sd_lb_stats)
-            * [update_sd_pick_busiest](#update_sd_pick_busiest)
-            * [calculate_imbalance](#calculate_imbalance)
-        * [sched_balance_find_src_rq](#sched_balance_find_src_rq)
-        * [detach_tasks](#detach_tasks)
-            * [can_migrate_task](#can_migrate_task)
-
-* [wake_up](#wake_up)
-* [wait_woken](#wait_woken)
-* [try_to_wake_up](#try_to_wake_up)
-
-* [fork](#fork)
-
-* [wait4](#wait4)
-    * [wait_consider_task](#wait_consider_task)
-    * [wait_task_zombie](#wait_task_zombie)
-
-* [exec](#exec)
-    * [load_elf_binary](#load_elf_binary)
-    * [exec_call_graph](#exec_call_graph)
-
-* [exit](#exit)
-    * [exit_signals](#exit_signals)
-    * [exit_notify](#exit_notify)
-
-* [kthreadd](#kthreadd)
-
-* [cmwq](#cmwq)
-    * [workqueue_init](#workqueue_init)
-    * [alloc_workqueue](#alloc_workqueue)
-    * [alloc_unbound_pwq](#alloc_unbound_pwq)
-    * [create_worker](#create_worker)
-    * [worker_thread](#worker_thread)
-    * [queue_work](#queue_work)
-    * [wq-struct](#wq-struct)
-
-</details>
-
 * [LWN Kernel Index](https://lwn.net/Kernel/Index/)
 
 <img src='../images/kernel/kernel-structual.svg' style='max-height:850px'/>
@@ -913,7 +786,7 @@ struct pt_regs {
             u64     fp;
             u64     lr;
         }               record;
-	    u64 type;
+        u64 type;
     }                           stackframe;
 };
 
@@ -1137,7 +1010,7 @@ entry_SYSCALL_64()
         regs->ax = __x64_sys_ni_syscall(regs);
         syscall_exit_to_user_mode(regs);
             __syscall_exit_to_user_mode_work();
-                exit_to_user_mode_prepare();
+                __exit_to_user_mode_prepare();
                     if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK))
                         ti_work = exit_to_user_mode_loop(regs, ti_work);
                             if (ti_work & _TIF_NEED_RESCHED)
@@ -2148,8 +2021,13 @@ context_switch(struct rq *rq, struct task_struct *prev,
         }
     }
 
-    /* switch_mm_cid() requires the memory barriers above. */
-    switch_mm_cid(rq, prev, next);
+    mm_cid_switch_to(prev, next);
+
+    /* Tell rseq that the task was scheduled in. Must be after
+     * switch_mm_cid() to get the TIF flag set. */
+    rseq_sched_switch_event(next);
+
+    prepare_lock_switch(rq, next, rf);
 
     switch_to(prev, next, prev) {
         __switch_to() {
@@ -2445,70 +2323,108 @@ SYSCALL_DEFINE3(sched_setscheduler) {
 ```c
 static void noinstr el0_svc(struct pt_regs *regs)
 {
-    arm64_enter_from_user_mode(regs);
-    do_el0_svc(regs);
-    arm64_exit_to_user_mode(regs) {
-        exit_to_user_mode_prepare(regs);
+    arm64_enter_from_user_mode(regs) {
+        enter_from_user_mode(regs) {
+            arch_enter_from_user_mode(regs);
+            lockdep_hardirqs_off(CALLER_ADDR0);
+
+            CT_WARN_ON(__ct_state() != CT_STATE_USER);
+            user_exit_irqoff();
+
+            instrumentation_begin();
+            kmsan_unpoison_entry_regs(regs);
+            trace_hardirqs_off_finish();
+            instrumentation_end();
+        }
+        mte_disable_tco_entry(current);
     }
+
+    cortex_a76_erratum_1463225_svc_handler();
+    fpsimd_syscall_enter();
+    local_daif_restore(DAIF_PROCCTX);
+
+    do_el0_svc(regs);
+
+    arm64_exit_to_user_mode(regs) {
+        __exit_to_user_mode_prepare(regs);
+    }
+    fpsimd_syscall_exit();
 }
 
-void exit_to_user_mode_prepare(struct pt_regs *regs)
+void __exit_to_user_mode_prepare(struct pt_regs *regs)
 {
     tick_nohz_user_enter_prepare();
 
     ti_work = read_thread_flags();
     if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
         ti_work = exit_to_user_mode_loop(regs, ti_work) {
-            while (ti_work & EXIT_TO_USER_MODE_WORK) {
-                local_irq_enable_exit_to_user(ti_work) {
-                    local_irq_enable();
-                }
+            for (;;) {
+                ti_work = __exit_to_user_mode_loop(regs, ti_work);
 
-                if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY))
-                    schedule();
-
-                if (ti_work & _TIF_UPROBE)
-                    uprobe_notify_resume(regs);
-
-                if (ti_work & _TIF_PATCH_PENDING)
-                    klp_update_patch_state(current);
-
-                if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                    arch_do_signal_or_restart(regs);
-
-                if (thread_flags & _TIF_NOTIFY_RESUME) {
-                    resume_user_mode_work(regs) {
-                        clear_thread_flag(TIF_NOTIFY_RESUME);
-                        smp_mb__after_atomic();
-                        if (unlikely(task_work_pending(current))) {
-                            task_work_run();
-                        }
-
-                        if (unlikely(current->cached_requested_key)) {
-                            key_put(current->cached_requested_key);
-                            current->cached_requested_key = NULL;
-                        }
-
-                        mem_cgroup_handle_over_high(GFP_KERNEL);
-                        blkcg_maybe_throttle_current();
-
-                        rseq_handle_notify_resume(NULL, regs);
-                    }
-                }
-
-                /* Architecture specific TIF work */
-                arch_exit_to_user_mode_work(regs, ti_work);
-
-                local_irq_disable_exit_to_user() {
-                    local_irq_disable();
-                }
-
-                tick_nohz_user_enter_prepare();
-
+                if (likely(!rseq_exit_to_user_mode_restart(regs, ti_work)))
+                    return ti_work;
                 ti_work = read_thread_flags();
+            }
+
+            __exit_to_user_mode_loop(struct pt_regs *regs, unsigned long ti_work) {
+                while (ti_work & EXIT_TO_USER_MODE_WORK) {
+                    local_irq_enable_exit_to_user(ti_work) {
+                        local_irq_enable();
+                    }
+
+                    if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)) {
+                        if (!rseq_grant_slice_extension(ti_work & TIF_SLICE_EXT_DENY))
+                            schedule();
+                    }
+
+                    if (ti_work & _TIF_UPROBE)
+                        uprobe_notify_resume(regs);
+
+                    if (ti_work & _TIF_PATCH_PENDING)
+                        klp_update_patch_state(current);
+
+                    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                        arch_do_signal_or_restart(regs);
+
+                    if (thread_flags & _TIF_NOTIFY_RESUME) {
+                        resume_user_mode_work(regs) {
+                            clear_thread_flag(TIF_NOTIFY_RESUME);
+                            smp_mb__after_atomic();
+                            if (unlikely(task_work_pending(current))) {
+                                task_work_run();
+                            }
+
+                            if (unlikely(current->cached_requested_key)) {
+                                key_put(current->cached_requested_key);
+                                current->cached_requested_key = NULL;
+                            }
+
+                            mem_cgroup_handle_over_high(GFP_KERNEL);
+                            blkcg_maybe_throttle_current();
+
+                            /* rseq_raise_notify_resume */
+                            rseq_handle_slowpath(regs);
+                        }
+                    }
+
+                    /* Architecture specific TIF work */
+                    arch_exit_to_user_mode_work(regs, ti_work);
+
+                    local_irq_disable_exit_to_user() {
+                        local_irq_disable();
+                    }
+
+                    tick_nohz_user_enter_prepare();
+
+                    ti_work = read_thread_flags();
+                }
+
+                return ti_work;
             }
         }
     }
+
+    arch_exit_to_user_mode_prepare(regs, ti_work);
 }
 ```
 
@@ -2530,7 +2446,7 @@ static __always_inline void __el1_irq(struct pt_regs *regs,
         irqentry_exit() {
             if (user_mode(regs)) {
                 irqentry_exit_to_user_mode(regs) {
-                    exit_to_user_mode_prepare(ress);
+                    __exit_to_user_mode_prepare(ress);
                 }
             } else if (!regs_irqs_disabled(regs)) {
                 irqentry_exit_cond_resched() {
@@ -7688,26 +7604,39 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
             u64 vslice;
             u64 vruntime = avg_vruntime(cfs_rq) {
                 struct sched_entity *curr = cfs_rq->curr;
-                s64 avg = cfs_rq->avg_vruntime;
-                long load = cfs_rq->avg_load;
+                long weight = cfs_rq->sum_weight;
+                s64 delta = 0;
 
-                if (curr && curr->on_rq) {
-                    unsigned long weight = scale_load_down(curr->load.weight);
+                if (curr && !curr->on_rq)
+                    curr = NULL;
 
-                    avg += weight * entity_key(cfs_rq, curr) {
-                        return (s64)(se->vruntime - cfs_rq->min_vruntime);
+                if (weight) {
+                    s64 runtime = cfs_rq->sum_w_vruntime;
+
+                    if (curr) {
+                        unsigned long w = scale_load_down(curr->load.weight);
+
+                        runtime += entity_key(cfs_rq, curr) * w;
+                        weight += w;
                     }
-                    load += weight;
+
+                    /* sign flips effective floor / ceiling */
+                    if (runtime < 0)
+                        runtime -= (weight - 1);
+
+                    delta = div_s64(runtime, weight);
+                } else if (curr) {
+                    /* When there is but one element, it is the average. */
+                    delta = curr->vruntime - cfs_rq->zero_vruntime;
                 }
 
-                if (load) {
-                    if (avg < 0) { /* sign flips effective floor / ceil */
-                        avg -= (load - 1);
-                    }
-                    avg = div_s64(avg, load);
+                update_zero_vruntime(cfs_rq, delta) {
+                    /* v' = v + d ==> sum_w_vruntime' = sum_w_vruntime - d*sum_weight */
+                    cfs_rq->sum_w_vruntime -= cfs_rq->sum_weight * delta;
+                    cfs_rq->zero_vruntime += delta;
                 }
 
-                return cfs_rq->min_vruntime + avg;
+                return cfs_rq->zero_vruntime;
             }
             s64 lag = 0;
 
@@ -7804,20 +7733,15 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
 
     if (!curr) {
         __enqueue_entity(cfs_rq, se) {
-            avg_vruntime_add(cfs_rq, se) {
+            sum_w_vruntime_add(cfs_rq, se) {
                 unsigned long weight = scale_load_down(se->load.weight);
-                s64 key = entity_key(cfs_rq, se) {
-                    return (s64)(se->vruntime - cfs_rq->min_vruntime);
-                }
+                s64 key = entity_key(cfs_rq, se);
 
-                cfs_rq->avg_vruntime += key * weight;
-                cfs_rq->avg_load += weight;
+                cfs_rq->sum_w_vruntime += key * weight;
+                cfs_rq->sum_weight += weight;
             }
             se->min_vruntime = se->vruntime;
             se->min_slice = se->slice;
-
-            RB_DECLARE_CALLBACKS(static, min_vruntime_cb, struct sched_entity,
-                run_node, min_vruntime, min_vruntime_update);
             rb_add_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline,
                         __entity_less, &min_vruntime_cb);
 
@@ -7906,7 +7830,6 @@ dequeue_task_fair() {
             }
             return_cfs_rq_runtime() /* return excess runtime on last dequeue */
             update_cfs_group() /* recalc group shares */
-            update_min_vruntime()
         }
     }
 
@@ -8204,14 +8127,12 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
     if (se != cfs_rq->curr) {
         __dequeue_entity(cfs_rq, se) {
             rb_erase_augmented_cached(&se->run_node, &cfs_rq->tasks_timeline, &min_vruntime_cb);
-            avg_vruntime_sub(cfs_rq, se) {
+            sum_w_vruntime_sub(cfs_rq, se) {
                 unsigned long weight = scale_load_down(se->load.weight);
-                s64 key = entity_key(cfs_rq, se) {
-                    return (s64)(se->vruntime - cfs_rq->min_vruntime);
-                }
+                s64 key = entity_key(cfs_rq, se);
 
-                cfs_rq->avg_vruntime -= key * weight;
-                cfs_rq->avg_load -= weight;
+                cfs_rq->sum_w_vruntime -= key * weight;
+                cfs_rq->sum_weight -= weight;
             }
         }
     }
@@ -8263,9 +8184,6 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
     }
 
     update_cfs_group(se);
-
-    if ((flags & (DEQUEUE_SAVE | DEQUEUE_MOVE)) != DEQUEUE_SAVE)
-        update_min_vruntime(cfs_rq);
 
     if (flags & DEQUEUE_DELAYED) {
         finish_delayed_dequeue_entity(se) {
@@ -8383,77 +8301,9 @@ again:
             se = pick_next_entity(rq, cfs_rq) {
                 struct sched_entity *se;
 
-                /* Picking the ->next buddy will affect latency but not fairness. */
-                if (sched_feat(PICK_BUDDY) && cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) {
-                    /* ->next will never be delayed */
-                    SCHED_WARN_ON(cfs_rq->next->sched_delayed);
-                    return cfs_rq->next;
+                se = pick_eevdf(cfs_rq) {
+                    return __pick_eevdf(cfs_rq, true);
                 }
-
-                /* EEVDF selects the best runnable task from two criteria:
-                 *  1) the task must be eligible (must be owed service)
-                 *  2) the one with the earliest virtual deadline. */
-                se = pick_eevdf(cfs_rq, protect) {
-                    struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
-                    struct sched_entity *se = __pick_first_entity(cfs_rq); /* leftmost se */
-                    struct sched_entity *curr = cfs_rq->curr;
-                    struct sched_entity *best = NULL;
-
-                    /* We can safely skip eligibility check if there is only one entity
-                     * in this cfs_rq, saving some cycles. */
-                    if (cfs_rq->nr_queued == 1)
-                        return curr && curr->on_rq ? curr : se;
-
-                    if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
-                        curr = NULL;
-
-                    ret = protect_slice(curr) {
-                        return ((s64)(se->vprot - se->vruntime) > 0);
-                    }
-                    if (curr && protect && ret)
-                        return curr;
-
-                    /* Pick the leftmost entity if it's eligible */
-                    if (se && entity_eligible(cfs_rq, se)) {
-                        best = se;
-                        goto found;
-                    }
-
-                    /* RBTree search for the EEVD entity */
-                    while (node) {
-                        /* 1. check left child */
-                        struct rb_node *left = node->rb_left;
-
-                        /* Eligible entities in left subtree are always better
-                         * choices, since they have earlier deadlines. */
-                        if (left && vruntime_eligible(cfs_rq, __node_2_se(left)->min_vruntime)) {
-                            node = left;
-                            continue;
-                        }
-
-                        /* 2. check cur node */
-                        se = __node_2_se(node);
-
-                        /* The left subtree either is empty or has no eligible
-                         * entity, so check the current node since it is the one
-                         * with earliest deadline that might be eligible. */
-                        if (entity_eligible(cfs_rq, se)) {
-                            best = se;
-                            break;
-                        }
-
-                        /* 3. check right node */
-                        node = node->rb_right;
-                    }
-                found:
-                    if (!best || (curr && entity_before(curr, best)))
-                        best = curr;
-
-                    return best;
-                }
-                /* Delayed dequeue has tasks sit around on the runqueue that are not
-                 * actually runnable -- specifically, they will be dequeued the moment
-                 * they get picked. */
                 if (se->sched_delayed) {
                     dequeue_entities(rq, se, DEQUEUE_SLEEP | DEQUEUE_DELAYED);
                     /* Must not reference @se again, see __block_task(). */
@@ -8515,13 +8365,13 @@ again:
                 pse = parent_entity(pse);
             }
             if (se_depth >= pse_depth) {
-                set_next_entity(cfs_rq_of(se), se);
+                set_next_entity(cfs_rq_of(se), se, true);
                 se = parent_entity(se);
             }
         }
 
         put_prev_entity(cfs_rq, pse);
-        set_next_entity(cfs_rq, se);
+        set_next_entity(cfs_rq, se, true);
 
         __set_next_task_fair(rq, p, true) {
             struct sched_entity *se = &p->se;
@@ -8565,17 +8415,7 @@ again:
 
 /* 3. prev is not fair class */
 simple:
-    put_prev_set_next_task(rq, prev, p) {
-        WARN_ON_ONCE(rq->curr != prev);
-
-        __put_prev_set_next_dl_server(rq, prev, next);
-
-        if (next == prev)
-            return;
-
-        prev->sched_class->put_prev_task(rq, prev, next);
-        next->sched_class->set_next_task(rq, next, true);
-    }
+    put_prev_set_next_task(rq, prev, p);
     return p;
 
 /* 3. new idle */
@@ -8637,6 +8477,76 @@ void throttle_cfs_rq_work(struct callback_head *work)
 }
 ```
 
+### __pick_eevdf
+
+```c
+/* EEVDF selects the best runnable task from two criteria:
+ *  1) the task must be eligible (must be owed service)
+ *  2) the one with the earliest virtual deadline. */
+static struct sched_entity *__pick_eevdf(struct cfs_rq *cfs_rq, bool protect)
+{
+    struct rb_node *node = cfs_rq->tasks_timeline.rb_root.rb_node;
+    struct sched_entity *se = __pick_first_entity(cfs_rq);
+    struct sched_entity *curr = cfs_rq->curr;
+    struct sched_entity *best = NULL;
+
+    /* We can safely skip eligibility check if there is only one entity
+    * in this cfs_rq, saving some cycles. */
+    if (cfs_rq->nr_queued == 1)
+        return curr && curr->on_rq ? curr : se;
+
+    /* Picking the ->next buddy will affect latency but not fairness. */
+    if (sched_feat(PICK_BUDDY) &&
+        cfs_rq->next && entity_eligible(cfs_rq, cfs_rq->next)) {
+        /* ->next will never be delayed */
+        WARN_ON_ONCE(cfs_rq->next->sched_delayed);
+        return cfs_rq->next;
+    }
+
+    if (curr && (!curr->on_rq || !entity_eligible(cfs_rq, curr)))
+        curr = NULL;
+
+    if (curr && protect && protect_slice(curr))
+        return curr;
+
+    /* Pick the leftmost entity if it's eligible */
+    if (se && entity_eligible(cfs_rq, se)) {
+        best = se;
+        goto found;
+    }
+
+    /* Heap search for the EEVD entity */
+    while (node) {
+        struct rb_node *left = node->rb_left;
+
+        /* Eligible entities in left subtree are always better
+        * choices, since they have earlier deadlines. */
+        if (left && vruntime_eligible(cfs_rq,
+                    __node_2_se(left)->min_vruntime)) {
+            node = left;
+            continue;
+        }
+
+        se = __node_2_se(node);
+
+        /* The left subtree either is empty or has no eligible
+        * entity, so check the current node since it is the one
+        * with earliest deadline that might be eligible. */
+        if (entity_eligible(cfs_rq, se)) {
+            best = se;
+            break;
+        }
+
+        node = node->rb_right;
+    }
+found:
+    if (!best || (curr && entity_before(curr, best)))
+        best = curr;
+
+    return best;
+}
+```
+
 ## set_next_task_fair
 
 ```c
@@ -8650,7 +8560,7 @@ set_next_task_fair(struct rq *rq, struct task_struct *p, bool first)
     for_each_sched_entity(se) {
         struct cfs_rq *cfs_rq = cfs_rq_of(se);
 
-        set_next_entity(cfs_rq, se) {
+        set_next_entity(cfs_rq, se, first) {
             clear_buddies(cfs_rq, se) {
                 if (cfs_rq->next == se) {
                     __clear_buddies_next(se) {
@@ -9518,6 +9428,7 @@ new_cpu = select_idle_sibling(p, prev_cpu/*prev*/, new_cpu/*target*/) {
 ```c
 void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
 {
+    enum preempt_wakeup_action preempt_action = PREEMPT_WAKEUP_PICK;
     struct task_struct *donor = rq->donor;
     struct sched_entity *se = &donor->se, *pse = &p->se;
     struct cfs_rq *cfs_rq = task_cfs_rq(donor);
@@ -9534,7 +9445,7 @@ void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
      * unconditionally wakeup_preempt() after an enqueue (which may have
      * lead to a throttle).  This both saves work and prevents false
      * next-buddy nomination below. */
-    if (unlikely(throttled_hierarchy(cfs_rq_of(pse))))
+    if (task_is_throttled(p))
         return;
 
     if (sched_feat(NEXT_BUDDY) && !(wake_flags & WF_FORK) && !pse->sched_delayed) {
@@ -9592,7 +9503,7 @@ void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
     if (cse_is_idle && !pse_is_idle) {
         /* When non-idle entity preempt an idle entity,
          * don't give idle entity slice protection. */
-        do_preempt_short = true;
+        preempt_action = PREEMPT_WAKEUP_SHORT;
         goto preempt;
     }
 
@@ -9608,25 +9519,57 @@ void wakeup_preempt_fair(struct rq *rq, struct task_struct *p, int wake_flags)
 
     /* If @p has a shorter slice than current and @p is eligible, override
      * current's slice protection in order to allow preemption. */
-    do_preempt_short = sched_feat(PREEMPT_SHORT) && (pse->slice < se->slice);
+    if (sched_feat(PREEMPT_SHORT) && (pse->slice < se->slice)) {
+        preempt_action = PREEMPT_WAKEUP_SHORT;
+        goto pick;
+    }
 
+    /* Ignore wakee preemption on WF_FORK as it is less likely that
+     * there is shared data as exec often follow fork. Do not
+     * preempt for tasks that are sched_delayed as it would violate
+     * EEVDF to forcibly queue an ineligible task. */
+    if ((wake_flags & WF_FORK) || pse->sched_delayed)
+        return;
+
+    /* Prefer picking wakee soon if appropriate. */
+    if (sched_feat(NEXT_BUDDY) &&
+        set_preempt_buddy(cfs_rq, wake_flags, pse, se)) {
+
+        /* Decide whether to obey WF_SYNC hint for a new buddy. Old
+         * buddies are ignored as they may not be relevant to the
+         * waker and less likely to be cache hot. */
+        if (wake_flags & WF_SYNC)
+            preempt_action = preempt_sync(rq, wake_flags, pse, se);
+    }
+
+    switch (preempt_action) {
+    case PREEMPT_WAKEUP_NONE:
+        return;
+    case PREEMPT_WAKEUP_RESCHED:
+        goto preempt;
+    case PREEMPT_WAKEUP_SHORT:
+        fallthrough;
+    case PREEMPT_WAKEUP_PICK:
+        break;
+    }
+
+pick:
     /* If @p has become the most eligible task, force preemption. */
-    if (__pick_eevdf(cfs_rq, !do_preempt_short) == pse)
+    if (__pick_eevdf(cfs_rq, preempt_action != PREEMPT_WAKEUP_SHORT) == pse)
         goto preempt;
 
-    if (sched_feat(RUN_TO_PARITY) && do_preempt_short) {
+    if (sched_feat(RUN_TO_PARITY)) {
         update_protect_slice(cfs_rq, se) {
             u64 slice = cfs_rq_min_slice(cfs_rq);
 
             se->vprot = min_vruntime(se->vprot, se->vruntime + calc_delta_fair(slice, se));
-
         }
     }
 
     return;
 
 preempt:
-    if (do_preempt_short) {
+    if (preempt_action == PREEMPT_WAKEUP_SHORT) {
         cancel_protect_slice(se) {
             if (protect_slice(se))
                 se->vprot = se->vruntime;
@@ -9646,7 +9589,10 @@ preempt:
 ![](../images/kernel/proc-sched-se-info.svg)
 
 ```c
-task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
+static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
+    struct cfs_rq *cfs_rq;
+    struct sched_entity *se = &curr->se;
+
     for_each_sched_entity(se) {
         cfs_rq = cfs_rq_of(se);
         entity_tick(cfs_rq, se, queued) {
@@ -9661,6 +9607,9 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
             update_load_avg(cfs_rq, curr, UPDATE_TG);
             update_cfs_group(curr);
 
+            /* Pulls along cfs_rq::zero_vruntime. */
+            avg_vruntime(cfs_rq);
+
         #ifdef CONFIG_SCHED_HRTICK
             if (queued) {
                 resched_curr_lazy(rq_of(cfs_rq));
@@ -9670,6 +9619,12 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
         }
     }
 
+    if (queued) {
+        if (!need_resched())
+            hrtick_start_fair(rq, curr);
+        return;
+    }
+
     if (static_branch_unlikely(&sched_numa_balancing)){
         task_tick_numa(rq, curr) {
 
@@ -9677,7 +9632,7 @@ task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) {
     }
 
     update_misfit_status(curr, rq);
-    update_overutilized_status(task_rq(curr));
+    check_update_overutilized_status(task_rq(curr));
 
     task_tick_core(rq, curr) {
 
@@ -9693,10 +9648,10 @@ void update_curr(struct cfs_rq *cfs_rq) {
     if (unlikely(!curr))
         return;
 
-    delta_exec = now - curr->exec_start;
-    curr->exec_start = now;
-    curr->sum_exec_runtime += delta_exec;
-    schedstat_add(cfs_rq->exec_clock, delta_exec);
+    delta_exec = update_se(rq, curr);
+    if (unlikely(delta_exec <= 0))
+        return;
+
     curr->vruntime += calc_delta_fair(delta_exec, curr);
 
     resched = update_deadline(cfs_rq, curr) {
@@ -9717,64 +9672,19 @@ void update_curr(struct cfs_rq *cfs_rq) {
         return true;
     }
 
-    update_min_vruntime(cfs_rq) {
-        struct sched_entity *se = __pick_first_entity(cfs_rq); /* leftmost */
-        struct sched_entity *curr = cfs_rq->curr;
-
-        u64 vruntime = cfs_rq->min_vruntime;
-
-        if (curr) {
-            if (curr->on_rq)
-                vruntime = curr->vruntime;
-            else
-                curr = NULL;
-        }
-
-        if (se) {
-            if (!curr) {
-                vruntime = se->min_vruntime;
-            } else {
-                vruntime = min_vruntime(vruntime, se->min_vruntime/*vruntime*/) {
-                    s64 delta = (s64)(vruntime - min_vruntime);
-                    if (delta < 0) {
-                        min_vruntime = vruntime;
-                    }
-                    return min_vruntime;
-                }
-            }
-        }
-
-        /* ensure we never gain time by being placed backwards. */
-        cfs_rq->min_vruntime = __update_min_vruntime(cfs_rq, vruntime) {
-            u64 min_vruntime = cfs_rq->min_vruntime;
-            s64 delta = (s64)(vruntime - min_vruntime);
-            if (delta > 0) {
-                avg_vruntime_update(cfs_rq, delta) {
-                    /* For each entity i:
-                        * old: relative_vruntime_i  = actual_vruntime_i - old_min_vruntime
-                        * new: relative_vruntime_i' = actual_vruntime_i - (old_min_vruntime + min_delta)
-                        *                           = relative_vruntime_i - min_delta
-                        * Therefore:
-                        * new weighted sum = \Sum((relative_vruntime_i - min_delta) * weight_i)
-                        *                  = \Sum(relative_vruntime_i * weight_i) - min_delta * \Sum(weight_i)
-                        *                  = avg_vruntime - min_delta * avg_load */
-                    cfs_rq->avg_vruntime -= cfs_rq->avg_load * delta;
-                }
-                min_vruntime = vruntime;
-            }
-            return min_vruntime;
-        }
-    }
-
     if (entity_is_task(curr)) {
-        if (dl_server_active(&rq->fair_server))
-            dl_server_update(&rq->fair_server, delta_exec) {
+        /* If the fair_server is active, we need to account for the
+         * fair_server time whether or not the task is running on
+         * behalf of fair_server or not:
+         *  - If the task is running on behalf of fair_server, we need
+         *    to limit its time based on the assigned runtime.
+         *  - Fair task that runs outside of fair_server should account
+         *    against fair_server such that it can account for this time
+         *    and possibly avoid running this period. */
+        dl_server_update(&rq->fair_server, delta_exec) {
                 /* 0 runtime = fair server disabled */
-                if (dl_se->dl_server_active && dl_se->dl_runtime)
-                    dl_se->dl_server_idle = 0;
-                    update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
-                }
-            }
+            if (dl_se->dl_server_active && dl_se->dl_runtime)
+                update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
         }
     }
 
@@ -16391,6 +16301,9 @@ scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
                 }
                 WRITE_ONCE(task_thread_info(p)->cpu, cpu);
                 p->wake_cpu = cpu;
+                rseq_sched_set_ids_changed(p) {
+                    t->rseq.event.ids_changed = true;
+                }
             }
         }
     }
@@ -20180,6 +20093,1011 @@ done:
 /proc/<pid>/fd/</pid>
 /proc/<pid>/limits</pid>
 /proc/<pid>/cgroup</pid>
+```
+
+# rseq
+
+* [[patch V6 00/11] rseq: Implement time slice extension mechanism](https://lore.kernel.org/all/20251215155615.870031952@linutronix.de/)
+
+```c
+struct rseq {
+    __u32 cpu_id_start;
+
+    __u32 cpu_id;
+
+    /* init by user, set NULL by kernel when restart */
+    __u64 rseq_cs;
+
+    __u32 flags;
+
+    __u32 node_id;
+
+    __u32 mm_cid;
+
+    /* Time slice extension control structure. CPU local updates from
+     * kernel and user space. */
+    struct rseq_slice_ctrl slice_ctrl;
+
+    __u8 __reserved;
+
+    /* Flexible array member at end of structure, after last feature field. */
+    char end[];
+} __attribute__((aligned(32)));
+
+struct rseq_slice_ctrl {
+    union {
+        __u32        all;
+        struct {
+            __u8    request;
+            __u8    granted;
+            __u16    __reserved;
+        };
+    };
+};
+
+struct rseq_cs {
+    __u32       version;
+    __u32       flags;
+    __u64       start_ip;
+    __u64       post_commit_offset; /* Offset from start_ip. */
+    __u64       abort_ip;
+} __attribute__((aligned(4 * sizeof(__u64))));
+```
+
+```c
+struct task_struct {
+    struct rseq_data            rseq;
+};
+
+struct rseq_data {
+    struct rseq __user          *usrptr;
+    u32                         len;
+    u32                         sig;
+    struct rseq_event           event;
+    struct rseq_ids             ids;
+    struct rseq_slice           slice;
+};
+
+struct rseq_slice {
+    union rseq_slice_state      state;
+    u64                         expires;
+    u8                          yielded;
+};
+
+union rseq_slice_state {
+    u16                         state;
+    struct {
+        u8                      enabled;
+        u8                      granted;
+    };
+};
+
+struct rseq_ids {
+    union {
+        u64                     cpu_cid;
+        struct {
+            u32                 cpu_id;
+            u32                 mm_cid;
+        };
+    };
+};
+
+
+struct rseq_event {
+    union {
+        u64                all;
+        struct {
+            union {
+                u32        events;
+                struct {
+                    u8    sched_switch;
+                    u8    ids_changed;
+                    u8    user_irq;
+                };
+            };
+
+            u8            has_rseq;
+            u8            __pad;
+            union {
+                u16        error;
+                struct {
+                    u8    fatal;
+                    u8    slowpath;
+                };
+            };
+        };
+    };
+};
+```
+
+## demo
+
+```c
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <unistd.h>
+#include <sys/syscall.h>
+#include <sys/auxv.h>
+#include <errno.h>
+
+// ------------------- Thread-local RSEQ area -------------------
+static __thread volatile struct rseq __rseq_abi __attribute__((aligned(32)));
+
+// Signature used by kernel to validate
+#define RSEQ_SIG 0x53053053ULL
+
+// Simple per-CPU counter for demonstration
+#define MAX_CPUS 1024
+static uint64_t per_cpu_counter[MAX_CPUS] = {0};
+
+// ------------------- Registration -------------------
+int rseq_register(void)
+{
+    unsigned long feature_size = getauxval(AT_RSEQ_FEATURE_SIZE);
+    unsigned long rseq_align   = getauxval(AT_RSEQ_ALIGN);
+
+    if (rseq_align == 0)
+        rseq_align = 32;
+
+    size_t rseq_len = feature_size ? feature_size : sizeof(struct rseq);
+
+    // Enable slice extension at registration (optional but recommended)
+    int flags = RSEQ_FLAG_SLICE_EXT_DEFAULT_ON;
+
+    long ret = syscall(__NR_rseq, &__rseq_abi, (uint32_t)rseq_len, flags, RSEQ_SIG);
+    if (ret < 0) {
+        perror("rseq registration failed");
+        if (errno == ENOSYS)
+            fprintf(stderr, "RSEQ not supported by this kernel\n");
+        return -1;
+    }
+    return 0;
+}
+
+// ------------------- Critical Section with Slice Extension -------------------
+void rseq_per_cpu_inc(void)
+{
+    static struct rseq_cs cs;   // one descriptor per function is fine
+
+restart:
+    // Activate the critical section descriptor
+    __rseq_abi.rseq_cs = (uintptr_t)&cs;
+
+    // Fill addresses using GCC/Clang label extension (must be done before use)
+    cs.version            = 0;
+    cs.flags              = 0;
+    cs.start_ip           = (uintptr_t)&&start_label;
+    cs.post_commit_offset = (uintptr_t)&&commit_label - (uintptr_t)&&start_label;
+    cs.abort_ip           = (uintptr_t)&&abort_label;
+
+    // === Request time-slice extension (as early as possible) ===
+    __rseq_abi.slice_ctrl.request = 1;
+
+start_label:
+    // --- Critical section begins here ---
+    // Must be restart-safe and purely CPU-local
+
+    uint32_t cpu = __rseq_abi.cpu_id;
+    if (cpu != __rseq_abi.cpu_id_start || cpu >= MAX_CPUS)
+        goto abort_label;
+
+    // Example operation: increment per-CPU counter
+    per_cpu_counter[cpu]++;
+
+    // --- Last store of the critical section is the commit point ---
+
+commit_label:
+    __rseq_abi.rseq_cs = 0;                    // Success: clear active CS
+
+    // === Handle slice extension if the kernel granted it ===
+    __rseq_abi.slice_ctrl.request = 0;
+    if (__rseq_abi.slice_ctrl.granted) {
+        // Preferred: side-effect free yield
+        syscall(__NR_rseq_slice_yield);
+    }
+    return;
+
+abort_label:
+    __rseq_abi.rseq_cs = 0;
+    __rseq_abi.slice_ctrl.request = 0;
+    goto restart;        // Retry the whole sequence
+}
+
+// ------------------- Main -------------------
+int main(void)
+{
+    if (rseq_register() != 0) {
+        fprintf(stderr, "Failed to register RSEQ. Exiting.\n");
+        return 1;
+    }
+
+    printf("RSEQ registered successfully.\n");
+    printf("cpu_id = %u, node_id = %u\n", __rseq_abi.cpu_id, __rseq_abi.node_id);
+
+    // Run many increments to demonstrate the fast path + occasional restarts
+    const long iterations = 20'000'000;
+    for (long i = 0; i < iterations; i++) {
+        rseq_per_cpu_inc();
+    }
+
+    // Compute total
+    uint64_t total = 0;
+    for (int i = 0; i < MAX_CPUS; i++) {
+        total += per_cpu_counter[i];
+    }
+
+    printf("Total increments: %lu (expected ~%ld)\n", total, iterations);
+    printf("Demo finished.\n");
+
+    return 0;
+}
+```
+
+## rseq_syscall
+
+```c
+SYSCALL_DEFINE4(rseq, struct rseq __user *, rseq, u32, rseq_len, int, flags, u32, sig)
+{
+    u32 rseqfl = 0;
+
+    if (flags & RSEQ_FLAG_UNREGISTER) {
+        if (flags & ~RSEQ_FLAG_UNREGISTER)
+            return -EINVAL;
+        /* Unregister rseq for current thread. */
+        if (current->rseq.usrptr != rseq || !current->rseq.usrptr)
+            return -EINVAL;
+        if (rseq_len != current->rseq.len)
+            return -EINVAL;
+        if (current->rseq.sig != sig)
+            return -EPERM;
+        if (!rseq_reset_ids())
+            return -EFAULT;
+        rseq_reset(current);
+        return 0;
+    }
+
+    if (unlikely(flags & ~(RSEQ_FLAG_SLICE_EXT_DEFAULT_ON)))
+        return -EINVAL;
+
+    if (current->rseq.usrptr) {
+        /* If rseq is already registered, check whether
+         * the provided address differs from the prior
+         * one. */
+        if (current->rseq.usrptr != rseq || rseq_len != current->rseq.len)
+            return -EINVAL;
+        if (current->rseq.sig != sig)
+            return -EPERM;
+        /* Already registered. */
+        return -EBUSY;
+    }
+
+    /* If there was no rseq previously registered, ensure the provided rseq
+     * is properly aligned, as communcated to user-space through the ELF
+     * auxiliary vector AT_RSEQ_ALIGN. If rseq_len is the original rseq
+     * size, the required alignment is the original struct rseq alignment.
+     *
+     * The rseq_len is required to be greater or equal to the original rseq
+     * size. In order to be valid, rseq_len is either the original rseq size,
+     * or large enough to contain all supported fields, as communicated to
+     * user-space through the ELF auxiliary vector AT_RSEQ_FEATURE_SIZE. */
+    if (rseq_len < ORIG_RSEQ_SIZE ||
+        (rseq_len == ORIG_RSEQ_SIZE && !IS_ALIGNED((unsigned long)rseq, ORIG_RSEQ_SIZE)) ||
+        (rseq_len != ORIG_RSEQ_SIZE && (!IS_ALIGNED((unsigned long)rseq, rseq_alloc_align()) ||
+                        rseq_len < offsetof(struct rseq, end))))
+        return -EINVAL;
+    if (!access_ok(rseq, rseq_len))
+        return -EFAULT;
+
+    if (IS_ENABLED(CONFIG_RSEQ_SLICE_EXTENSION)) {
+        rseqfl |= RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+        if (rseq_slice_extension_enabled() &&
+            (flags & RSEQ_FLAG_SLICE_EXT_DEFAULT_ON))
+            rseqfl |= RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+    }
+
+    scoped_user_write_access(rseq, efault) {
+        /* If the rseq_cs pointer is non-NULL on registration, clear it to
+         * avoid a potential segfault on return to user-space. The proper thing
+         * to do would have been to fail the registration but this would break
+         * older libcs that reuse the rseq area for new threads without
+         * clearing the fields. Don't bother reading it, just reset it. */
+        unsafe_put_user(0UL, &rseq->rseq_cs, efault);
+        unsafe_put_user(rseqfl, &rseq->flags, efault);
+        /* Initialize IDs in user space */
+        unsafe_put_user(RSEQ_CPU_ID_UNINITIALIZED, &rseq->cpu_id_start, efault);
+        unsafe_put_user(RSEQ_CPU_ID_UNINITIALIZED, &rseq->cpu_id, efault);
+        unsafe_put_user(0U, &rseq->node_id, efault);
+        unsafe_put_user(0U, &rseq->mm_cid, efault);
+        unsafe_put_user(0U, &rseq->slice_ctrl.all, efault);
+    }
+
+    /* Activate the registration by setting the rseq area address, length
+     * and signature in the task struct. */
+    current->rseq.usrptr = rseq;
+    current->rseq.len = rseq_len;
+    current->rseq.sig = sig;
+
+#ifdef CONFIG_RSEQ_SLICE_EXTENSION
+    current->rseq.slice.state.enabled = !!(rseqfl & RSEQ_CS_FLAG_SLICE_EXT_ENABLED);
+#endif
+
+    /* If rseq was previously inactive, and has just been
+     * registered, ensure the cpu_id_start and cpu_id fields
+     * are updated before returning to user-space. */
+    current->rseq.event.has_rseq = true;
+    rseq_force_update() {
+        if (current->rseq.event.has_rseq) {
+            current->rseq.event.ids_changed = true;
+            current->rseq.event.sched_switch = true;
+            rseq_raise_notify_resume(current) {
+                set_tsk_thread_flag(t, TIF_RSEQ);
+            }
+        }
+    }
+    return 0;
+
+efault:
+    return -EFAULT;
+}
+```
+
+## prctl
+
+```c
+prctl(PR_RSEQ_SLICE_EXTENSION, PR_RSEQ_SLICE_EXTENSION_SET,
+      PR_RSEQ_SLICE_EXT_ENABLE, 0, 0);
+
+SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
+        unsigned long, arg4, unsigned long, arg5)
+{
+    struct task_struct *me = current;
+    unsigned char comm[sizeof(me->comm)];
+    long error;
+
+    case PR_RSEQ_SLICE_EXTENSION:
+        if (arg4 || arg5)
+            return -EINVAL;
+        error = rseq_slice_extension_prctl(arg2, arg3);
+        break;
+}
+
+int rseq_slice_extension_prctl(unsigned long arg2, unsigned long arg3)
+{
+    switch (arg2) {
+    case PR_RSEQ_SLICE_EXTENSION_GET:
+        if (arg3)
+            return -EINVAL;
+        return current->rseq.slice.state.enabled ? PR_RSEQ_SLICE_EXT_ENABLE : 0;
+
+    case PR_RSEQ_SLICE_EXTENSION_SET: {
+        u32 rflags, valid = RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+        bool enable = !!(arg3 & PR_RSEQ_SLICE_EXT_ENABLE);
+
+        if (arg3 & ~PR_RSEQ_SLICE_EXT_ENABLE)
+            return -EINVAL;
+        if (!rseq_slice_extension_enabled())
+            return -ENOTSUPP;
+        if (!current->rseq.usrptr)
+            return -ENXIO;
+
+        /* No change? */
+        if (enable == !!current->rseq.slice.state.enabled)
+            return 0;
+
+        if (get_user(rflags, &current->rseq.usrptr->flags))
+            goto die;
+
+        if (current->rseq.slice.state.enabled)
+            valid |= RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+
+        if ((rflags & valid) != valid)
+            goto die;
+
+        rflags &= ~RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+        rflags |= RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE;
+        if (enable)
+            rflags |= RSEQ_CS_FLAG_SLICE_EXT_ENABLED;
+
+        if (put_user(rflags, &current->rseq.usrptr->flags))
+            goto die;
+
+        current->rseq.slice.state.enabled = enable;
+        return 0;
+    }
+    default:
+        return -EINVAL;
+    }
+die:
+    force_sig(SIGSEGV);
+    return -EFAULT;
+}
+```
+
+## rseq_grant_slice_extension
+
+```c
+void __exit_to_user_mode_prepare(struct pt_regs *regs)
+{
+    tick_nohz_user_enter_prepare();
+
+    ti_work = read_thread_flags();
+    if (unlikely(ti_work & EXIT_TO_USER_MODE_WORK)) {
+        ti_work = exit_to_user_mode_loop(regs, ti_work) {
+            for (;;) {
+                ti_work = __exit_to_user_mode_loop(regs, ti_work);
+
+                if (likely(!rseq_exit_to_user_mode_restart(regs, ti_work)))
+                    return ti_work;
+                ti_work = read_thread_flags();
+            }
+
+            __exit_to_user_mode_loop(struct pt_regs *regs, unsigned long ti_work) {
+                while (ti_work & EXIT_TO_USER_MODE_WORK) {
+                    local_irq_enable_exit_to_user(ti_work) {
+                        local_irq_enable();
+                    }
+
+                    if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)) {
+                        if (!rseq_grant_slice_extension(ti_work & TIF_SLICE_EXT_DENY))
+                            schedule();
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool rseq_grant_slice_extension(bool work_pending)
+{
+    struct task_struct *curr = current;
+    struct rseq_slice_ctrl usr_ctrl;
+    union rseq_slice_state state;
+    struct rseq __user *rseq;
+
+    if (!rseq_slice_extension_enabled())
+        return false;
+
+    /* If not enabled or not a return from interrupt, nothing to do. */
+    state = curr->rseq.slice.state;
+    state.enabled &= curr->rseq.event.user_irq;
+    if (likely(!state.state))
+        return false;
+
+    rseq = curr->rseq.usrptr;
+    scoped_user_rw_access(rseq, efault) {
+
+        /* Quick check conditions where a grant is not possible or
+         * needs to be revoked.
+         *
+         *  1) Any TIF bit which needs to do extra work aside of
+         *     rescheduling prevents a grant.
+         *
+         *  2) A previous rescheduling request resulted in a slice
+         *     extension grant. */
+        if (unlikely(work_pending || state.granted)) {
+            /* Clear user control unconditionally. No point for checking */
+            unsafe_put_user(0U, &rseq->slice_ctrl.all, efault);
+            rseq_slice_clear_grant(curr);
+            return false;
+        }
+
+        unsafe_get_user(usr_ctrl.all, &rseq->slice_ctrl.all, efault);
+        if (likely(!(usr_ctrl.request)))
+            return false;
+
+        /* Grant the slice extention */
+        usr_ctrl.request = 0;
+        usr_ctrl.granted = 1;
+        unsafe_put_user(usr_ctrl.all, &rseq->slice_ctrl.all, efault);
+    }
+
+    rseq_stat_inc(rseq_stats.s_granted);
+
+    curr->rseq.slice.state.granted = true;
+    /* Store expiry time for arming the timer on the way out */
+    curr->rseq.slice.expires = data_race(rseq_slice_ext_nsecs) + ktime_get_mono_fast_ns();
+    /* This is racy against a remote CPU setting TIF_NEED_RESCHED in
+     * several ways:
+     *
+     * 1)
+     *    CPU0            CPU1
+     *    clear_tsk()
+     *                set_tsk()
+     *    clear_preempt()
+     *                Raise scheduler IPI on CPU0
+     *    --> IPI
+     *        fold_need_resched() -> Folds correctly
+     * 2)
+     *    CPU0            CPU1
+     *                set_tsk()
+     *    clear_tsk()
+     *    clear_preempt()
+     *                Raise scheduler IPI on CPU0
+     *    --> IPI
+     *        fold_need_resched() <- NOOP as TIF_NEED_RESCHED is false
+     *
+     * #1 is not any different from a regular remote reschedule as it
+     *    sets the previously not set bit and then raises the IPI which
+     *    folds it into the preempt counter
+     *
+     * #2 is obviously incorrect from a scheduler POV, but it's not
+     *    differently incorrect than the code below clearing the
+     *    reschedule request with the safety net of the timer.
+     *
+     * The important part is that the clearing is protected against the
+     * scheduler IPI and also against any other interrupt which might
+     * end up waking up a task and setting the bits in the middle of
+     * the operation:
+     *
+     *    clear_tsk()
+     *    ---> Interrupt
+     *        wakeup_on_this_cpu()
+     *        set_tsk()
+     *        set_preempt()
+     *    clear_preempt()
+     *
+     * which would be inconsistent state. */
+    scoped_guard(irq) {
+        clear_tsk_need_resched(curr);
+        clear_preempt_need_resched();
+    }
+    return true;
+
+efault:
+    force_sig(SIGSEGV);
+    return false;
+}
+```
+
+## rseq_exit_to_user_mode_restart
+
+```c
+static __always_inline bool
+rseq_exit_to_user_mode_restart(struct pt_regs *regs, unsigned long ti_work)
+{
+    if (unlikely(test_tif_rseq(ti_work))) { /* __TIF_RSEQ */
+        if (unlikely(__rseq_exit_to_user_mode_restart(regs))) {
+            current->rseq.event.slowpath = true;
+            set_tsk_thread_flag(current, TIF_NOTIFY_RESUME);
+            return true;
+        }
+        clear_tif_rseq();
+    }
+    /* Arm the slice extension timer if nothing to do anymore and the
+     * task really goes out to user space. */
+    return rseq_arm_slice_extension_timer() {
+        if (!rseq_slice_extension_enabled())
+            return false;
+
+        if (likely(!current->rseq.slice.state.granted))
+            return false;
+
+        return __rseq_arm_slice_extension_timer() {
+            struct slice_timer *st = this_cpu_ptr(&slice_timer);
+            struct task_struct *curr = current;
+
+            lockdep_assert_irqs_disabled();
+
+            if ((unlikely(curr->rseq.slice.expires < ktime_get_mono_fast_ns()))) {
+                set_need_resched_current();
+                return true;
+            }
+
+            st->cookie = curr;
+            hrtimer_start(&st->timer, curr->rseq.slice.expires, HRTIMER_MODE_ABS_PINNED_HARD);
+            /* Arm the syscall entry work */
+            set_task_syscall_work(curr, SYSCALL_RSEQ_SLICE);
+            return false;
+        }
+    }
+}
+
+static int __init rseq_slice_init(void)
+{
+    unsigned int cpu;
+
+    for_each_possible_cpu(cpu) {
+        hrtimer_setup(
+            per_cpu_ptr(&slice_timer.timer, cpu),
+            rseq_slice_expired = {
+                struct slice_timer *st = container_of(tmr, struct slice_timer, timer);
+
+                if (st->cookie == current && current->rseq.slice.state.granted) {
+                    rseq_stat_inc(rseq_stats.s_expired);
+                    set_need_resched_current();
+                }
+                return HRTIMER_NORESTART;
+            },
+            CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED_HARD);
+    }
+    return 0;
+}
+
+bool __rseq_exit_to_user_mode_restart(struct pt_regs *regs)
+{
+    struct task_struct *t = current;
+
+    if (unlikely((t->rseq.event.sched_switch))) {
+        rseq_stat_inc(rseq_stats.fastpath);
+
+        if (unlikely(!rseq_exit_user_update(regs, t)))
+            return true;
+    }
+    /* Clear state so next entry starts from a clean slate */
+    t->rseq.event.events = 0;
+    return false;
+}
+
+bool rseq_exit_user_update(struct pt_regs *regs, struct task_struct *t)
+{
+    /* Page faults need to be disabled as this is called with
+     * interrupts disabled */
+    guard(pagefault)();
+    if (likely(!t->rseq.event.ids_changed)) {
+        struct rseq __user *rseq = t->rseq.usrptr;
+        /* If IDs have not changed rseq_event::user_irq must be true
+         * See rseq_sched_switch_event(). */
+        u64 csaddr;
+
+        scoped_user_rw_access(rseq, efault) {
+            unsafe_get_user(csaddr, &rseq->rseq_cs, efault);
+
+            /* Open coded, so it's in the same user access region */
+            if (rseq_slice_extension_enabled()) {
+                /* Unconditionally clear it, no point in conditionals */
+                unsafe_put_user(0U, &rseq->slice_ctrl.all, efault);
+            }
+        }
+
+        rseq_slice_clear_grant(t) {
+            if (IS_ENABLED(CONFIG_RSEQ_STATS) && t->rseq.slice.state.granted)
+                rseq_stat_inc(rseq_stats.s_revoked);
+            t->rseq.slice.state.granted = false;
+        }
+
+        if (static_branch_unlikely(&rseq_debug_enabled) || unlikely(csaddr)) {
+            if (unlikely(!rseq_update_user_cs(t, regs, csaddr)))
+                return false;
+        }
+        return true;
+    }
+
+    struct rseq_ids ids = {
+        .cpu_id = task_cpu(t),
+        .mm_cid = task_mm_cid(t),
+    };
+    u32 node_id = cpu_to_node(ids.cpu_id);
+
+    return rseq_update_usr(t, regs, &ids, node_id);
+
+efault:
+    return false;
+}
+
+bool rseq_update_usr(struct task_struct *t, struct pt_regs *regs,
+                    struct rseq_ids *ids, u32 node_id)
+{
+    u64 csaddr;
+
+    if (!rseq_set_ids_get_csaddr(t, ids, node_id, &csaddr))
+        return false;
+
+    /* On architectures which utilize the generic entry code this
+     * allows to skip the critical section when the entry was not from
+     * a user space interrupt, unless debug mode is enabled. */
+    if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY)) {
+        if (!static_branch_unlikely(&rseq_debug_enabled)) {
+            if (likely(!t->rseq.event.user_irq))
+                return true;
+        }
+    }
+    if (likely(!csaddr))
+        return true;
+    /* Sigh, this really needs to do work */
+    return rseq_update_user_cs(t, regs, csaddr);
+}
+
+bool
+rseq_update_user_cs(struct task_struct *t, struct pt_regs *regs, unsigned long csaddr)
+{
+    struct rseq_cs __user *ucs = (struct rseq_cs __user *)(unsigned long)csaddr;
+    unsigned long ip = instruction_pointer(regs);
+    unsigned long tasksize = TASK_SIZE;
+    u64 start_ip, abort_ip, offset;
+    u32 usig, __user *uc_sig;
+
+    rseq_stat_inc(rseq_stats.cs);
+
+    if (unlikely(csaddr >= tasksize)) {
+        t->rseq.event.fatal = true;
+        return false;
+    }
+
+    if (static_branch_unlikely(&rseq_debug_enabled))
+        return rseq_debug_update_user_cs(t, regs, csaddr);
+
+    scoped_user_rw_access(ucs, efault) {
+        unsafe_get_user(start_ip, &ucs->start_ip, efault);
+        unsafe_get_user(offset, &ucs->post_commit_offset, efault);
+        unsafe_get_user(abort_ip, &ucs->abort_ip, efault);
+
+        /* No sanity checks. If user space screwed it up, it can
+         * keep the pieces. That's what debug code is for.
+         *
+         * If outside, just clear the critical section. */
+        if (ip - start_ip >= offset)
+            goto clear;
+
+        /* Two requirements for @abort_ip:
+         *   - Must be in user space as x86 IRET would happily return to
+         *     the kernel.
+         *   - The four bytes preceding the instruction at @abort_ip must
+         *     contain the signature.
+         *
+         * The latter protects against the following attack vector:
+         *
+         * An attacker with limited abilities to write, creates a critical
+         * section descriptor, sets the abort IP to a library function or
+         * some other ROP gadget and stores the address of the descriptor
+         * in TLS::rseq::rseq_cs. An RSEQ abort would then evade ROP
+         * protection. */
+        if (unlikely(abort_ip >= tasksize || abort_ip < sizeof(*uc_sig)))
+            goto die;
+
+        /* The address is guaranteed to be >= 0 and < TASK_SIZE */
+        uc_sig = (u32 __user *)(unsigned long)(abort_ip - sizeof(*uc_sig));
+        unsafe_get_user(usig, uc_sig, efault);
+        if (unlikely(usig != t->rseq.sig))
+            goto die;
+
+        /* Invalidate the critical section */
+        unsafe_put_user(0ULL, &t->rseq.usrptr->rseq_cs, efault);
+        /* Update the instruction pointer */
+        instruction_pointer_set(regs, (unsigned long)abort_ip);
+        rseq_stat_inc(rseq_stats.fixup);
+        break;
+
+    clear:
+        unsafe_put_user(0ULL, &t->rseq.usrptr->rseq_cs, efault);
+        rseq_stat_inc(rseq_stats.clear);
+        abort_ip = 0ULL;
+    }
+
+    if (unlikely(abort_ip))
+        rseq_trace_ip_fixup(ip, start_ip, offset, abort_ip);
+    return true;
+die:
+    t->rseq.event.fatal = true;
+efault:
+    return false;
+}
+```
+
+## rseq_slice_yield
+
+```c
+SYSCALL_DEFINE0(rseq_slice_yield)
+{
+    int yielded = !!current->rseq.slice.yielded;
+
+    current->rseq.slice.yielded = 0;
+    return yielded;
+}
+```
+
+## rseq_syscall_enter_work
+
+```c
+void rseq_syscall_enter_work(long syscall)
+{
+    struct task_struct *curr = current;
+    struct rseq_slice_ctrl ctrl = { .granted = curr->rseq.slice.state.granted };
+
+    clear_task_syscall_work(curr, SYSCALL_RSEQ_SLICE);
+
+    if (static_branch_unlikely(&rseq_debug_enabled))
+        rseq_slice_validate_ctrl(ctrl.all);
+
+    /* The kernel might have raced, revoked the grant and updated
+     * userspace, but kept the SLICE work set. */
+    if (!ctrl.granted)
+        return;
+
+    /* Required to stabilize the per CPU timer pointer and to make
+     * set_tsk_need_resched() correct on PREEMPT[RT] kernels.
+     *
+     * Leaving the scope will reschedule on preemption models FULL,
+     * LAZY and RT if necessary. */
+    scoped_guard(preempt) {
+        rseq_cancel_slice_extension_timer();
+        /* Now that preemption is disabled, quickly check whether
+         * the task was already rescheduled before arriving here. */
+        if (!curr->rseq.event.sched_switch) {
+            rseq_slice_set_need_resched(curr);
+
+            if (syscall == __NR_rseq_slice_yield) {
+                rseq_stat_inc(rseq_stats.s_yielded);
+                /* Update the yielded state for syscall return */
+                curr->rseq.slice.yielded = 1;
+            } else {
+                rseq_stat_inc(rseq_stats.s_aborted);
+            }
+        }
+    }
+    /* Reschedule on NONE/VOLUNTARY preemption models */
+    cond_resched();
+
+    /* Clear the grant in kernel state and user space */
+    curr->rseq.slice.state.granted = false;
+    if (put_user(0U, &curr->rseq.usrptr->slice_ctrl.all))
+        force_sig(SIGSEGV);
+}
+```
+
+## rseq_handle_slowpath
+
+```c
+/* Invoked from resume_user_mode_work() */
+static inline void rseq_handle_slowpath(struct pt_regs *regs)
+{
+    if (IS_ENABLED(CONFIG_GENERIC_ENTRY)) {
+        if (current->rseq.event.slowpath)
+            __rseq_handle_slowpath(regs);
+    } else {
+        /* '&' is intentional to spare one conditional branch */
+        if (current->rseq.event.sched_switch & current->rseq.event.has_rseq)
+            __rseq_handle_slowpath(regs);
+    }
+}
+
+void __rseq_handle_slowpath(struct pt_regs *regs)
+{
+    /* If invoked from hypervisors before entering the guest via
+     * resume_user_mode_work(), then @regs is a NULL pointer.
+     *
+     * resume_user_mode_work() clears TIF_NOTIFY_RESUME and re-raises
+     * it before returning from the ioctl() to user space when
+     * rseq_event.sched_switch is set.
+     *
+     * So it's safe to ignore here instead of pointlessly updating it
+     * in the vcpu_run() loop. */
+    if (!regs)
+        return;
+
+    rseq_slowpath_update_usr(regs);
+}
+
+void rseq_slowpath_update_usr(struct pt_regs *regs)
+{
+    /* Preserve rseq state and user_irq state. The generic entry code
+     * clears user_irq on the way out, the non-generic entry
+     * architectures are not having user_irq. */
+    const struct rseq_event evt_mask = { .has_rseq = true, .user_irq = true, };
+    struct task_struct *t = current;
+    struct rseq_ids ids;
+    u32 node_id;
+    bool event;
+
+    if (unlikely(t->flags & PF_EXITING))
+        return;
+
+    rseq_stat_inc(rseq_stats.slowpath);
+
+    /* Read and clear the event pending bit first. If the task
+     * was not preempted or migrated or a signal is on the way,
+     * there is no point in doing any of the heavy lifting here
+     * on production kernels. In that case TIF_NOTIFY_RESUME
+     * was raised by some other functionality.
+     *
+     * This is correct because the read/clear operation is
+     * guarded against scheduler preemption, which makes it CPU
+     * local atomic. If the task is preempted right after
+     * re-enabling preemption then TIF_NOTIFY_RESUME is set
+     * again and this function is invoked another time _before_
+     * the task is able to return to user mode.
+     *
+     * On a debug kernel, invoke the fixup code unconditionally
+     * with the result handed in to allow the detection of
+     * inconsistencies. */
+    scoped_guard(irq) {
+        event = t->rseq.event.sched_switch;
+        t->rseq.event.all &= evt_mask.all;
+        ids.cpu_id = task_cpu(t);
+        ids.mm_cid = task_mm_cid(t);
+    }
+
+    if (!event)
+        return;
+
+    node_id = cpu_to_node(ids.cpu_id);
+
+    if (unlikely(!rseq_update_usr(t, regs, &ids, node_id))) {
+        /* Clear the errors just in case this might survive magically, but
+         * leave the rest intact. */
+        t->rseq.event.error = 0;
+        force_sig(SIGSEGV);
+    }
+}
+
+```
+
+## rseq_signal_deliver
+
+```c
+static inline void rseq_signal_deliver(struct ksignal *ksig, struct pt_regs *regs)
+{
+    if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY)) {
+        /* '&' is intentional to spare one conditional branch */
+        if (current->rseq.event.has_rseq & current->rseq.event.user_irq)
+            __rseq_signal_deliver(ksig->sig, regs);
+    } else {
+        if (current->rseq.event.has_rseq)
+            __rseq_signal_deliver(ksig->sig, regs);
+    }
+}
+
+void __rseq_signal_deliver(int sig, struct pt_regs *regs)
+{
+    rseq_stat_inc(rseq_stats.signal);
+    /* Don't update IDs, they are handled on exit to user if
+     * necessary. The important thing is to abort a critical section of
+     * the interrupted context as after this point the instruction
+     * pointer in @regs points to the signal handler. */
+    if (unlikely(!rseq_handle_cs(current, regs))) {
+        /* Clear the errors just in case this might survive
+         * magically, but leave the rest intact. */
+        current->rseq.event.error = 0;
+        force_sigsegv(sig);
+    }
+}
+
+static bool rseq_handle_cs(struct task_struct *t, struct pt_regs *regs)
+{
+    struct rseq __user *urseq = t->rseq.usrptr;
+    u64 csaddr;
+
+    scoped_user_read_access(urseq, efault)
+        unsafe_get_user(csaddr, &urseq->rseq_cs, efault);
+    if (likely(!csaddr))
+        return true;
+    return rseq_update_user_cs(t, regs, csaddr);
+        --->
+
+efault:
+    return false;
+}
+```
+
+## rseq_sched_switch_event
+
+```c
+void rseq_sched_switch_event(struct task_struct *t)
+{
+    struct rseq_event *ev = &t->rseq.event;
+
+    if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY)) {
+        /* Avoid a boat load of conditionals by using simple logic
+         * to determine whether NOTIFY_RESUME needs to be raised.
+         *
+         * It's required when the CPU or MM CID has changed or
+         * the entry was from user space. */
+        bool raise = (ev->user_irq | ev->ids_changed) & ev->has_rseq;
+
+        if (raise) {
+            ev->sched_switch = true;
+            rseq_raise_notify_resume(t);
+        }
+    } else {
+        if (ev->has_rseq) {
+            t->rseq.event.sched_switch = true;
+            rseq_raise_notify_resume(t) {
+                set_tsk_thread_flag(t, TIF_RSEQ);
+            }
+        }
+    }
+}
 ```
 
 # Tuning

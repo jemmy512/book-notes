@@ -481,7 +481,7 @@ el0t_64_irq_handler(struct pt_regs *regs) {
         irq_exit_rcu();
 
         arm64_exit_to_user_mode(regs) {
-            exit_to_user_mode_prepare(regs) {
+            __exit_to_user_mode_prepare(regs) {
                 flags = read_thread_flags();
                 if (unlikely(flags & _TIF_WORK_MASK)) {
                     do_notify_resume(regs, flags) {
@@ -560,6 +560,11 @@ el1h_64_irq_handler(struct pt_regs *regs) {
                                     trace_hardirqs_off_finish();
                                     instrumentation_end();
                                 }
+
+                                rseq_note_user_irq_entry() {
+                                    if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY))
+		                            current->rseq.event.user_irq = true;
+                                }
                             }
                             return ret;
                         }
@@ -596,7 +601,7 @@ el1h_64_irq_handler(struct pt_regs *regs) {
                         if (user_mode(regs)) {
                             irqentry_exit_to_user_mode(regs) {
                                 instrumentation_begin();
-                                exit_to_user_mode_prepare(regs);
+                                __exit_to_user_mode_prepare(regs);
                                 instrumentation_end();
                                 exit_to_user_mode();
                             }

@@ -133,7 +133,7 @@ Feature | (Data Memory Barrier)DMB | (Data Synchronization Barrier)DSB
 **Write-Back to Memory** | Does not force dirty cache lines in the **M (Modified)** state to be written back. | Forces dirty cache lines in the **M (Modified)** state to be written back if necessary.
 **Scope** | Configurable (ISH, OSH, NSH, ST). | Configurable (ISH, OSH, NSH, ST).
 **Performance** | Lower overhead. | Higher overhead.
-**Use Cases** | When **ordering **of memory accesses is required, but **completion **is not strictly necessary. | When **ordering **and **completion **of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
+**Use Cases** | When **ordering**of memory accesses is required, but **completion**is not strictly necessary. | When **ordering **and **completion **of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
 **Core Stalling** | Does not stall the core; subsequent instructions may execute immediately. | Stalls the core until all memory operations are globally visible.
 
 ---
@@ -896,8 +896,7 @@ void rcu_read_unlock_special(struct task_struct *t)
             // Also if no expediting and no possible deboosting,
             // slow is OK.  Plus nohz_full CPUs eventually get
             // tick enabled.
-            set_tsk_need_resched(current);
-            set_preempt_need_resched();
+            set_need_resched_current();
             if (IS_ENABLED(CONFIG_IRQ_WORK) && irqs_were_disabled &&
                 needs_exp && rdp->defer_qs_iw_pending != DEFER_QS_PENDING &&
                 cpu_online(rdp->cpu)) {
@@ -1028,8 +1027,7 @@ void rcu_sched_clock_irq(int user)
     if (smp_load_acquire(this_cpu_ptr(&rcu_data.rcu_urgent_qs))) {
         /* Idle and userspace execution already are quiescent states. */
         if (!rcu_is_cpu_rrupt_from_idle() && !user) {
-            set_tsk_need_resched(current);
-            set_preempt_need_resched();
+            set_need_resched_current();
         }
         __this_cpu_write(rcu_data.rcu_urgent_qs, false);
     }
@@ -1624,8 +1622,7 @@ static __latent_entropy void rcu_core(void)
     if (IS_ENABLED(CONFIG_PREEMPT_COUNT) && (!(preempt_count() & PREEMPT_MASK))) {
         rcu_preempt_deferred_qs(current);
     } else if (rcu_preempt_need_deferred_qs(current)) {
-        set_tsk_need_resched(current);
-        set_preempt_need_resched();
+        set_need_resched_current();
     }
 
     /* Update RCU state based on any recent quiescent states. */
@@ -3810,8 +3807,7 @@ void rcu_exp_handler(void *unused)
                 __this_cpu_write(rcu_data.cpu_no_qs.b.exp, true);
                 /* Store .exp before .rcu_urgent_qs. */
                 smp_store_release(this_cpu_ptr(&rcu_data.rcu_urgent_qs), true);
-                set_tsk_need_resched(current);
-                set_preempt_need_resched();
+                set_need_resched_current();
             }
         }
         return;
@@ -7591,8 +7587,11 @@ __rt_mutex_lock() {
 
                         if (queued)
                             enqueue_task(rq, p, queue_flag);
-                        if (running)
-                            set_next_task(rq, p);
+                        if (running) {
+                            set_next_task(rq, p) {
+                                next->sched_class->set_next_task(rq, next, false);
+                            }
+                        }
 
                         check_class_changed(rq, p, prev_class, oldprio) {
                             if (prev_class != p->sched_class) {

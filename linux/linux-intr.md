@@ -1328,7 +1328,7 @@ void __local_bh_disable_ip(unsigned long ip, unsigned int cnt)
 ```c
 static inline void local_bh_enable(void)
 {
-    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET) {
+    __local_bh_enable_ip(_THIS_IP_, SOFTIRQ_DISABLE_OFFSET/*cnt*/) {
         bool preempt_on = preemptible() {
             int cnt = preempt_count() {
                 return READ_ONCE(current_thread_info()->preempt.count);
@@ -1345,21 +1345,22 @@ static inline void local_bh_enable(void)
         lock_map_release(&bh_lock_map);
 
         local_irq_save(flags);
-        curcnt = __this_cpu_read(softirq_ctrl.cnt);
+        if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK))
+            curcnt = this_cpu_read(softirq_ctrl.cnt);
+        else
+            curcnt = current->softirq_disable_cnt;
 
         /* If this is not reenabling soft interrupts, no point in trying to
         * run pending ones. */
         if (curcnt != cnt)
             goto out;
 
-        pending = local_softirq_pending() {
-           return __this_cpu_read(local_softirq_pending_ref);
-        }
+        pending = local_softirq_pending();
         if (!pending)
             goto out;
 
         /* If this was called from non preemptible context, wake up the
-        * softirq daemon. */
+         * softirq daemon. */
         if (!preempt_on) {
             wakeup_softirqd();
             goto out;
@@ -1371,59 +1372,46 @@ static inline void local_bh_enable(void)
         * in_serving_softirq() become true. */
         cnt = SOFTIRQ_OFFSET;
         __local_bh_enable(cnt, false);
+
         __do_softirq();
 
     out:
-        __local_bh_enable(cnt, preempt_on) {
+        __local_bh_enable(cnt, preempt_on/*unlock*/) {
             unsigned long flags;
+            bool sirq_en = false;
             int newcnt;
 
-            WARN_ON_ONCE(in_hardirq());
-
-            lock_map_acquire_read(&bh_lock_map);
-
-            /* First entry of a task into a BH disabled section? */
-            if (!current->softirq_disable_cnt) {
-                if (preemptible()) {
-                    if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK))
-                        local_lock(&softirq_ctrl.lock);
-                    else
-                        migrate_disable();
-
-                    /* Required to meet the RCU bottomhalf requirements. */
-                    rcu_read_lock();
-                } else {
-                    DEBUG_LOCKS_WARN_ON(this_cpu_read(softirq_ctrl.cnt));
-                }
+            if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK)) {
+                DEBUG_LOCKS_WARN_ON(current->softirq_disable_cnt != this_cpu_read(softirq_ctrl.cnt));
+                if (softirq_count() == cnt)
+                    sirq_en = true;
+            } else {
+                if (current->softirq_disable_cnt == cnt)
+                    sirq_en = true;
             }
 
-            /* Track the per CPU softirq disabled state. On RT this is per CPU
-            * state to allow preemption of bottom half disabled sections. */
+            if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && sirq_en) {
+                raw_local_irq_save(flags);
+                lockdep_softirqs_on(_RET_IP_);
+                raw_local_irq_restore(flags);
+            }
+
             if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK)) {
-                newcnt = this_cpu_add_return(softirq_ctrl.cnt, cnt);
-                /* Reflect the result in the task state to prevent recursion on the
-                * local lock and to make softirq_count() & al work. */
+                newcnt = this_cpu_sub_return(softirq_ctrl.cnt, cnt);
                 current->softirq_disable_cnt = newcnt;
 
-                if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && newcnt == cnt) {
-                    raw_local_irq_save(flags);
-                    lockdep_softirqs_off(ip);
-                    raw_local_irq_restore(flags);
+                if (!newcnt && unlock) {
+                    rcu_read_unlock();
+                    local_unlock(&softirq_ctrl.lock);
                 }
             } else {
-                bool sirq_dis = false;
-
-                if (!current->softirq_disable_cnt)
-                    sirq_dis = true;
-
-                this_cpu_add(softirq_ctrl.cnt, cnt);
-                current->softirq_disable_cnt += cnt;
-                WARN_ON_ONCE(current->softirq_disable_cnt < 0);
-
-                if (IS_ENABLED(CONFIG_TRACE_IRQFLAGS) && sirq_dis) {
-                    raw_local_irq_save(flags);
-                    lockdep_softirqs_off(ip);
-                    raw_local_irq_restore(flags);
+                current->softirq_disable_cnt -= cnt;
+                this_cpu_sub(softirq_ctrl.cnt, cnt);
+                if (unlock && !current->softirq_disable_cnt) {
+                    migrate_enable();
+                    rcu_read_unlock();
+                } else {
+                    WARN_ON_ONCE(current->softirq_disable_cnt < 0);
                 }
             }
         }

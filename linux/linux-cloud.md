@@ -4430,6 +4430,10 @@ void update_cfs_group(struct sched_entity *se) {
                 se->deadline -= se->vruntime;
                 se->rel_deadline = 1;
                 cfs_rq->nr_queued--;
+                if (curr && protect_slice(se)) {
+                    vprot = se->vprot - se->vruntime;
+                    rel_vprot = true;
+                }
                 if (!curr)
                     __dequeue_entity(cfs_rq, se);
                 update_load_sub(&cfs_rq->load, se->load.weight);
@@ -4454,7 +4458,6 @@ void update_cfs_group(struct sched_entity *se) {
                 if (!curr)
                     __enqueue_entity(cfs_rq, se);
                 cfs_rq->nr_queued++;
-                update_min_vruntime(cfs_rq);
             }
         }
     }
@@ -4990,7 +4993,7 @@ struct task_group *sched_create_group(struct task_group *parent) {
 
             init_cfs_rq(cfs_rq) {
                 cfs_rq->tasks_timeline = RB_ROOT_CACHED;
-                cfs_rq->min_vruntime = (u64)(-(1LL << 20));
+                cfs_rq->zero_vruntime = (u64)(-(1LL << 20));
                 raw_spin_lock_init(&cfs_rq->removed.lock);
             }
 
