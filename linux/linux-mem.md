@@ -544,7 +544,15 @@ void __init early_fixmap_init(void)
 
         if (p4d_none(p4d)) {
             __p4d_populate(p4dp, __pa_symbol(bm_pud), P4D_TYPE_TABLE | P4D_TABLE_AF) {
-                set_p4d(p4dp, __p4d(__phys_to_p4d_val(pudp) | prot));
+                set_p4d(p4dp, __p4d(__phys_to_p4d_val(pudp) | prot)) {
+                    if (in_swapper_pgdir(p4dp)) {
+                        set_swapper_pgd((pgd_t *)p4dp, __pgd(p4d_val(p4d)));
+                        return;
+                    }
+
+                    WRITE_ONCE(*p4dp, p4d);
+                    queue_pte_barriers();
+                }
             }
         }
 
@@ -17977,6 +17985,51 @@ struct vm_area_struct {
   fffffe0000000000      ffffffffffffffff      2TB       [guard region]
 ```
 
+```sh
+0xffffffffffffffff   ─────────────────────────────────────────────────────────────
+                        │
+                        │
+FIXADDR_TOP         ─── FIXADDR_TOP  = -SZ_8M
+                        │
+                        │   Fixed mappings (fixmap)
+                        │   (used by fix_to_virt(), early console, etc.)
+                        │
+                    ─── Guard / padding region
+                        │
+PCI_IO_END          ─── (PCI_IO_START + PCI_IO_START)
+                        │
+                        │   PCI I/O space   (16 MB)
+                        │
+PCI_IO_START        ─── (VMEMMAP_END + SZ_8M)
+                        │
+                        │   Guard / padding region
+                        │
+0xffffffffc0000000  ─── VMEMMAP_END  (-1GB)
+                        │
+                        │   VMEMMAP (struct page array for the entire linear map)
+                        │   vmalloc / vmap / ioremap area
+                        │   (very large, non-contiguous allocations)
+                        │
+VMEMMAP_START       ─── (VMEMMAP_END - VMEMMAP_SIZE)
+                        │
+                        │   Kernel Image
+                        │   (.text, .rodata, .data, .bss, init sections, etc.)
+                        │
+0xffff800080000000  ─── KIMAGE_VADDR = MODULES_END
+                        │
+                        │   Kernel Modules (2 GB region)
+                        │   (including BPF JIT if enabled)
+                        │
+0xffff800000000000  ─── MODULES_VADDR = PAGE_END (End of linear map)
+                        │
+                        │   Kernel Logical / Direct Map (Linear Mapping)
+                        │   • Maps all physical RAM contiguously
+                        │   • This is the main 128 TB region
+                        │   • virt_to_phys() and phys_to_virt() work here directly
+                        │
+0xffff000000000000  ─── PAGE_OFFSET ────────────────────────────────────────
+```
+
 ![](../images/kernel/mem-user-kernel-64.png)
 
 # cma
@@ -19305,91 +19358,316 @@ unsigned long get_unmapped_area(
 ## create_pgd_mapping
 
 ```c
-__create_pgd_mapping(pgdir, phys, virt, size, prot, pgd_pgtable_alloc, flags) {
+static int __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
+                unsigned long virt, phys_addr_t size,
+                pgprot_t prot,
+                phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                int flags)
+{
+    int ret;
+
+    mutex_lock(&fixmap_lock);
+    ret = __create_pgd_mapping_locked(pgdir, phys, virt, size, prot, pgtable_alloc, flags) {
+        int ret;
+        unsigned long addr, end, next;
+        pgd_t *pgdp = pgd_offset_pgd(pgdir, virt);
+
+        /* If the virtual and physical address don't have the same offset
+        * within a page, we cannot map the region as the caller expects. */
+        if (WARN_ON((phys ^ virt) & ~PAGE_MASK))
+            return -EINVAL;
+
+        phys &= PAGE_MASK;
+        addr = virt & PAGE_MASK;
+        end = PAGE_ALIGN(virt + size);
+
+        do {
+            next = pgd_addr_end(addr, end);
+            ret = alloc_init_p4d(pgdp, addr, next, phys, prot, pgtable_alloc, flags);
+            if (ret)
+                return ret;
+            phys += next - addr;
+        } while (pgdp++, addr = next, addr != end);
+
+        return 0;
+    }
+    mutex_unlock(&fixmap_lock);
+
+    return ret;
+}
+
+int alloc_init_p4d(pgd_t *pgdp, unsigned long addr, unsigned long end,
+              phys_addr_t phys, pgprot_t prot,
+              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+              int flags)
+{
+    int ret;
+    unsigned long next;
+    pgd_t pgd = READ_ONCE(*pgdp);
+    p4d_t *p4dp;
+
+    if (pgd_none(pgd)) {
+        pgdval_t pgdval = PGD_TYPE_TABLE | PGD_TABLE_UXN | PGD_TABLE_AF;
+        phys_addr_t p4d_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pgdval |= PGD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        p4d_phys = pgtable_alloc(TABLE_P4D);
+        if (p4d_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        p4dp = p4d_set_fixmap(p4d_phys);
+        init_clear_pgtable(p4dp);
+        p4dp += p4d_index(addr);
+        __pgd_populate(pgdp, p4d_phys, pgdval);
+    } else {
+        BUG_ON(pgd_bad(pgd));
+        p4dp = p4d_set_fixmap_offset(pgdp, addr);
+    }
+
     do {
-        next = pgd_addr_end(addr, end);
-        alloc_init_pud(pgdp, addr, next, phys, prot, pgtable_alloc, flags) {
-            if (pgd_none(pgd)) {
-                pud_phys = pgtable_alloc(PUD_SHIFT);
-                __p4d_populate(p4dp, pud_phys, p4dval) {
-                    set_p4d(p4dp, __p4d(__phys_to_p4d_val(pudp) | prot));
-                }
-                p4d = READ_ONCE(*p4dp);
-            }
-            BUG_ON(p4d_bad(p4d));
+        p4d_t old_p4d = READ_ONCE(*p4dp);
 
-            pudp = pud_set_fixmap_offset(p4dp, addr);
-            do {
-                next = pud_addr_end(addr, end);
-                if (pud_sect_supported() && (flags & NO_BLOCK_MAPPINGS) == 0) {
-                    pud_set_huge(pudp, phys, prot);
-                } else {
-                    alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags) {
-                        if (pud_none(pud)) {
-                            pmd_phys = pgtable_alloc(PMD_SHIFT);
-                            __pud_populate(pudp, pmd_phys, pudval);
-                            pud = READ_ONCE(*pudp);
-                        }
-                        BUG_ON(pud_bad(pud));
+        next = p4d_addr_end(addr, end);
 
-                        pmdp = pmd_set_fixmap_offset(pudp, addr);
-                        do {
-                            next = pmd_cont_addr_end(addr, end);
-                            init_pmd(pudp, addr, next, phys, __prot, pgtable_alloc, flags) {
-                                do {
-                                    next = pmd_addr_end(addr, end);
-                                    if ((flags & NO_BLOCK_MAPPINGS) == 0) {
-                                        pmd_set_huge(pmdp, phys, prot) {
-                                            prot = mk_pmd_sect_prot(prot) {
-                                                return __pgprot((pgprot_val(prot) & ~PMD_TABLE_BIT) | PMD_TYPE_SECT);
-                                            }
-                                            pmd_t new_pmd = pfn_pmd(__phys_to_pfn(phys), prot);
+        ret = alloc_init_pud(p4dp, addr, next, phys, prot, pgtable_alloc, flags);
+        if (ret)
+            goto out;
 
-                                            set_pmd(pmdp, new_pmd);
-                                            return 1;
-                                        }
-                                    } else {
-                                        alloc_init_cont_pte(pmdp, addr, next, phys, prot, pgtable_alloc, flags) {
-                                            if (pmd_none(pmd)) {
-                                                pte_phys = pgtable_alloc(PAGE_SHIFT);
-                                                __pmd_populate(pmdp, pte_phys, pmdval);
-                                                pmd = READ_ONCE(*pmdp);
-                                            }
-                                            BUG_ON(pmd_bad(pmd));
+        BUG_ON(p4d_val(old_p4d) != 0 &&
+               p4d_val(old_p4d) != READ_ONCE(p4d_val(*p4dp)));
 
-                                            do {
-                                                next = pte_cont_addr_end(addr, end);
-                                                init_pte(pmdp, addr, next, phys, __prot) {
-                                                    ptep = pte_set_fixmap_offset(pmdp, addr);
-                                                    do {
-                                                        set_pte(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
-                                                            WRITE_ONCE(*ptep, pte);
-                                                            if (pte_valid_not_user(pte)) {
-                                                                dsb(ishst);
-                                                                isb();
-                                                            }
-                                                        }
-                                                        phys += PAGE_SIZE;
-                                                    } while (ptep++, addr += PAGE_SIZE, addr != end);
-                                                    pte_clear_fixmap();
-                                                }
-                                                phys += next - addr;
-                                            } while (addr = next, addr != end);
-                                        }
-                                    }
-                                    phys += next - addr;
-                                } while (pmdp++, addr = next, addr != end);
-                            }
-                            phys += next - addr;
-                        } while (addr = next, addr != end);
-                    }
-                }
-                phys += next - addr;
-            } while (pudp++, addr = next, addr != end);
-            pud_clear_fixmap();
+        phys += next - addr;
+    } while (p4dp++, addr = next, addr != end);
+
+out:
+    p4d_clear_fixmap();
+
+    return ret;
+}
+
+int alloc_init_pud(p4d_t *p4dp, unsigned long addr, unsigned long end,
+              phys_addr_t phys, pgprot_t prot,
+              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+              int flags)
+{
+    int ret = 0;
+    unsigned long next;
+    p4d_t p4d = READ_ONCE(*p4dp);
+    pud_t *pudp;
+
+    if (p4d_none(p4d)) {
+        p4dval_t p4dval = P4D_TYPE_TABLE | P4D_TABLE_UXN | P4D_TABLE_AF;
+        phys_addr_t pud_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            p4dval |= P4D_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pud_phys = pgtable_alloc(TABLE_PUD);
+        if (pud_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        pudp = pud_set_fixmap(pud_phys);
+        init_clear_pgtable(pudp);
+        pudp += pud_index(addr);
+        __p4d_populate(p4dp, pud_phys, p4dval);
+    } else {
+        BUG_ON(p4d_bad(p4d));
+        pudp = pud_set_fixmap_offset(p4dp, addr);
+    }
+
+    do {
+        pud_t old_pud = READ_ONCE(*pudp);
+
+        next = pud_addr_end(addr, end);
+
+        /* For 4K granule only, attempt to put down a 1GB block */
+        if (pud_sect_supported() &&
+           ((addr | next | phys) & ~PUD_MASK) == 0 &&
+            (flags & NO_BLOCK_MAPPINGS) == 0) {
+            pud_set_huge(pudp, phys, prot);
+
+            /* After the PUD entry has been populated once, we
+             * only allow updates to the permission attributes. */
+            BUG_ON(!pgattr_change_is_safe(pud_val(old_pud),
+                              READ_ONCE(pud_val(*pudp))));
+        } else {
+            ret = alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags);
+            if (ret)
+                goto out;
+
+            BUG_ON(pud_val(old_pud) != 0 &&
+                   pud_val(old_pud) != READ_ONCE(pud_val(*pudp)));
         }
         phys += next - addr;
-    } while (pgdp++, addr = next, addr != end);
+    } while (pudp++, addr = next, addr != end);
+
+out:
+    pud_clear_fixmap();
+
+    return ret;
+}
+
+int alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
+                   unsigned long end, phys_addr_t phys,
+                   pgprot_t prot,
+                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                   int flags)
+{
+    int ret;
+    unsigned long next;
+    pud_t pud = READ_ONCE(*pudp);
+    pmd_t *pmdp;
+
+    /* Check for initial section mappings in the pgd/pud. */
+    BUG_ON(pud_sect(pud));
+    if (pud_none(pud)) {
+        pudval_t pudval = PUD_TYPE_TABLE | PUD_TABLE_UXN | PUD_TABLE_AF;
+        phys_addr_t pmd_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pudval |= PUD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pmd_phys = pgtable_alloc(TABLE_PMD);
+        if (pmd_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        pmdp = pmd_set_fixmap(pmd_phys);
+        init_clear_pgtable(pmdp);
+        pmdp += pmd_index(addr);
+        __pud_populate(pudp, pmd_phys, pudval);
+    } else {
+        BUG_ON(pud_bad(pud));
+        pmdp = pmd_set_fixmap_offset(pudp, addr);
+    }
+
+    do {
+        pgprot_t __prot = prot;
+
+        next = pmd_cont_addr_end(addr, end);
+
+        /* use a contiguous mapping if the range is suitably aligned */
+        if ((((addr | next | phys) & ~CONT_PMD_MASK) == 0) &&
+            (flags & NO_CONT_MAPPINGS) == 0)
+            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
+
+        ret = init_pmd(pmdp, addr, next, phys, __prot, pgtable_alloc, flags);
+        if (ret)
+            goto out;
+
+        pmdp += pmd_index(next) - pmd_index(addr);
+        phys += next - addr;
+    } while (addr = next, addr != end);
+
+out:
+    pmd_clear_fixmap();
+
+    return ret;
+}
+
+int init_pmd(pmd_t *pmdp, unsigned long addr, unsigned long end,
+            phys_addr_t phys, pgprot_t prot,
+            phys_addr_t (*pgtable_alloc)(enum pgtable_type), int flags)
+{
+    unsigned long next;
+
+    do {
+        pmd_t old_pmd = READ_ONCE(*pmdp);
+
+        next = pmd_addr_end(addr, end);
+
+        /* try section mapping first */
+        if (((addr | next | phys) & ~PMD_MASK) == 0 &&
+            (flags & NO_BLOCK_MAPPINGS) == 0) {
+            pmd_set_huge(pmdp, phys, prot);
+
+            /* After the PMD entry has been populated once, we
+             * only allow updates to the permission attributes. */
+            BUG_ON(!pgattr_change_is_safe(pmd_val(old_pmd),
+                              READ_ONCE(pmd_val(*pmdp))));
+        } else {
+            int ret;
+
+            ret = alloc_init_cont_pte(pmdp, addr, next, phys, prot,
+                          pgtable_alloc, flags);
+            if (ret)
+                return ret;
+
+            BUG_ON(pmd_val(old_pmd) != 0 &&
+                   pmd_val(old_pmd) != READ_ONCE(pmd_val(*pmdp)));
+        }
+        phys += next - addr;
+    } while (pmdp++, addr = next, addr != end);
+
+    return 0;
+}
+
+int alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
+                   unsigned long end, phys_addr_t phys,
+                   pgprot_t prot,
+                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                   int flags)
+{
+    unsigned long next;
+    pmd_t pmd = READ_ONCE(*pmdp);
+    pte_t *ptep;
+
+    BUG_ON(pmd_sect(pmd));
+    if (pmd_none(pmd)) {
+        pmdval_t pmdval = PMD_TYPE_TABLE | PMD_TABLE_UXN | PMD_TABLE_AF;
+        phys_addr_t pte_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pmdval |= PMD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pte_phys = pgtable_alloc(TABLE_PTE);
+        if (pte_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        ptep = pte_set_fixmap(pte_phys);
+        init_clear_pgtable(ptep);
+        ptep += pte_index(addr);
+        __pmd_populate(pmdp, pte_phys, pmdval);
+    } else {
+        BUG_ON(pmd_bad(pmd));
+        ptep = pte_set_fixmap_offset(pmdp, addr);
+    }
+
+    do {
+        pgprot_t __prot = prot;
+
+        next = pte_cont_addr_end(addr, end);
+
+        /* use a contiguous mapping if the range is suitably aligned */
+        if ((((addr | next | phys) & ~CONT_PTE_MASK) == 0) &&
+            (flags & NO_CONT_MAPPINGS) == 0)
+            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
+
+        init_pte(ptep, addr, next, phys, __prot) {
+            do {
+                pte_t old_pte = __ptep_get(ptep);
+
+                /* Required barriers to make this visible to the table walker
+                * are deferred to the end of alloc_init_cont_pte(). */
+                __set_pte_nosync(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
+                    WRITE_ONCE(*ptep, pte);
+                }
+
+                /* After the PTE entry has been populated once, we
+                * only allow updates to the permission attributes. */
+                BUG_ON(!pgattr_change_is_safe(pte_val(old_pte), pte_val(__ptep_get(ptep))));
+
+                phys += PAGE_SIZE;
+            } while (ptep++, addr += PAGE_SIZE, addr != end);
+        }
+
+        ptep += pte_index(next) - pte_index(addr);
+        phys += next - addr;
+    } while (addr = next, addr != end);
+
+    /* Note: barriers and maintenance necessary to clear the fixmap slot
+     * ensure that all previous pgtable writes are visible to the table
+     * walker. */
+    pte_clear_fixmap();
+
+    return 0;
 }
 ```
 
