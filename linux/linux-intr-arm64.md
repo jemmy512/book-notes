@@ -560,10 +560,12 @@ el1h_64_irq_handler(struct pt_regs *regs) {
                                     trace_hardirqs_off_finish();
                                     instrumentation_end();
                                 }
-
+/* For RSEQ the only relevant reason to inspect and eventually fixup (abort)
+user space critical sections is when user space was interrupted and the
+task was scheduled out. */
                                 rseq_note_user_irq_entry() {
                                     if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY))
-		                            current->rseq.event.user_irq = true;
+                                        current->rseq.event.user_irq = true;
                                 }
                             }
                             return ret;
@@ -768,20 +770,19 @@ void el0t_64_sync_handler(struct pt_regs *regs) {
 
 ```c
 /* sync exception using handler stack */
-void el1h_64_sync_handler(struct pt_regs *regs) {
+asmlinkage void noinstr el1h_64_sync_handler(struct pt_regs *regs)
+{
     unsigned long esr = read_sysreg(esr_el1);
 
     switch (ESR_ELx_EC(esr)) {
     case ESR_ELx_EC_DABT_CUR:
     case ESR_ELx_EC_IABT_CUR:
-        el1_abort(regs, esr) {
-
-        }
+        el1_abort(regs, esr);
         break;
+    /* We don't handle ESR_ELx_EC_SP_ALIGN, since we will have hit a
+     * recursive exception when trying to push the initial pt_regs. */
     case ESR_ELx_EC_PC_ALIGN:
-        el1_pc(regs, esr) {
-
-        }
+        el1_pc(regs, esr);
         break;
     case ESR_ELx_EC_SYS64:
     case ESR_ELx_EC_UNKNOWN:
@@ -790,11 +791,23 @@ void el1h_64_sync_handler(struct pt_regs *regs) {
     case ESR_ELx_EC_BTI:
         el1_bti(regs, esr);
         break;
+    case ESR_ELx_EC_GCS:
+        el1_gcs(regs, esr);
+        break;
+    case ESR_ELx_EC_MOPS:
+        el1_mops(regs, esr);
+        break;
     case ESR_ELx_EC_BREAKPT_CUR:
+        el1_breakpt(regs, esr);
+        break;
     case ESR_ELx_EC_SOFTSTP_CUR:
+        el1_softstp(regs, esr);
+        break;
     case ESR_ELx_EC_WATCHPT_CUR:
+        el1_watchpt(regs, esr);
+        break;
     case ESR_ELx_EC_BRK64:
-        el1_dbg(regs, esr);
+        el1_brk64(regs, esr);
         break;
     case ESR_ELx_EC_FPAC:
         el1_fpac(regs, esr);
@@ -943,7 +956,9 @@ void __flush_smp_call_function_queue(bool warn_cpu_offline)
             csd_do_func(func, info, csd) {
                 func(info);
             }
-            csd_unlock(csd);
+            csd_unlock(csd) {
+                smp_store_release(&csd->node.u_flags, 0);
+            }
             csd_lock_record(NULL);
         } else {
             prev = &csd->node.llist;
@@ -975,6 +990,7 @@ void __flush_smp_call_function_queue(bool warn_cpu_offline)
                 csd_lock_record(NULL);
             } else if (type == CSD_TYPE_IRQ_WORK) {
                 irq_work_single(csd);
+                    --->
             }
 
         } else {
@@ -1005,11 +1021,24 @@ void sched_ttwu_pending(void *arg)
     llist_for_each_entry_safe(p, t, llist, wake_entry.llist) {
         if (WARN_ON_ONCE(p->on_cpu))
             smp_cond_load_acquire(&p->on_cpu, !VAL);
+            #define smp_cond_load_acquire(ptr, cond_expr)   \
+            ({                                              \
+                typeof(ptr) __PTR = (ptr);                  \
+                __unqual_scalar_typeof(*ptr) VAL;           \
+                for (;;) {                                  \
+                    VAL = smp_load_acquire(__PTR);          \
+                    if (cond_expr)                          \
+                        break;                              \
+                    __cmpwait_relaxed(__PTR, VAL);          \
+                }                                           \
+                (typeof(*ptr))VAL;                          \
+            })
 
         if (WARN_ON_ONCE(task_cpu(p) != cpu_of(rq)))
             set_task_cpu(p, cpu_of(rq));
 
         ttwu_do_activate(rq, p, p->sched_remote_wakeup ? WF_MIGRATED : 0, &rf);
+            --->
     }
 
     WRITE_ONCE(rq->ttwu_pending, 0);

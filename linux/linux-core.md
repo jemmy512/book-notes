@@ -6332,15 +6332,18 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
      * barriers. */
     if (val & _Q_LOCKED_MASK) {
         smp_cond_load_acquire(&lock->locked, !VAL) {
-            typeof(ptr) __PTR = (ptr);
-            __unqual_scalar_typeof(*ptr) VAL;
-            for (;;) {
-                VAL = smp_load_acquire(__PTR);
-                if (cond_expr)
-                    break;
-                __cmpwait_relaxed(__PTR, VAL);
-            }
-            (typeof(*ptr))VAL;
+            #define smp_cond_load_acquire(ptr, cond_expr)   \
+            ({                                              \
+                typeof(ptr) __PTR = (ptr);                  \
+                __unqual_scalar_typeof(*ptr) VAL;           \
+                for (;;) {                                  \
+                    VAL = smp_load_acquire(__PTR);          \
+                    if (cond_expr)                          \
+                        break;                              \
+                    __cmpwait_relaxed(__PTR, VAL);          \
+                }                                           \
+                (typeof(*ptr))VAL;                          \
+            })
         }
     }
 
@@ -6443,16 +6446,17 @@ pv_queue:
         pv_wait_node(node, prev);
         arch_mcs_spin_lock_contended(&node->locked) {
             smp_cond_load_acquire(l, VAL);
-            ({                                    \
-                typeof(ptr) __PTR = (ptr);                    \
-                __unqual_scalar_typeof(*ptr) VAL;                \
-                for (;;) {                            \
-                    VAL = smp_load_acquire(__PTR);                \
-                    if (cond_expr)                        \
-                        break;                        \
-                    __cmpwait_relaxed(__PTR, VAL);                \
-                }                                \
-                (typeof(*ptr))VAL;                        \
+            #define smp_cond_load_acquire(ptr, cond_expr)   \
+            ({                                              \
+                typeof(ptr) __PTR = (ptr);                  \
+                __unqual_scalar_typeof(*ptr) VAL;           \
+                for (;;) {                                  \
+                    VAL = smp_load_acquire(__PTR);          \
+                    if (cond_expr)                          \
+                        break;                              \
+                    __cmpwait_relaxed(__PTR, VAL);          \
+                }                                           \
+                (typeof(*ptr))VAL;                          \
             })
         }
 
