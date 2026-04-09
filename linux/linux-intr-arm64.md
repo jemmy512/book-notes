@@ -1,20 +1,3 @@
-* [vector](#vectors)
-* [el0t_64_irq_handler](#el0t_64_irq_handler)
-* [el1h_64_irq_handler](#el1h_64_irq_handler)
-* [el0t_64_sync_handler](#el0t_64_sync_handler)
-* [el1h_64_sync_handler](#el1h_64_sync_handler)
-* [ipi_handler](#ipi_handler)
-* [gic_v3](#gic_v3)
-    * [gic_of_init](#gic_of_init)
-        * [gic_smp_init](#gic_smp_init)
-    * [gic_handle_irq](#gic_handle_irq)
-    * [irq_domain](#irq_domain)
-    * [generic_handle_domain_irq](#generic_handle_domain_irq)
-    * [irq_resolve_mapping](#irq_resolve_mapping)
-    * [irq_create_mapping](#irq_create_mapping)
-
----
-
 ![](../images/kernel/intr-arm64.svg)
 
 ---
@@ -818,6 +801,65 @@ asmlinkage void noinstr el1h_64_sync_handler(struct pt_regs *regs)
 }
 ```
 
+## el1_brk64
+
+```c
+static void noinstr el1_brk64(struct pt_regs *regs, unsigned long esr)
+{
+    irqentry_state_t state;
+
+    state = arm64_enter_el1_dbg(regs);
+    debug_exception_enter(regs);
+    do_el1_brk64(esr, regs) {
+        if (call_el1_break_hook(regs, esr) == DBG_HOOK_HANDLED)
+        return;
+
+        die("Oops - BRK", regs, esr);
+    }
+    debug_exception_exit(regs);
+    arm64_exit_el1_dbg(regs, state);
+}
+
+int call_el1_break_hook(struct pt_regs *regs, unsigned long esr)
+{
+    if (esr_brk_comment(esr) == BUG_BRK_IMM)
+        return bug_brk_handler(regs, esr);
+
+    if (IS_ENABLED(CONFIG_CFI) && esr_is_cfi_brk(esr))
+        return cfi_brk_handler(regs, esr);
+
+    if (esr_brk_comment(esr) == FAULT_BRK_IMM)
+        return reserved_fault_brk_handler(regs, esr);
+
+    if (IS_ENABLED(CONFIG_KASAN_SW_TAGS) &&
+        (esr_brk_comment(esr) & ~KASAN_BRK_MASK) == KASAN_BRK_IMM)
+        return kasan_brk_handler(regs, esr);
+
+    if (IS_ENABLED(CONFIG_UBSAN_TRAP) && esr_is_ubsan_brk(esr))
+        return ubsan_brk_handler(regs, esr);
+
+    if (IS_ENABLED(CONFIG_KGDB)) {
+        if (esr_brk_comment(esr) == KGDB_DYN_DBG_BRK_IMM)
+            return kgdb_brk_handler(regs, esr);
+        if (esr_brk_comment(esr) == KGDB_COMPILED_DBG_BRK_IMM)
+            return kgdb_compiled_brk_handler(regs, esr);
+    }
+
+    if (IS_ENABLED(CONFIG_KPROBES)) {
+        if (esr_brk_comment(esr) == KPROBES_BRK_IMM)
+            return kprobe_brk_handler(regs, esr);
+        if (esr_brk_comment(esr) == KPROBES_BRK_SS_IMM)
+            return kprobe_ss_brk_handler(regs, esr);
+    }
+
+    if (IS_ENABLED(CONFIG_KRETPROBES) &&
+        esr_brk_comment(esr) == KRETPROBES_BRK_IMM)
+        return kretprobe_brk_handler(regs, esr);
+
+    return DBG_HOOK_ERROR;
+}
+```
+
 # ipi_handler
 
 ```c
@@ -882,6 +924,107 @@ irqreturn_t ipi_handler(int irq, void *data) {
 
 ## IPI_CALL_FUNC
 
+### smp_call_function_single
+
+```c
+int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
+                 int wait)
+{
+    call_single_data_t *csd;
+    call_single_data_t csd_stack = {
+        .node = { .u_flags = CSD_FLAG_LOCK | CSD_TYPE_SYNC, },
+    };
+    int this_cpu;
+    int err;
+
+    /* Prevent preemption and reschedule on another CPU, as well as CPU
+     * removal. This prevents stopper from running on this CPU, thus
+     * providing mutual exclusion of the below cpu_online() check and
+     * IPI sending ensuring IPI are not missed by CPU going offline. */
+    this_cpu = get_cpu();
+
+    /* Can deadlock when called with interrupts disabled.
+     * We allow cpu's that are not yet online though, as no one else can
+     * send smp call function interrupt to this cpu and as such deadlocks
+     * can't happen. */
+    WARN_ON_ONCE(cpu_online(this_cpu) && irqs_disabled() && !oops_in_progress);
+
+    /* When @wait we can deadlock when we interrupt between llist_add() and
+     * arch_send_call_function_ipi*(); when !@wait we can deadlock due to
+     * csd_lock() on because the interrupt context uses the same csd
+     * storage. */
+    WARN_ON_ONCE(!in_task());
+
+    csd = &csd_stack;
+    if (!wait) {
+        csd = this_cpu_ptr(&csd_data);
+        csd_lock(csd) {
+            csd_lock_wait(csd) {
+                smp_cond_load_acquire(&csd->node.u_flags, !(VAL & CSD_FLAG_LOCK));
+            }
+            csd->node.u_flags |= CSD_FLAG_LOCK;
+
+            /* prevent CPU from reordering the above assignment
+            * to ->flags with any subsequent assignments to other
+            * fields of the specified call_single_data_t structure: */
+            smp_wmb();
+        }
+    }
+
+    csd->func = func;
+    csd->info = info;
+#ifdef CONFIG_CSD_LOCK_WAIT_DEBUG
+    csd->node.src = smp_processor_id();
+    csd->node.dst = cpu;
+#endif
+
+    err = generic_exec_single(cpu, csd) {
+        if (cpu == smp_processor_id()) {
+            smp_call_func_t func = csd->func;
+            void *info = csd->info;
+            unsigned long flags;
+
+            /*
+            * We can unlock early even for the synchronous on-stack case,
+            * since we're doing this from the same CPU..
+            */
+            csd_lock_record(csd);
+            csd_unlock(csd);
+            local_irq_save(flags);
+            csd_do_func(func, info, NULL);
+            csd_lock_record(NULL);
+            local_irq_restore(flags);
+            return 0;
+        }
+
+        if ((unsigned)cpu >= nr_cpu_ids || !cpu_online(cpu)) {
+            csd_unlock(csd);
+            return -ENXIO;
+        }
+
+        __smp_call_single_queue(cpu, &csd->node.llist) {
+            if (llist_add(node, &per_cpu(call_single_queue, cpu))) {
+                send_call_function_single_ipi(cpu) {
+                    smp_cross_call(cpumask_of(cpu), IPI_CALL_FUNC);
+                }
+            }
+        }
+    }
+
+    if (wait) {
+        csd_lock_wait(csd) {
+            smp_cond_load_acquire(&csd->node.u_flags, !(VAL & CSD_FLAG_LOCK));
+        }
+    }
+
+    put_cpu();
+
+    return err;
+}
+```
+
+### generic_smp_call_function_interrupt
+
 ```c
 #define generic_smp_call_function_interrupt \
     generic_smp_call_function_single_interrupt
@@ -907,7 +1050,18 @@ void __flush_smp_call_function_queue(bool warn_cpu_offline)
 
     head = this_cpu_ptr(&call_single_queue);
     entry = llist_del_all(head);
-    entry = llist_reverse_order(entry);
+    entry = llist_reverse_order(entry) {
+        struct llist_node *new_head = NULL;
+
+        while (head) {
+            struct llist_node *tmp = head;
+            head = head->next;
+            tmp->next = new_head;
+            new_head = tmp;
+        }
+
+        return new_head;
+    }
 
     /* There shouldn't be any pending callbacks on an offline CPU. */
     if (unlikely(warn_cpu_offline && !cpu_online(smp_processor_id()) &&
@@ -1047,6 +1201,97 @@ void sched_ttwu_pending(void *arg)
 ```
 
 ## IPI_IRQ_WORK
+
+### irq_work_queue_on
+
+```c
+bool irq_work_queue_on(struct irq_work *work, int cpu)
+{
+    /* All work should have been flushed before going offline */
+    WARN_ON_ONCE(cpu_is_offline(cpu));
+
+    /* Only queue if not already pending */
+    ret = irq_work_claim(work) {
+        int oflags;
+
+        oflags = atomic_fetch_or(IRQ_WORK_CLAIMED | CSD_TYPE_IRQ_WORK, &work->node.a_flags);
+        /* If the work is already pending, no need to raise the IPI.
+        * The pairing smp_mb() in irq_work_single() makes sure
+        * everything we did before is visible. */
+        if (oflags & IRQ_WORK_PENDING)
+            return false;
+        return true;
+    }
+    if (!ret)
+        return false;
+
+    kasan_record_aux_stack(work);
+
+    preempt_disable();
+    if (cpu != smp_processor_id()) {
+        /* Arch remote IPI send/receive backend aren't NMI safe */
+        WARN_ON_ONCE(in_nmi());
+
+        /* On PREEMPT_RT the items which are not marked as
+         * IRQ_WORK_HARD_IRQ are added to the lazy list and a HARD work
+         * item is used on the remote CPU to wake the thread. */
+        if (IS_ENABLED(CONFIG_PREEMPT_RT) && !(atomic_read(&work->node.a_flags) & IRQ_WORK_HARD_IRQ)) {
+
+            if (!llist_add(&work->node.llist, &per_cpu(lazy_list, cpu)))
+                goto out;
+
+            work = &per_cpu(irq_work_wakeup, cpu);
+            if (!irq_work_claim(work))
+                goto out;
+        }
+
+        __smp_call_single_queue(cpu, &work->node.llist) {
+            if (llist_add(node, &per_cpu(call_single_queue, cpu))) {
+                send_call_function_single_ipi(cpu) {
+                    arch_send_call_function_single_ipi(cpu) {
+                        smp_cross_call(cpumask_of(cpu), IPI_CALL_FUNC);
+                    }
+                }
+            }
+        }
+    } else {
+        __irq_work_queue_local(work) {
+            struct llist_head *list;
+            bool rt_lazy_work = false;
+            bool lazy_work = false;
+            int work_flags;
+
+            work_flags = atomic_read(&work->node.a_flags);
+            if (work_flags & IRQ_WORK_LAZY)
+                lazy_work = true;
+            else if (IS_ENABLED(CONFIG_PREEMPT_RT) && !(work_flags & IRQ_WORK_HARD_IRQ))
+                rt_lazy_work = true;
+
+            if (lazy_work || rt_lazy_work)
+                list = this_cpu_ptr(&lazy_list);
+            else
+                list = this_cpu_ptr(&raised_list);
+
+            if (!llist_add(&work->node.llist, list))
+                return;
+
+            /* If the work is "lazy", handle it from next tick if any */
+            if (!lazy_work || tick_nohz_tick_stopped()) {
+                irq_work_raise(work) {
+                    smp_cross_call(cpumask_of(smp_processor_id()), IPI_IRQ_WORK);
+                }
+            }
+        }
+    }
+
+out:
+    preempt_enable();
+
+    return true;
+}
+```
+
+### irq_work_run
 
 ```c
 void irq_work_run(void)
