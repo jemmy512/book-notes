@@ -7561,54 +7561,110 @@ __rt_mutex_lock() {
                     }
 
                     rt_mutex_setprio(p, pi_task) {
+                        int prio, oldprio, queue_flag =
+                            DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
+                        const struct sched_class *prev_class, *next_class;
+                        struct rq_flags rf;
+                        struct rq *rq;
+
+                        /* XXX used to be waiter->prio, not waiter->task->prio */
                         prio = __rt_effective_prio(pi_task, p->normal_prio);
+
+                        /*
+                        * If nothing changed; bail early.
+                        */
                         if (p->pi_top_task == pi_task && prio == p->prio && !dl_prio(prio))
                             return;
 
                         rq = __task_rq_lock(p, &rf);
                         update_rq_clock(rq);
+                        /*
+                        * Set under pi_lock && rq->lock, such that the value can be used under
+                        * either lock.
+                        *
+                        * Note that there is loads of tricky to make this pointer cache work
+                        * right. rt_mutex_slowunlock()+rt_mutex_postunlock() work together to
+                        * ensure a task is de-boosted (pi_task is set to NULL) before the
+                        * task is allowed to run again (and can exit). This ensures the pointer
+                        * points to a blocked task -- which guarantees the task is present.
+                        */
                         p->pi_top_task = pi_task;
 
+                        /*
+                        * For FIFO/RR we only need to set prio, if that matches we're done.
+                        */
                         if (prio == p->prio && !dl_prio(prio))
                             goto out_unlock;
 
+                        /*
+                        * Idle task boosting is a no-no in general. There is one
+                        * exception, when PREEMPT_RT and NOHZ is active:
+                        *
+                        * The idle task calls get_next_timer_interrupt() and holds
+                        * the timer wheel base->lock on the CPU and another CPU wants
+                        * to access the timer (probably to cancel it). We can safely
+                        * ignore the boosting request, as the idle CPU runs this code
+                        * with interrupts disabled and will complete the lock
+                        * protected section without being interrupted. So there is no
+                        * real need to boost.
+                        */
+                        if (unlikely(p == rq->idle)) {
+                            WARN_ON(p != rq->curr);
+                            WARN_ON(p->pi_blocked_on);
+                            goto out_unlock;
+                        }
+
+                        trace_sched_pi_setprio(p, pi_task);
                         oldprio = p->prio;
-                        if (oldprio == prio)
+
+                        if (oldprio == prio && !dl_prio(prio))
                             queue_flag &= ~DEQUEUE_MOVE;
 
                         prev_class = p->sched_class;
-                        queued = task_on_rq_queued(p);
-                        running = task_current(rq, p);
-                        if (queued)
-                            dequeue_task(rq, p, queue_flag);
-                        if (running)
-                            put_prev_task(rq, p);
+                        next_class = __setscheduler_class(p->policy, prio);
 
-                        __setscheduler_prio(p, prio) {
-                            p->sched_class = ;
+                        if (prev_class != next_class)
+                            queue_flag |= DEQUEUE_CLASS;
+
+                        scoped_guard (sched_change, p, queue_flag) {
+                            /*
+                            * Boosting condition are:
+                            * 1. -rt task is running and holds mutex A
+                            *      --> -dl task blocks on mutex A
+                            *
+                            * 2. -dl task is running and holds mutex A
+                            *      --> -dl task blocks on mutex A and could preempt the
+                            *          running task
+                            */
+                            if (dl_prio(prio)) {
+                                if (!dl_prio(p->normal_prio) ||
+                                    (pi_task && dl_prio(pi_task->prio) &&
+                                    dl_entity_preempt(&pi_task->dl, &p->dl))) {
+                                    p->dl.pi_se = pi_task->dl.pi_se;
+                                    scope->flags |= ENQUEUE_REPLENISH;
+                                } else {
+                                    p->dl.pi_se = &p->dl;
+                                }
+                            } else if (rt_prio(prio)) {
+                                if (dl_prio(oldprio))
+                                    p->dl.pi_se = &p->dl;
+                                if (oldprio < prio)
+                                    scope->flags |= ENQUEUE_HEAD;
+                            } else {
+                                if (dl_prio(oldprio))
+                                    p->dl.pi_se = &p->dl;
+                                if (rt_prio(oldprio))
+                                    p->rt.timeout = 0;
+                            }
+
+                            p->sched_class = next_class;
                             p->prio = prio;
                         }
-
-                        if (queued)
-                            enqueue_task(rq, p, queue_flag);
-                        if (running) {
-                            set_next_task(rq, p) {
-                                next->sched_class->set_next_task(rq, next, false);
-                            }
-                        }
-
-                        check_class_changed(rq, p, prev_class, oldprio) {
-                            if (prev_class != p->sched_class) {
-                                if (prev_class->switched_from)
-                                    prev_class->switched_from(rq, p);
-
-                                p->sched_class->switched_to(rq, p);
-                            } else if (oldprio != p->prio || dl_task(p))
-                                p->sched_class->prio_changed(rq, p, oldprio);
-                        }
-
                     out_unlock:
-                        __balance_callbacks(rq);
+                        /* Caller holds task_struct::pi_lock, IRQs are still disabled */
+
+                        __balance_callbacks(rq, &rf);
+                        __task_rq_unlock(rq, p, &rf);
                     }
                 }
                 if (owner->pi_blocked_on) {

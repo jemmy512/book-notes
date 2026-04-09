@@ -5700,7 +5700,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                     int *currpri = &cp->cpu_to_pri[cpu];
                                     int oldpri = *currpri;
 
-                                    /* 1. Set which CPU runs at the specified priority */
+                                    /* 1. map [prio] = { cpu0, cpu1 }*/
                                     newpri = convert_prio(newpri);
                                     if (newpri == oldpri) {
                                         return;
@@ -5717,7 +5717,7 @@ enqueue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
                                         cpumask_clear_cpu(cpu, vec->mask);
                                     }
 
-                                    /* 2. Set the priority level the CPU runs at */
+                                    /* 2. map [cpu] = { prio } */
                                     *currpri = newpri;
                                 }
                             }
@@ -6215,10 +6215,12 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
 
     rcu_read_lock();
     curr = READ_ONCE(rq->curr); /* unlocked access */
+    donor = READ_ONCE(rq->donor);
 
     /* test if curr must run on this core */
-    test = curr && unlikely(rt_task(curr))
-        && (curr->nr_cpus_allowed < 2 || curr->prio <= p->prio);
+    test = curr &&
+	       unlikely(rt_task(donor)) &&
+	       (curr->nr_cpus_allowed < 2 || donor->prio <= p->prio);
 
     if (test || !rt_task_fits_capacity(p, cpu)) {
         /* 1. find lowest cpus */
@@ -6235,6 +6237,25 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
 
 out_unlock:
     return cpu;
+}
+
+static inline bool rt_task_fits_capacity(struct task_struct *p, int cpu)
+{
+	unsigned int min_cap;
+	unsigned int max_cap;
+	unsigned int cpu_cap;
+
+	/* Only heterogeneous systems can benefit from this check */
+	if (!sched_asym_cpucap_active())
+		return true;
+
+	min_cap = uclamp_eff_value(p, UCLAMP_MIN);
+	max_cap = uclamp_eff_value(p, UCLAMP_MAX);
+
+	cpu_cap = arch_scale_cpu_capacity(cpu);
+
+	return cpu_cap >= min(min_cap, max_cap);
+}
 ```
 
 ## wakeup_preempt_rt
@@ -6242,10 +6263,18 @@ out_unlock:
 ```c
 void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
 {
-    if (p->prio < rq->curr->prio) {
-        resched_curr(rq);
-        return;
-    }
+    struct task_struct *donor = rq->donor;
+
+	/*
+	 * XXX If we're preempted by DL, queue a push?
+	 */
+	if (p->sched_class != &rt_sched_class)
+		return;
+
+	if (p->prio < donor->prio) {
+		resched_curr(rq);
+		return;
+	}
 
     /* If:
      * - the newly woken task prio == current task prio
@@ -6359,6 +6388,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
         if (unlikely(delta_exec <= 0))
             return;
 
+    #ifdef CONFIG_RT_GROUP_SCHED
         if (!rt_bandwidth_enabled())
             return;
 
@@ -6385,7 +6415,9 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
                 }
             }
         }
+    #endif /* CONFIG_RT_GROUP_SCHED */
     }
+
     update_rt_rq_load_avg(rq_clock_pelt(rq), rq, 1);
 
     watchdog(rq, p);
@@ -6411,7 +6443,13 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 ## yield_task_rt
 
 ```c
-requeue_task_rt(rq, rq->curr, 0) {
+static void yield_task_rt(struct rq *rq)
+{
+	requeue_task_rt(rq, rq->donor, 0);
+}
+
+static void requeue_task_rt(struct rq *rq, struct task_struct *p, int head)
+{
     struct sched_rt_entity *rt_se = &p->rt;
     struct rt_rq *rt_rq;
 
@@ -6439,7 +6477,7 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
     if (!task_on_rq_queued(p))
         return;
 
-    if (task_current(rq, p)) {
+    if (task_current_donor(rq, p)) {
         if (oldprio < p->prio) {
             rt_queue_pull_task(rq) {
                 pull_rt_task(rq);
@@ -6462,25 +6500,6 @@ prio_changed_rt(struct rq *rq, struct task_struct *p, int oldprio) {
 }
 ```
 
-## check_class_changed_rt
-
-```c
-rt_mutex_setprio()
-    check_class_changed()
-
-__sched_setscheduler()
-    check_class_changed() {
-        if (prev_class != p->sched_class) {
-            if (prev_class->switched_from) {
-                prev_class->switched_from(rq, p);
-            }
-            p->sched_class->switched_to(rq, p);
-        } else if (oldprio != p->prio || dl_task(p)) {
-            p->sched_class->prio_changed(rq, p, oldprio);
-        }
-    }
-```
-
 ### switched_from_rt
 
 ```c
@@ -6493,7 +6512,9 @@ void switched_from_rt(struct rq *rq, struct task_struct *p)
     if (!task_on_rq_queued(p) || rq->rt.rt_nr_running)
         return;
 
-    rt_queue_pull_task(rq);
+    rt_queue_pull_task(rq) {
+        queue_balance_callback(rq, &per_cpu(rt_pull_head, rq->cpu), pull_rt_task);
+    }
 }
 ```
 
@@ -6529,8 +6550,8 @@ void switched_to_rt(struct rq *rq, struct task_struct *p)
 ![](../images/kernel/proc-sched-balance.svg)
 
 ```c
-put_prev_task_balance(struct rq *rq, struct task_struct *prev,
-    struct rq_flags *rf)
+static void prev_balance(struct rq *rq, struct task_struct *prev,
+			 struct rq_flags *rf)
 {
     const struct sched_class *class;
     for_class_range(class, prev->sched_class, &idle_sched_class) {
@@ -6538,8 +6559,6 @@ put_prev_task_balance(struct rq *rq, struct task_struct *prev,
             break;
         }
     }
-
-    put_prev_task(rq, prev);
 }
 
 balance_rt(struct rq *rq, struct task_struct *p, struct rq_flags *rf)
@@ -6657,7 +6676,11 @@ skip:
     if (resched)
         resched_curr(this_rq);
 }
+```
 
+#### tell_cpu_to_push
+
+```c
 void tell_cpu_to_push(struct rq *rq)
 {
     int cpu = -1;
@@ -6733,6 +6756,43 @@ void tell_cpu_to_push(struct rq *rq)
         sched_get_rd(rq->rd);
         irq_work_queue_on(&rq->rd->rto_push_work, cpu);
     }
+}
+
+/* Called from hardirq context */
+void rto_push_irq_work_func(struct irq_work *work)
+{
+	struct root_domain *rd =
+		container_of(work, struct root_domain, rto_push_work);
+	struct rq *rq;
+	int cpu;
+
+	rq = this_rq();
+
+	/*
+	 * We do not need to grab the lock to check for has_pushable_tasks.
+	 * When it gets updated, a check is made if a push is possible.
+	 */
+	if (has_pushable_tasks(rq)) {
+		raw_spin_rq_lock(rq);
+		while (push_rt_task(rq, true))
+			;
+		raw_spin_rq_unlock(rq);
+	}
+
+	raw_spin_lock(&rd->rto_lock);
+
+	/* Pass the IPI to the next rt overloaded queue */
+	cpu = rto_next_cpu(rd);
+
+	raw_spin_unlock(&rd->rto_lock);
+
+	if (cpu < 0) {
+		sched_put_rd(rd);
+		return;
+	}
+
+	/* Try the next RT overloaded CPU */
+	irq_work_queue_on(&rd->rto_push_work, cpu);
 }
 ```
 
@@ -9815,20 +9875,6 @@ prio_changed_fair(struct rq *rq, struct task_struct *p, int oldprio)
 
 ```
 
-## check_class_changed_fair
-
-```c
-check_class_changed(rq, p, prev_class, oldprio) {
-    if (prev_class != p->sched_class) {
-        if (prev_class->switched_from)
-            prev_class->switched_from(rq, p);
-
-        p->sched_class->switched_to(rq, p);
-    } else if (oldprio != p->prio || dl_task(p))
-        p->sched_class->prio_changed(rq, p, oldprio);
-}
-```
-
 ### switched_from_fair
 
 ```c
@@ -12370,31 +12416,37 @@ get_cpu_for_node(struct device_node *node)
         }
 
         /* sched class change */
-        check_class_changed(rq, p, prev_class, oldprio) {
-            if (prev_class != p->sched_class) {
-                if (prev_class->switched_from) {
-                    prev_class->switched_from(rq, p) {
-                        switched_from_fair() {
-                            detach_task_cfs_rq(p) {
-                                detach_entity_cfs_rq(se) {
-                                    if (!se->avg.last_update_time)
-                                        return;
-                                    detach_entity_load_avg(cfs_rq, se) {
-                                        dequeue_load_avg(cfs_rq, se) {
-                                            sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
-                                            sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
+        truct sched_change_ctx *sched_change_begin() {
+            if ((flags & DEQUEUE_CLASS) && p->sched_class->switched_from) {
+                p->sched_class->switched_from(rq, p) {
+                    switched_from_fair() {
+                        detach_task_cfs_rq(p) {
+                            detach_entity_cfs_rq(se) {
+                                if (!se->avg.last_update_time)
+                                    return;
+                                detach_entity_load_avg(cfs_rq, se) {
+                                    dequeue_load_avg(cfs_rq, se) {
+                                        sub_positive(&cfs_rq->avg.load_avg, se->avg.load_avg);
+                                        sub_positive(&cfs_rq->avg.load_sum, se_weight(se) * se->avg.load_sum);
 
-                                            sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
-                                            sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
+                                        sub_positive(&cfs_rq->avg.util_avg, se->avg.util_avg);
+                                        sub_positive(&cfs_rq->avg.util_sum, se->avg.util_sum);
 
-                                            sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
-                                            sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
+                                        sub_positive(&cfs_rq->avg.runnable_avg, se->avg.runnable_avg);
+                                        sub_positive(&cfs_rq->avg.runnable_sum, se->avg.runnable_sum);
                                     }
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+
+        void sched_change_end(struct sched_change_ctx *ctx) {
+            if (ctx->flags & ENQUEUE_CLASS) {
+                if (p->sched_class->switched_to)
+                    p->sched_class->switched_to(rq, p);
             }
         }
         ```
