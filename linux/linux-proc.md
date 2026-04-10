@@ -2825,7 +2825,6 @@ struct sched_dl_entity {
      * for the replenishment timer to activate it. */
     unsigned int    dl_defer_running    : 1; /* if the deferrable server is actually
      * running, skipping the defer phase. */
-    unsigned int    dl_server_idle      : 1;
 
     /* Bandwidth enforcement timer. Each -deadline task has its
      * own bandwidth to be enforced, thus we need one timer per task. */
@@ -3442,6 +3441,7 @@ void replenish_dl_entity(struct sched_dl_entity *dl_se)
      * In both cases, set a new period. */
     if (dl_se->dl_deadline == 0 ||
         (dl_se->dl_defer_armed && dl_entity_overflow(dl_se, rq_clock(rq)))) {
+
         dl_se->deadline = rq_clock(rq) + pi_of(dl_se)->dl_deadline;
         dl_se->runtime = pi_of(dl_se)->dl_runtime;
     }
@@ -3572,61 +3572,7 @@ bool dequeue_task_dl(struct rq *rq, struct task_struct *p, int flags)
         * (the task moves from "active contending" to "active non contending"
         * or "inactive") */
         if (flags & DEQUEUE_SLEEP) {
-            task_non_contending(dl_se) {
-                struct hrtimer *timer = &dl_se->inactive_timer;
-                struct rq *rq = rq_of_dl_se(dl_se);
-                struct dl_rq *dl_rq = &rq->dl;
-                s64 zerolag_time;
-
-                /* If this is a non-deadline task that has been boosted,
-                * do nothing */
-                if (dl_se->dl_runtime == 0)
-                    return;
-
-                if (dl_entity_is_special(dl_se))
-                    return;
-
-                WARN_ON(dl_se->dl_non_contending);
-
-                zerolag_time = dl_se->deadline -
-                    div64_long((dl_se->runtime * dl_se->dl_period), dl_se->dl_runtime);
-
-                /* Using relative times instead of the absolute "0-lag time"
-                * allows to simplify the code */
-                zerolag_time -= rq_clock(rq);
-
-                /* If the "0-lag time" already passed, decrease the active
-                * utilization now, instead of starting a timer */
-                if ((zerolag_time < 0) || hrtimer_active(&dl_se->inactive_timer)) {
-                    if (dl_server(dl_se)) {
-                        sub_running_bw(dl_se, dl_rq);
-                    } else {
-                        struct task_struct *p = dl_task_of(dl_se);
-
-                        if (dl_task(p))
-                            sub_running_bw(dl_se, dl_rq);
-
-                        if (!dl_task(p) || READ_ONCE(p->__state) == TASK_DEAD) {
-                            struct dl_bw *dl_b = dl_bw_of(task_cpu(p));
-
-                            if (READ_ONCE(p->__state) == TASK_DEAD)
-                                sub_rq_bw(dl_se, &rq->dl);
-                            raw_spin_lock(&dl_b->lock);
-                            __dl_sub(dl_b, dl_se->dl_bw, dl_bw_cpus(task_cpu(p)));
-                            raw_spin_unlock(&dl_b->lock);
-                            __dl_clear_params(dl_se);
-                        }
-                    }
-
-                    return;
-                }
-
-                dl_se->dl_non_contending = 1;
-                if (!dl_server(dl_se))
-                    get_task_struct(dl_task_of(dl_se));
-
-                hrtimer_start(timer, ns_to_ktime(zerolag_time), HRTIMER_MODE_REL_HARD);
-            }
+            task_non_contending(dl_se);
         }
     }
 
@@ -3757,32 +3703,7 @@ struct task_struct *pick_task_dl(struct rq *rq)
                 }
             }
             if (!p) {
-                ret = dl_server_stopped(dl_se) {
-                    if (!dl_se->dl_server_active)
-                        return true;
-
-                    if (dl_se->dl_server_idle) {
-                        dl_server_stop(dl_se) {
-                            if (!dl_server(dl_se) || !dl_server_active(dl_se))
-                                return;
-
-                            dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
-                            hrtimer_try_to_cancel(&dl_se->dl_timer);
-                            dl_se->dl_defer_armed = 0;
-                            dl_se->dl_throttled = 0;
-                            dl_se->dl_server_active = 0;
-                        }
-                        return true;
-                    }
-
-                    dl_se->dl_server_idle = 1;
-                    return false;
-                }
-
-                if (!ret) {
-                    dl_se->dl_yielded = 1;
-                    update_curr_dl_se(rq, dl_se, 0);
-                }
+                dl_server_stop(dl_se);
                 goto again;
             }
             rq->dl_server = dl_se;
@@ -4770,7 +4691,8 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 ## dl_server
 
 ```c
-/* dl_server && dl_defer:
+/*
+ * dl_server && dl_defer:
  *
  *                                        6
  *                            +--------------------+
@@ -4971,16 +4893,23 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
  *    task. Notably it will not 'defer' again.
  *
  *  - When idle it will push the actication forward once, and then wait
- *    for the timer to hit or a non-idle update to restart things. */
+ *    for the timer to hit or a non-idle update to restart things.
+ */
 ```
 
 ```c
 /* called from update_curr_common(), propagates runtime to the server. */
 void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
 {
-    /* 0 runtime = fair server disabled */
-    if (dl_se->dl_runtime)
-        update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+	/* 0 runtime = fair server disabled */
+	if (dl_se->dl_server_active && dl_se->dl_runtime)
+		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+}
+
+void dl_server_update_idle(struct sched_dl_entity *dl_se, s64 delta_exec)
+{
+	if (dl_se->dl_server_active && dl_se->dl_runtime && dl_se->dl_defer)
+		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
 }
 
 void dl_server_start(struct sched_dl_entity *dl_se)
@@ -4999,14 +4928,15 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 
 void dl_server_stop(struct sched_dl_entity *dl_se)
 {
-    if (!dl_server(dl_se) || !dl_server_active(dl_se))
-        return;
+	if (!dl_server(dl_se) || !dl_server_active(dl_se))
+		return;
 
-    dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
-    hrtimer_try_to_cancel(&dl_se->dl_timer);
-    dl_se->dl_defer_armed = 0;
-    dl_se->dl_throttled = 0;
-    dl_se->dl_server_active = 0;
+	dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
+	hrtimer_try_to_cancel(&dl_se->dl_timer);
+	dl_se->dl_defer_armed = 0;
+	dl_se->dl_throttled = 0;
+	dl_se->dl_defer_idle = 0;
+	dl_se->dl_server_active = 0;
 }
 
 void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
@@ -5593,7 +5523,7 @@ DEFINE_SCHED_CLASS(rt) = {
     .set_next_task          = set_next_task_rt,
 
     .balance                = balance_rt,
-    .select_task_rq        = select_task_rq_rt,
+    .select_task_rq         = select_task_rq_rt,
     .set_cpus_allowed       = set_cpus_allowed_common,
     .rq_online              = rq_online_rt,
     .rq_offline             = rq_offline_rt,
@@ -6219,8 +6149,8 @@ select_task_rq_rt(struct task_struct *p, int cpu, int flags)
 
     /* test if curr must run on this core */
     test = curr &&
-	       unlikely(rt_task(donor)) &&
-	       (curr->nr_cpus_allowed < 2 || donor->prio <= p->prio);
+           unlikely(rt_task(donor)) &&
+           (curr->nr_cpus_allowed < 2 || donor->prio <= p->prio);
 
     if (test || !rt_task_fits_capacity(p, cpu)) {
         /* 1. find lowest cpus */
@@ -6241,20 +6171,20 @@ out_unlock:
 
 static inline bool rt_task_fits_capacity(struct task_struct *p, int cpu)
 {
-	unsigned int min_cap;
-	unsigned int max_cap;
-	unsigned int cpu_cap;
+    unsigned int min_cap;
+    unsigned int max_cap;
+    unsigned int cpu_cap;
 
-	/* Only heterogeneous systems can benefit from this check */
-	if (!sched_asym_cpucap_active())
-		return true;
+    /* Only heterogeneous systems can benefit from this check */
+    if (!sched_asym_cpucap_active())
+        return true;
 
-	min_cap = uclamp_eff_value(p, UCLAMP_MIN);
-	max_cap = uclamp_eff_value(p, UCLAMP_MAX);
+    min_cap = uclamp_eff_value(p, UCLAMP_MIN);
+    max_cap = uclamp_eff_value(p, UCLAMP_MAX);
 
-	cpu_cap = arch_scale_cpu_capacity(cpu);
+    cpu_cap = arch_scale_cpu_capacity(cpu);
 
-	return cpu_cap >= min(min_cap, max_cap);
+    return cpu_cap >= min(min_cap, max_cap);
 }
 ```
 
@@ -6265,16 +6195,14 @@ void wakeup_preempt_rt(struct rq *rq, struct task_struct *p, int flags)
 {
     struct task_struct *donor = rq->donor;
 
-	/*
-	 * XXX If we're preempted by DL, queue a push?
-	 */
-	if (p->sched_class != &rt_sched_class)
-		return;
+    /* XXX If we're preempted by DL, queue a push? */
+    if (p->sched_class != &rt_sched_class)
+        return;
 
-	if (p->prio < donor->prio) {
-		resched_curr(rq);
-		return;
-	}
+    if (p->prio < donor->prio) {
+        resched_curr(rq);
+        return;
+    }
 
     /* If:
      * - the newly woken task prio == current task prio
@@ -6445,7 +6373,7 @@ task_tick_rt(struct rq *rq, struct task_struct *p, int queued)
 ```c
 static void yield_task_rt(struct rq *rq)
 {
-	requeue_task_rt(rq, rq->donor, 0);
+    requeue_task_rt(rq, rq->donor, 0);
 }
 
 static void requeue_task_rt(struct rq *rq, struct task_struct *p, int head)
@@ -6551,7 +6479,7 @@ void switched_to_rt(struct rq *rq, struct task_struct *p)
 
 ```c
 static void prev_balance(struct rq *rq, struct task_struct *prev,
-			 struct rq_flags *rf)
+             struct rq_flags *rf)
 {
     const struct sched_class *class;
     for_class_range(class, prev->sched_class, &idle_sched_class) {
@@ -6761,38 +6689,36 @@ void tell_cpu_to_push(struct rq *rq)
 /* Called from hardirq context */
 void rto_push_irq_work_func(struct irq_work *work)
 {
-	struct root_domain *rd =
-		container_of(work, struct root_domain, rto_push_work);
-	struct rq *rq;
-	int cpu;
+    struct root_domain *rd =
+        container_of(work, struct root_domain, rto_push_work);
+    struct rq *rq;
+    int cpu;
 
-	rq = this_rq();
+    rq = this_rq();
 
-	/*
-	 * We do not need to grab the lock to check for has_pushable_tasks.
-	 * When it gets updated, a check is made if a push is possible.
-	 */
-	if (has_pushable_tasks(rq)) {
-		raw_spin_rq_lock(rq);
-		while (push_rt_task(rq, true))
-			;
-		raw_spin_rq_unlock(rq);
-	}
+    /* We do not need to grab the lock to check for has_pushable_tasks.
+     * When it gets updated, a check is made if a push is possible. */
+    if (has_pushable_tasks(rq)) {
+        raw_spin_rq_lock(rq);
+        while (push_rt_task(rq, true))
+            ;
+        raw_spin_rq_unlock(rq);
+    }
 
-	raw_spin_lock(&rd->rto_lock);
+    raw_spin_lock(&rd->rto_lock);
 
-	/* Pass the IPI to the next rt overloaded queue */
-	cpu = rto_next_cpu(rd);
+    /* Pass the IPI to the next rt overloaded queue */
+    cpu = rto_next_cpu(rd);
 
-	raw_spin_unlock(&rd->rto_lock);
+    raw_spin_unlock(&rd->rto_lock);
 
-	if (cpu < 0) {
-		sched_put_rd(rd);
-		return;
-	}
+    if (cpu < 0) {
+        sched_put_rd(rd);
+        return;
+    }
 
-	/* Try the next RT overloaded CPU */
-	irq_work_queue_on(&rd->rto_push_work, cpu);
+    /* Try the next RT overloaded CPU */
+    irq_work_queue_on(&rd->rto_push_work, cpu);
 }
 ```
 
@@ -7461,15 +7387,52 @@ struct cfs_rq {
 
 ```c
 DEFINE_SCHED_CLASS(fair) = {
-    .enqueue_task       = enqueue_task_fair,
-    .dequeue_task       = dequeue_task_fair,
-    .yield_task         = yield_task_fair,
-    .yield_to_task      = yield_to_task_fair,
-    .wakeup_preempt     = wakeup_preempt_fair,
-    .pick_next_task     = __pick_next_task_fair,
-    .put_prev_task      = put_prev_task_fair,
-    .set_next_task      = set_next_task_fair,
-}
+    .enqueue_task           = enqueue_task_fair,
+    .dequeue_task           = dequeue_task_fair,
+    .yield_task             = yield_task_fair,
+    .yield_to_task          = yield_to_task_fair,
+
+    .wakeup_preempt         = wakeup_preempt_fair,
+
+    .pick_task              = pick_task_fair,
+    .pick_next_task         = pick_next_task_fair,
+    .put_prev_task          = put_prev_task_fair,
+    .set_next_task          = set_next_task_fair,
+
+    .select_task_rq         = select_task_rq_fair,
+    .migrate_task_rq        = migrate_task_rq_fair,
+
+    .rq_online              = rq_online_fair,
+    .rq_offline             = rq_offline_fair,
+
+    .task_dead              = task_dead_fair,
+    .set_cpus_allowed       = set_cpus_allowed_fair,
+
+    .task_tick              = task_tick_fair,
+    .task_fork              = task_fork_fair,
+
+    .reweight_task          = reweight_task_fair,
+    .prio_changed           = prio_changed_fair,
+    .switching_from         = switching_from_fair,
+    .switched_from          = switched_from_fair,
+    .switched_to            = switched_to_fair,
+
+    .get_rr_interval        = get_rr_interval_fair,
+
+    .update_curr            = update_curr_fair,
+
+#ifdef CONFIG_FAIR_GROUP_SCHED
+    .task_change_group      = task_change_group_fair,
+#endif
+
+#ifdef CONFIG_SCHED_CORE
+    .task_is_throttled      = task_is_throttled_fair,
+#endif
+
+#ifdef CONFIG_UCLAMP_TASK
+    .uclamp_enabled         = 1,
+#endif
+};
 ```
 
 ## enqueue_task_fair
@@ -8078,16 +8041,7 @@ bool dequeue_entities(struct rq *rq, struct task_struct *p, int flags) {
     sub_nr_running(rq, 1);
 
     if (rq_h_nr_queued && !rq->cfs.h_nr_queued) {
-        dl_server_stop(&rq->fair_server) {
-            if (!dl_server(dl_se) || !dl_server_active(dl_se))
-                return;
-
-            dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
-            hrtimer_try_to_cancel(&dl_se->dl_timer);
-            dl_se->dl_defer_armed = 0;
-            dl_se->dl_throttled = 0;
-            dl_se->dl_server_active = 0;
-        }
+        dl_server_stop(&rq->fair_server);
     }
 
     /* balance early to pull high priority tasks */
@@ -8333,6 +8287,7 @@ put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 ![](../images/kernel/proc-sched-pick_next_task_fair.png)
 
 ```c
+/* pick_next_task() := pick_task() + set_next_task(.first = true) */
 pick_next_task_fair(struct rq *rq, struct task_struct *prev, struct rq_flags *rf) {
     struct sched_entity *se;
     struct task_struct *p;
@@ -19144,7 +19099,7 @@ int __set_cpus_allowed_ptr_locked(struct task_struct *p,
 
     do_set_cpus_allowed(p, ctx) {
         scoped_guard (sched_change, p, DEQUEUE_SAVE)
-		    p->sched_class->set_cpus_allowed(p, ctx);
+            p->sched_class->set_cpus_allowed(p, ctx);
     }
 
     return affine_move_task(rq, p, rf, dest_cpu, ctx->flags);
@@ -19160,171 +19115,159 @@ out:
 
 ```c
 int affine_move_task(struct rq *rq, struct task_struct *p, struct rq_flags *rf,
-			    int dest_cpu, unsigned int flags)
-	__releases(__rq_lockp(rq), &p->pi_lock)
+                int dest_cpu, unsigned int flags)
+    __releases(__rq_lockp(rq), &p->pi_lock)
 {
-	struct set_affinity_pending my_pending = { }, *pending = NULL;
-	bool stop_pending, complete = false;
+    struct set_affinity_pending my_pending = { }, *pending = NULL;
+    bool stop_pending, complete = false;
 
-	/*
-	 * Can the task run on the task's current CPU? If so, we're done
-	 *
-	 * We are also done if the task is the current donor, boosting a lock-
-	 * holding proxy, (and potentially has been migrated outside its
-	 * current or previous affinity mask)
-	 */
-	if (cpumask_test_cpu(task_cpu(p), &p->cpus_mask) ||
-	    (task_current_donor(rq, p) && !task_current(rq, p))) {
-		struct task_struct *push_task = NULL;
+    /* Can the task run on the task's current CPU? If so, we're done
+     *
+     * We are also done if the task is the current donor, boosting a lock-
+     * holding proxy, (and potentially has been migrated outside its
+     * current or previous affinity mask) */
+    if (cpumask_test_cpu(task_cpu(p), &p->cpus_mask) ||
+        (task_current_donor(rq, p) && !task_current(rq, p))) {
+        struct task_struct *push_task = NULL;
 
-		if ((flags & SCA_MIGRATE_ENABLE) &&
-		    (p->migration_flags & MDF_PUSH) && !rq->push_busy) {
-			rq->push_busy = true;
-			push_task = get_task_struct(p);
-		}
+        if ((flags & SCA_MIGRATE_ENABLE) &&
+            (p->migration_flags & MDF_PUSH) && !rq->push_busy) {
+            rq->push_busy = true;
+            push_task = get_task_struct(p);
+        }
 
-		/*
-		 * If there are pending waiters, but no pending stop_work,
-		 * then complete now.
-		 */
-		pending = p->migration_pending;
-		if (pending && !pending->stop_pending) {
-			p->migration_pending = NULL;
-			complete = true;
-		}
+        /* If there are pending waiters, but no pending stop_work,
+         * then complete now. */
+        pending = p->migration_pending;
+        if (pending && !pending->stop_pending) {
+            p->migration_pending = NULL;
+            complete = true;
+        }
 
-		preempt_disable();
-		task_rq_unlock(rq, p, rf);
-		if (push_task) {
-			stop_one_cpu_nowait(rq->cpu, push_cpu_stop, p, &rq->push_work);
-		}
-		preempt_enable();
+        preempt_disable();
+        task_rq_unlock(rq, p, rf);
+        if (push_task) {
+            stop_one_cpu_nowait(rq->cpu, push_cpu_stop, p, &rq->push_work);
+        }
+        preempt_enable();
 
-		if (complete)
-			complete_all(&pending->done);
+        if (complete)
+            complete_all(&pending->done);
 
-		return 0;
-	}
+        return 0;
+    }
 
-	if (!(flags & SCA_MIGRATE_ENABLE)) {
-		/* serialized by p->pi_lock */
-		if (!p->migration_pending) {
-			/* Install the request */
-			refcount_set(&my_pending.refs, 1);
-			init_completion(&my_pending.done);
-			my_pending.arg = (struct migration_arg) {
-				.task = p,
-				.dest_cpu = dest_cpu,
-				.pending = &my_pending,
-			};
+    if (!(flags & SCA_MIGRATE_ENABLE)) {
+        /* serialized by p->pi_lock */
+        if (!p->migration_pending) {
+            /* Install the request */
+            refcount_set(&my_pending.refs, 1);
+            init_completion(&my_pending.done);
+            my_pending.arg = (struct migration_arg) {
+                .task = p,
+                .dest_cpu = dest_cpu,
+                .pending = &my_pending,
+            };
 
-			p->migration_pending = &my_pending;
-		} else {
-			pending = p->migration_pending;
-			refcount_inc(&pending->refs);
-			/*
-			 * Affinity has changed, but we've already installed a
-			 * pending. migration_cpu_stop() *must* see this, else
-			 * we risk a completion of the pending despite having a
-			 * task on a disallowed CPU.
-			 *
-			 * Serialized by p->pi_lock, so this is safe.
-			 */
-			pending->arg.dest_cpu = dest_cpu;
-		}
-	}
-	pending = p->migration_pending;
-	/*
-	 * - !MIGRATE_ENABLE:
-	 *   we'll have installed a pending if there wasn't one already.
-	 *
-	 * - MIGRATE_ENABLE:
-	 *   we're here because the current CPU isn't matching anymore,
-	 *   the only way that can happen is because of a concurrent
-	 *   set_cpus_allowed_ptr() call, which should then still be
-	 *   pending completion.
-	 *
-	 * Either way, we really should have a @pending here.
-	 */
-	if (WARN_ON_ONCE(!pending)) {
-		task_rq_unlock(rq, p, rf);
-		return -EINVAL;
-	}
+            p->migration_pending = &my_pending;
+        } else {
+            pending = p->migration_pending;
+            refcount_inc(&pending->refs);
+            /* Affinity has changed, but we've already installed a
+             * pending. migration_cpu_stop() *must* see this, else
+             * we risk a completion of the pending despite having a
+             * task on a disallowed CPU.
+             *
+             * Serialized by p->pi_lock, so this is safe. */
+            pending->arg.dest_cpu = dest_cpu;
+        }
+    }
+    pending = p->migration_pending;
+    /* - !MIGRATE_ENABLE:
+     *   we'll have installed a pending if there wasn't one already.
+     *
+     * - MIGRATE_ENABLE:
+     *   we're here because the current CPU isn't matching anymore,
+     *   the only way that can happen is because of a concurrent
+     *   set_cpus_allowed_ptr() call, which should then still be
+     *   pending completion.
+     *
+     * Either way, we really should have a @pending here. */
+    if (WARN_ON_ONCE(!pending)) {
+        task_rq_unlock(rq, p, rf);
+        return -EINVAL;
+    }
 
-	if (task_on_cpu(rq, p) || READ_ONCE(p->__state) == TASK_WAKING) {
-		/*
-		 * MIGRATE_ENABLE gets here because 'p == current', but for
-		 * anything else we cannot do is_migration_disabled(), punt
-		 * and have the stopper function handle it all race-free.
-		 */
-		stop_pending = pending->stop_pending;
-		if (!stop_pending)
-			pending->stop_pending = true;
+    if (task_on_cpu(rq, p) || READ_ONCE(p->__state) == TASK_WAKING) {
+        /* MIGRATE_ENABLE gets here because 'p == current', but for
+         * anything else we cannot do is_migration_disabled(), punt
+         * and have the stopper function handle it all race-free. */
+        stop_pending = pending->stop_pending;
+        if (!stop_pending)
+            pending->stop_pending = true;
 
-		if (flags & SCA_MIGRATE_ENABLE)
-			p->migration_flags &= ~MDF_PUSH;
+        if (flags & SCA_MIGRATE_ENABLE)
+            p->migration_flags &= ~MDF_PUSH;
 
-		preempt_disable();
-		task_rq_unlock(rq, p, rf);
-		if (!stop_pending) {
-			stop_one_cpu_nowait(cpu_of(rq), migration_cpu_stop, &pending->arg, &pending->stop_work);
-		}
-		preempt_enable();
+        preempt_disable();
+        task_rq_unlock(rq, p, rf);
+        if (!stop_pending) {
+            stop_one_cpu_nowait(cpu_of(rq), migration_cpu_stop, &pending->arg, &pending->stop_work);
+        }
+        preempt_enable();
 
-		if (flags & SCA_MIGRATE_ENABLE)
-			return 0;
-	} else {
+        if (flags & SCA_MIGRATE_ENABLE)
+            return 0;
+    } else {
 
-		if (!is_migration_disabled(p)) {
-			if (task_on_rq_queued(p))
-				rq = move_queued_task(rq, rf, p, dest_cpu);
+        if (!is_migration_disabled(p)) {
+            if (task_on_rq_queued(p))
+                rq = move_queued_task(rq, rf, p, dest_cpu);
 
-			if (!pending->stop_pending) {
-				p->migration_pending = NULL;
-				complete = true;
-			}
-		}
-		task_rq_unlock(rq, p, rf);
+            if (!pending->stop_pending) {
+                p->migration_pending = NULL;
+                complete = true;
+            }
+        }
+        task_rq_unlock(rq, p, rf);
 
-		if (complete)
-			complete_all(&pending->done);
-	}
+        if (complete)
+            complete_all(&pending->done);
+    }
 
-	wait_for_completion(&pending->done);
+    wait_for_completion(&pending->done);
 
-	if (refcount_dec_and_test(&pending->refs))
-		wake_up_var(&pending->refs); /* No UaF, just an address */
+    if (refcount_dec_and_test(&pending->refs))
+        wake_up_var(&pending->refs); /* No UaF, just an address */
 
-	/*
-	 * Block the original owner of &pending until all subsequent callers
-	 * have seen the completion and decremented the refcount
-	 */
-	wait_var_event(&my_pending.refs, !refcount_read(&my_pending.refs));
+    /* Block the original owner of &pending until all subsequent callers
+     * have seen the completion and decremented the refcount */
+    wait_var_event(&my_pending.refs, !refcount_read(&my_pending.refs));
 
-	/* ARGH */
-	WARN_ON_ONCE(my_pending.stop_pending);
+    /* ARGH */
+    WARN_ON_ONCE(my_pending.stop_pending);
 
-	return 0;
+    return 0;
 }
 
 static struct rq *move_queued_task(struct rq *rq, struct rq_flags *rf,
-				   struct task_struct *p, int new_cpu)
-	__must_hold(__rq_lockp(rq))
+                   struct task_struct *p, int new_cpu)
+    __must_hold(__rq_lockp(rq))
 {
-	lockdep_assert_rq_held(rq);
+    lockdep_assert_rq_held(rq);
 
-	deactivate_task(rq, p, DEQUEUE_NOCLOCK);
-	set_task_cpu(p, new_cpu);
-	rq_unlock(rq, rf);
+    deactivate_task(rq, p, DEQUEUE_NOCLOCK);
+    set_task_cpu(p, new_cpu);
+    rq_unlock(rq, rf);
 
-	rq = cpu_rq(new_cpu);
+    rq = cpu_rq(new_cpu);
 
-	rq_lock(rq, rf);
-	WARN_ON_ONCE(task_cpu(p) != new_cpu);
-	activate_task(rq, p, 0);
-	wakeup_preempt(rq, p, 0);
+    rq_lock(rq, rf);
+    WARN_ON_ONCE(task_cpu(p) != new_cpu);
+    activate_task(rq, p, 0);
+    wakeup_preempt(rq, p, 0);
 
-	return rq;
+    return rq;
 }
 ```
 
