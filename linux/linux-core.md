@@ -2481,8 +2481,20 @@ void force_qs_rnp(int (*f)(struct rcu_data *rdp))
             raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
         }
 
-        for_each_leaf_node_cpu_mask(rnp, cpu, rsmask)
-            resched_cpu(cpu);
+        for_each_leaf_node_cpu_mask(rnp, cpu, rsmask) {
+            resched_cpu(cpu) {
+                struct rq *rq = cpu_rq(cpu);
+                unsigned long flags;
+
+                raw_spin_rq_lock_irqsave(rq, flags);
+                if (cpu_online(cpu) || cpu == smp_processor_id()) {
+                    resched_curr(rq) {
+                        __resched_curr(rq, TIF_NEED_RESCHED);
+                    }
+                }
+                raw_spin_rq_unlock_irqrestore(rq, flags);
+            }
+        }
     }
 }
 ```

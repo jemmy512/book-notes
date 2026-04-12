@@ -163,6 +163,57 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
         PREEMPT | Preemptible Kernel (Low-Latency Desktop) |`system call returns` + `interrupts` + `all kernel code(except critical section)`
         PREEMPT_RT | Fully Preemptible Kernel (RT) | `system call returns` + `interrupts` + `all kernel code(except a few critical section)` + `threaded interrupt handlers`
 
+* [PREEMPT_LAZY](https://lore.kernel.org/all/20241007074609.447006177@infradead.org)
+    * [AWS工程师报告PostgreSQL性能在Linux 7.0下降50%到底是怎么一回事？](https://mp.weixin.qq.com/s/T3uTJrUtqBovrzN52omA1Q)
+    * [内核江湖·翻车现场（八）：PREEMPT_NONE 之死——当架构洁癖撞上生产负载](https://mp.weixin.qq.com/s/bMElxAAksEY20ZQTyGWMOA)
+    * Does not set the preempt counter bit, so it won't preempt mid-execution on every **interrupt return**.
+
+        ```c
+        irqentry_exit_cond_resched() {
+            if (!preempt_count()) {
+                need = need_resched() {
+                    tif_test_bit(TIF_NEED_RESCHED);
+                }
+                if (need && arch_irqentry_exit_need_resched()) {
+                    preempt_schedule_irq() {
+                        __schedule(SM_PREEMPT);
+                    }
+                }
+            }
+        }
+        ```
+
+    * Only acted upon at **voluntary schedule points** (explicit **schedule()** calls, **returning to userspace**, etc.).
+
+        ```c
+        __exit_to_user_mode_loop() {
+            while (ti_work & EXIT_TO_USER_MODE_WORK_LOOP) {
+                if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)) {
+                    if (!rseq_grant_slice_extension(ti_work & TIF_SLICE_EXT_DENY))
+                        schedule();
+                }
+            }
+        }
+        ```
+
+    * On the next **timer tick**, it gets promoted to _TIF_NEED_RESCHED
+
+        ```c
+        void sched_tick() {
+            if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+                resched_curr(rq);
+        }
+        ```
+
+    * The **idle task** is never given LAZY — it's immediately upgraded to TIF_NEED_RESCHED
+
+        ```c
+        void __resched_curr(struct rq *rq, int tif) {
+            if (is_idle_task(curr) && tif == TIF_NEED_RESCHED_LAZY)
+                tif = TIF_NEED_RESCHED;
+        }
+        ```
+
 * [Oracle Linux Blog](https://blogs.oracle.com/linux/category/lnx-linux-kernel-development)
     * [Understanding process thread priorities in Linux](https://blogs.oracle.com/linux/post/task-priority)
         * **static_prio**: maps the priority range used for normal tasks and is the priority according to the nice value of a task.
@@ -3388,36 +3439,7 @@ void enqueue_dl_entity(struct sched_dl_entity *dl_se, int flags)
                     }
                     dl_rq->earliest_dl.curr = deadline;
 
-                    cpudl_set(&rq->rd->cpudl, rq->cpu, deadline) {
-                        int old_idx;
-                        unsigned long flags;
-
-                        WARN_ON(!cpu_present(cpu));
-
-                        raw_spin_lock_irqsave(&cp->lock, flags);
-
-                        old_idx = cp->elements[cpu].idx;
-                        if (old_idx == IDX_INVALID) {
-                            int new_idx = cp->size++;
-
-                            cp->elements[new_idx].dl = dl;
-                            cp->elements[new_idx].cpu = cpu;
-                            cp->elements[cpu].idx = new_idx;
-                            cpudl_heapify_up(cp, new_idx);
-                            cpumask_clear_cpu(cpu, cp->free_cpus);
-                        } else {
-                            cp->elements[old_idx].dl = dl;
-                            cpudl_heapify(cp, old_idx) {
-                                if (idx > 0 && dl_time_before(cp->elements[parent(idx)].dl, cp->elements[idx].dl)) {
-                                    cpudl_heapify_up(cp, idx);
-                                } else {
-                                    cpudl_heapify_down(cp, idx);
-                                }
-                            }
-                        }
-
-                        raw_spin_unlock_irqrestore(&cp->lock, flags);
-                    }
+                    cpudl_set(&rq->rd->cpudl, rq->cpu, deadline);
                 }
             }
         }
@@ -3503,6 +3525,124 @@ void replenish_dl_entity(struct sched_dl_entity *dl_se)
             }
         }
     }
+}
+```
+
+### cpudl_set
+
+```c
+
+struct cpudl_item {
+    u64            dl;
+    int            cpu;
+    int            idx;
+};
+
+struct cpudl {
+    raw_spinlock_t      lock;
+    int                 size;
+    cpumask_var_t       free_cpus;
+    struct cpudl_item   *elements;
+};
+
+void cpudl_set(struct cpudl *cp, int cpu, u64 dl)
+{
+    int old_idx;
+    unsigned long flags;
+
+    WARN_ON(!cpu_present(cpu));
+
+    raw_spin_lock_irqsave(&cp->lock, flags);
+
+    old_idx = cp->elements[cpu].idx;
+    if (old_idx == IDX_INVALID) {
+        int new_idx = cp->size++;
+
+        cp->elements[new_idx].dl = dl;
+        cp->elements[new_idx].cpu = cpu;
+        cp->elements[cpu].idx = new_idx;
+        cpudl_heapify_up(cp, new_idx);
+        cpumask_clear_cpu(cpu, cp->free_cpus);
+    } else {
+        cp->elements[old_idx].dl = dl;
+        cpudl_heapify(cp, old_idx) {
+            if (idx > 0 && dl_time_before(cp->elements[parent(idx)].dl, cp->elements[idx].dl)) {
+                cpudl_heapify_up(cp, idx);
+            } else {
+                cpudl_heapify_down(cp, idx);
+            }
+        }
+    }
+
+    raw_spin_unlock_irqrestore(&cp->lock, flags);
+}
+
+
+static void cpudl_heapify_down(struct cpudl *cp, int idx)
+{
+    int l, r, largest;
+
+    int orig_cpu = cp->elements[idx].cpu;
+    u64 orig_dl = cp->elements[idx].dl;
+
+    if (left_child(idx) >= cp->size)
+        return;
+
+    /* adapted from lib/prio_heap.c */
+    while (1) {
+        u64 largest_dl;
+
+        l = left_child(idx);
+        r = right_child(idx);
+        largest = idx;
+        largest_dl = orig_dl;
+
+        if ((l < cp->size) && dl_time_before(orig_dl, cp->elements[l].dl)) {
+            largest = l;
+            largest_dl = cp->elements[l].dl;
+        }
+        if ((r < cp->size) && dl_time_before(largest_dl, cp->elements[r].dl))
+            largest = r;
+
+        if (largest == idx)
+            break;
+
+        /* pull largest child onto idx */
+        cp->elements[idx].cpu = cp->elements[largest].cpu;
+        cp->elements[idx].dl = cp->elements[largest].dl;
+        cp->elements[cp->elements[idx].cpu].idx = idx;
+        idx = largest;
+    }
+    /* actual push down of saved original values orig_* */
+    cp->elements[idx].cpu = orig_cpu;
+    cp->elements[idx].dl = orig_dl;
+    cp->elements[cp->elements[idx].cpu].idx = idx;
+}
+
+static void cpudl_heapify_up(struct cpudl *cp, int idx)
+{
+    int p;
+
+    int orig_cpu = cp->elements[idx].cpu;
+    u64 orig_dl = cp->elements[idx].dl;
+
+    if (idx == 0)
+        return;
+
+    do {
+        p = parent(idx);
+        if (dl_time_before(orig_dl, cp->elements[p].dl))
+            break;
+        /* pull parent onto idx */
+        cp->elements[idx].cpu = cp->elements[p].cpu;
+        cp->elements[idx].dl = cp->elements[p].dl;
+        cp->elements[cp->elements[idx].cpu].idx = idx;
+        idx = p;
+    } while (idx != 0);
+    /* actual push up of saved original values orig_* */
+    cp->elements[idx].cpu = orig_cpu;
+    cp->elements[idx].dl = orig_dl;
+    cp->elements[cp->elements[idx].cpu].idx = idx;
 }
 ```
 
@@ -4691,8 +4831,7 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
 ## dl_server
 
 ```c
-/*
- * dl_server && dl_defer:
+/* dl_server && dl_defer:
  *
  *                                        6
  *                            +--------------------+
@@ -4893,23 +5032,22 @@ static int start_dl_timer(struct sched_dl_entity *dl_se)
  *    task. Notably it will not 'defer' again.
  *
  *  - When idle it will push the actication forward once, and then wait
- *    for the timer to hit or a non-idle update to restart things.
- */
+ *    for the timer to hit or a non-idle update to restart things. */
 ```
 
 ```c
 /* called from update_curr_common(), propagates runtime to the server. */
 void dl_server_update(struct sched_dl_entity *dl_se, s64 delta_exec)
 {
-	/* 0 runtime = fair server disabled */
-	if (dl_se->dl_server_active && dl_se->dl_runtime)
-		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+    /* 0 runtime = fair server disabled */
+    if (dl_se->dl_server_active && dl_se->dl_runtime)
+        update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
 }
 
 void dl_server_update_idle(struct sched_dl_entity *dl_se, s64 delta_exec)
 {
-	if (dl_se->dl_server_active && dl_se->dl_runtime && dl_se->dl_defer)
-		update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
+    if (dl_se->dl_server_active && dl_se->dl_runtime && dl_se->dl_defer)
+        update_curr_dl_se(dl_se->rq, dl_se, delta_exec);
 }
 
 void dl_server_start(struct sched_dl_entity *dl_se)
@@ -4928,15 +5066,15 @@ void dl_server_start(struct sched_dl_entity *dl_se)
 
 void dl_server_stop(struct sched_dl_entity *dl_se)
 {
-	if (!dl_server(dl_se) || !dl_server_active(dl_se))
-		return;
+    if (!dl_server(dl_se) || !dl_server_active(dl_se))
+        return;
 
-	dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
-	hrtimer_try_to_cancel(&dl_se->dl_timer);
-	dl_se->dl_defer_armed = 0;
-	dl_se->dl_throttled = 0;
-	dl_se->dl_defer_idle = 0;
-	dl_se->dl_server_active = 0;
+    dequeue_dl_entity(dl_se, DEQUEUE_SLEEP);
+    hrtimer_try_to_cancel(&dl_se->dl_timer);
+    dl_se->dl_defer_armed = 0;
+    dl_se->dl_throttled = 0;
+    dl_se->dl_defer_idle = 0;
+    dl_se->dl_server_active = 0;
 }
 
 void dl_server_init(struct sched_dl_entity *dl_se, struct rq *rq,
@@ -10119,6 +10257,84 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
         return delta;
     }
 ```
+
+## cfs_feature
+
+### protect_slice
+
+1. **Core concept**
+
+    protect_slice answers: "has this entity used up its protected vruntime window yet?"
+
+    ```c
+    static inline bool protect_slice(struct sched_entity *se) {
+        return vruntime_cmp(se->vruntime, "<", se->vprot);
+    }
+    ```
+
+    se->vprot is a vruntime deadline — a virtual time threshold up to which the currently-running entity is shielded from preemption. While vruntime < vprot, the entity is in its protected window.
+
+
+2. **Setting the protection: set_protect_slice (fair.c:958)**
+
+    Called when a task is first picked to run (set_next_entity(..., first=true)):
+
+    ```c
+    u64 slice = normalized_sysctl_sched_base_slice;  // minimum quantum fallback
+    u64 vprot  = se->deadline;
+
+    if (sched_feat(RUN_TO_PARITY))
+        slice = cfs_rq_min_slice(cfs_rq);  // shortest slice among all queued entities
+
+    slice = min(slice, se->slice);         // cap at entity's own earned slice
+    if (slice != se->slice)
+        vprot = min(vprot, vruntime + calc_delta_fair(slice, se));
+    ```
+
+    se->vprot = vprot;
+    Two modes depending on RUN_TO_PARITY feature flag:
+
+    | Mode | slice used | Effect |
+    | :-: | :-: | :-: |
+    | RUN_TO_PARITY on | cfs_rq_min_slice() — shortest among all runnable entities | Protection lasts until the most-starved competitor's slice, encouraging fairness parity
+    | RUN_TO_PARITY off | sysctl_sched_base_slice | Minimum progress guarantee — prevents constant preemption of a newly-scheduled task
+
+3. **Where it matters**
+
+    * 3.1. Pick decision (fair.c:1037) — the most important use:
+
+        ```c
+        if (curr && protect && protect_slice(curr))
+            return curr;  // don't switch away from current task
+        ```
+
+        Even if EEVDF's tree has an eligible entity ready, the current task wins if still in its protected window. This prevents the "thrashing" problem where tasks constantly preempt each other before making real progress.
+
+    * 3.2. Resched gate (fair.c:1328):
+
+        ```c
+        if (resched || !protect_slice(curr)) {
+            resched_curr_lazy(rq);
+        ```
+        Only sets the lazy resched flag if either something urgent happened or the protection has expired.
+
+    * 3.3. Wakeup preemption (fair.c:8929-8936):
+
+        ```c
+        if (sched_feat(RUN_TO_PARITY))
+            update_protect_slice(cfs_rq, se);  // tighten protection as new tasks arrive
+
+        // ...
+        preempt:
+        if (preempt_action == PREEMPT_WAKEUP_SHORT)
+            cancel_protect_slice(se);  // short waker forfeits its protection
+        ```
+
+        If a waking task is "short" (burst-y), it cancels the current task's protection and gets preempted.
+
+    * 3.4. Reweight (fair.c:3859)
+
+        when a task's weight changes (nice value), the relative vprot offset is preserved so the protection window scales correctly with the new weight.
 
 # SCHED_EXT
 
