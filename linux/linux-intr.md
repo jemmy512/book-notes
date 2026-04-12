@@ -18,13 +18,12 @@
 
 * [深入分析linux内核源码：中断子系统详解](https://mp.weixin.qq.com/s/8BV0aQMeBtqUlKrpa8QZeg)
 
-| PREEMT_RT | IRQs | Preemptible | Sleepable | Notes |
-| :-: | :-: | :-: | :-: | :-: |
-| Hard IRQ                  | ❌ | ❌ | ❌ | Fast, minimal, IRQ context |
-| Soft IRQ - run_ksoftirqd  | ✅ | ✅ | ❌ | Process context |
-| Soft IRQ - handle_softirqs| ✅ | ❌ | ❌ | Aotmic context |
-| Workqueue                 | ✅ | ✅ | ✅ | Process context |
-| Normal process            | ✅ | ✅ | ✅ | User/kernel mode |
+| PREEMT_RT                | IRQs | BH | Preemptible | Sleepable | Notes |
+| :-: | :-: | :-: | :-: | :-: | :-: |
+| Hard IRQ                  | ❌ | ❌ | ❌ | ❌ | Fast, minimal, IRQ context |
+| Soft IRQ - run_ksoftirqd  | ✅ | ❌ | ✅ | ❌ | Process context |
+| Workqueue                 | ✅ | ✅ | ✅ | ✅ | Process context |
+| Normal process            | ✅ | ✅ | ✅ | ✅ | User/kernel mode |
 
 > In the top half (hard IRQ handler), hardware disables interrupts automatically when the exception (interrupt) is taken.
 
@@ -1279,10 +1278,15 @@ void __local_bh_disable_ip(unsigned long ip, unsigned int cnt)
     /* First entry of a task into a BH disabled section? */
     if (!current->softirq_disable_cnt) {
         if (preemptible()) {
-            if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK))
-                local_lock(&softirq_ctrl.lock);
-            else
+            if (IS_ENABLED(CONFIG_PREEMPT_RT_NEEDS_BH_LOCK)) {
+                local_lock(&softirq_ctrl.lock) {
+                    preempt_disable();
+                    __local_lock_acquire(lock);
+                    __acquire(lock);
+                }
+            } else {
                 migrate_disable();
+            }
 
             /* Required to meet the RCU bottomhalf requirements. */
             rcu_read_lock();
@@ -1321,6 +1325,43 @@ void __local_bh_disable_ip(unsigned long ip, unsigned int cnt)
         }
     }
 }
+```
+
+## migrate_disable
+
+```c
+void migrate_disable(void)
+{
+    __migrate_disable();
+}
+EXPORT_SYMBOL_GPL(migrate_disable);
+
+static inline void __migrate_disable(void)
+{
+    struct task_struct *p = current;
+
+    if (p->migration_disabled) {
+#ifdef CONFIG_DEBUG_PREEMPT
+        /*Warn about overflow half-way through the range. */
+        WARN_ON_ONCE((s16)p->migration_disabled < 0);
+#endif
+        p->migration_disabled++;
+        return;
+    }
+
+    guard(preempt)();
+    this_rq_pinned()++;
+    p->migration_disabled = 1;
+}
+
+DECLARE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
+
+#ifdef CONFIG_SMP
+#define this_rq_raw() arch_raw_cpu_ptr(&runqueues)
+#else
+#define this_rq_raw() PERCPU_PTR(&runqueues)
+#endif
+#define this_rq_pinned() (*(unsigned int *)((void *)this_rq_raw() + RQ_nr_pinned))
 ```
 
 # local_bh_enable
@@ -1420,6 +1461,57 @@ static inline void local_bh_enable(void)
 }
 ```
 
+## migrate_enable
+
+```c
+void migrate_enable(void)
+{
+    __migrate_enable();
+}
+EXPORT_SYMBOL_GPL(migrate_enable);
+
+static inline void __migrate_enable(void)
+{
+    struct task_struct *p = current;
+
+#ifdef CONFIG_DEBUG_PREEMPT
+    /* Check both overflow from migrate_disable() and superfluous
+     * migrate_enable(). */
+    if (WARN_ON_ONCE((s16)p->migration_disabled <= 0))
+        return;
+#endif
+
+    if (p->migration_disabled > 1) {
+        p->migration_disabled--;
+        return;
+    }
+
+    /* Ensure stop_task runs either before or after this, and that
+     * __set_cpus_allowed_ptr(SCA_MIGRATE_ENABLE) doesn't schedule(). */
+    guard(preempt)();
+    if (unlikely(p->cpus_ptr != &p->cpus_mask))
+        ___migrate_enable();
+    /* Mustn't clear migration_disabled() until cpus_ptr points back at the
+     * regular cpus_mask, otherwise things that race (eg.
+     * select_fallback_rq) get confused. */
+    barrier();
+    p->migration_disabled = 0;
+    this_rq_pinned()--;
+}
+
+void ___migrate_enable(void)
+{
+    struct task_struct *p = current;
+    struct affinity_context ac = {
+        .new_mask  = &p->cpus_mask,
+        .flags     = SCA_MIGRATE_ENABLE,
+    };
+
+    __set_cpus_allowed_ptr(p, &ac);
+        --->
+}
+```
+
 # preempt_count
 
 ![](../images/kernel/intr-preempt_count.png)
@@ -1483,7 +1575,7 @@ static inline int preempt_count(void)
 #define SOFTIRQ_DISABLE_OFFSET      (2 * SOFTIRQ_OFFSET)
 
 struct softirq_ctrl {
-    local_lock_t    lock;
+    local_lock_t    lock; /* sleepable lock on RT */
     int             cnt;
 };
 
