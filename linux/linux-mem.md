@@ -2191,6 +2191,32 @@ static struct mempolicy default_policy = {
     .mode   = MPOL_LOCAL,
 };
 
+#ifndef CONFIG_NUMA
+static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order)
+{
+	return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
+        if (nid == NUMA_NO_NODE)
+            nid = numa_mem_id();
+
+        return __alloc_pages_node_noprof(nid, gfp_mask, order) {
+            VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
+            warn_if_node_offline(nid, gfp_mask);
+
+            return __alloc_pages_noprof(gfp_mask, order, nid, NULL) {
+                struct page *page;
+
+                page = __alloc_frozen_pages_noprof(gfp, order, preferred_nid, nodemask);
+                if (page)
+                    set_page_refcounted(page);
+                return page;
+            }
+        }
+    }
+}
+#else
+struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order);
+#endif /* CONFIG_NUMA */
+
 struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
 {
     struct page *page = alloc_frozen_pages_noprof(gfp, order) {
@@ -2198,8 +2224,25 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
 
         /* No reference counting needed for current->mempolicy
         * nor system default_policy */
-        if (!in_interrupt() && !(gfp & __GFP_THISNODE))
-            pol = get_task_policy(current);
+        if (!in_interrupt() && !(gfp & __GFP_THISNODE)) {
+            pol = get_task_policy(current) {
+                struct mempolicy *pol = p->mempolicy;
+                int node;
+
+                if (pol)
+                    return pol;
+
+                node = numa_node_id();
+                if (node != NUMA_NO_NODE) {
+                    pol = &preferred_node_policy[node];
+                    /* preferred_node_policy is not initialised early in boot */
+                    if (pol->mode)
+                        return pol;
+                }
+
+                return &default_policy;
+            }
+        }
 
         return alloc_pages_mpol(gfp, order, pol, NO_INTERLEAVE_INDEX, numa_node_id()) {
             nodemask_t *nodemask;
@@ -2220,8 +2263,7 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
                     break;
                 case MPOL_BIND:
                     /* Restrict to nodemask (but not on lower zones) */
-                    if (apply_policy_zone(pol, gfp_zone(gfp)) &&
-                        cpuset_nodemask_valid_mems_allowed(&pol->nodes))
+                    if (apply_policy_zone(pol, gfp_zone(gfp)) && cpuset_nodemask_valid_mems_allowed(&pol->nodes))
                         nodemask = &pol->nodes;
                     if (pol->home_node != NUMA_NO_NODE)
                         *nid = pol->home_node;
@@ -2245,8 +2287,26 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
                 return nodemask;
             }
 
-            if (pol->mode == MPOL_PREFERRED_MANY)
-                return alloc_pages_preferred_many(gfp, order, nid, nodemask);
+            if (pol->mode == MPOL_PREFERRED_MANY) {
+                return alloc_pages_preferred_many(gfp, order, nid, nodemask) {
+                    struct page *page;
+                    gfp_t preferred_gfp;
+
+                    /*
+                    * This is a two pass approach. The first pass will only try the
+                    * preferred nodes but skip the direct reclaim and allow the
+                    * allocation to fail, while the second pass will try all the
+                    * nodes in system.
+                    */
+                    preferred_gfp = gfp | __GFP_NOWARN;
+                    preferred_gfp &= ~(__GFP_DIRECT_RECLAIM | __GFP_NOFAIL);
+                    page = __alloc_frozen_pages_noprof(preferred_gfp, order, nid, nodemask);
+                    if (!page)
+                        page = __alloc_frozen_pages_noprof(gfp, order, nid, NULL);
+
+                    return page;
+                }
+            }
 
             if (IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
                 /* filter "hugepage" allocation, unless from alloc_pages() */
@@ -2296,7 +2356,11 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
         set_page_refcounted(page);
     return page;
 }
+```
 
+## __alloc_frozen_pages_noprof
+
+```c
 struct page *__alloc_frozen_pages_noprof(gfp_t gfp, unsigned int order,
         int preferred_nid, nodemask_t *nodemask)
 {
@@ -3592,7 +3656,13 @@ restart:
         } else if (unlikely(rt_task(current)) && in_task())
             alloc_flags |= ALLOC_MIN_RESERVE;
 
-        alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, alloc_flags);
+        alloc_flags = gfp_to_alloc_flags_cma(gfp_mask, alloc_flags) {
+        #ifdef CONFIG_CMA
+            if (gfp_migratetype(gfp_mask) == MIGRATE_MOVABLE)
+                alloc_flags |= ALLOC_CMA;
+        #endif
+            return alloc_flags;
+        }
 
         return alloc_flags;
     }
@@ -34094,3 +34164,75 @@ numactl --membind=0 3161
 * **memory.tcp.limit_in_bytes**: The maximum tcp buffer memory, in bytes.
 * **memory.swappiness**: Similar to vm.swappiness described earlier but can be set for a cgroup
 * **memory.oom_control**: Can be set to 0, to allow the OOM killer for this cgroup, or 1, to disable it
+
+## bug anlayze
+
+```sh
+# monitor OOM msg
+dmesg -T | grep -E "(Out of memory|oom_kill|Killed process)" | tail -20
+
+# top memory user
+ps aux --sort=-%mem | head -15
+
+ps aux --sort=-%mem | awk 'NR<=10 {printf "%-10s %-8s %s\n", $1, $4, $11}'
+
+
+# top swap user
+for pid in /proc/[0-9]*; do
+    awk '/VmSwap/{print $2}' $pid/status 2>/dev/null
+  done | sort -rn | head -5
+
+vmstat 1 5
+
+
+# check a task
+cat /proc/10623/status | grep -E "Vm(RSS|Peak|Swap|Size)"
+
+# show task memroy area
+~/code/book-notes$ pmap -x <PID> | sort -k3 -rn | head -20
+total kB           19968    5780    1872
+0000563c9ef31000    1588    1564    1564 rw---   [ anon ]
+00007ff73c997000    1620    1492       0 r-x-- libc.so.6
+0000563c9cfaa000     708     708       0 r-x-- bash
+00007ff73c380000    6068     432       0 r---- locale-archive
+00007ff73cb2c000     352     192       0 r---- libc.so.6
+0000563c9cf7d000     180     180       0 r---- bash
+00007ff73cbe1000     168     168       0 r-x-- ld-linux-x86-64.so.2
+00007ff73c96f000     160     160       0 r---- libc.so.6
+0000563c9d05b000     220     148       0 r---- bash
+00007ff73bb5e000    8212     128       4 r--s- passwd
+00007ffc3b1cd000     132     108     108 rw---   [ stack ]
+00007ff73cbaa000      60      60       0 r-x-- libtinfo.so.6.2
+00007ff73cbb9000      56      56       0 r---- libtinfo.so.6.2
+00007ff73cb9c000      56      56       0 r---- libtinfo.so.6.2
+00007ff73cc0b000      44      44       0 r---- ld-linux-x86-64.so.2
+0000563c9d096000      36      36      36 rw--- bash
+00007ff73cbd6000      28      28       0 r--s- gconv-modules.cache
+0000563c9d09f000      40      28      28 rw---   [ anon ]
+00007ff73cb8a000      52      24      24 rw---   [ anon ]
+```
+
+```sh
+# trace memory allocation
+
+PID=12345
+while true; do
+    echo "$(date +%T) RSS: $(awk '/VmRSS/{print $2}' /proc/$PID/status) kB"
+    sleep 5
+  done
+
+# Output:
+# 03:21:00 RSS: 524288 kB
+# 03:21:05 RSS: 527360 kB
+# 03:21:10 RSS: 531456 kB  <-- growing each sample, bad sign
+
+
+while true; do
+    echo "$(date +%s) $(awk '/VmRSS/{print $2}' /proc/$PID/status)"
+    sleep 10
+  done >> /tmp/rss_log.txt &
+
+
+awk 'NR>1 {print $1, $2, $2-prev} {prev=$2}' /tmp/rss_log.txt | tail -20
+```
+
