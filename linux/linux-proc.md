@@ -7308,7 +7308,7 @@ static const struct ctl_table sched_rt_sysctls[] = {
 };
 ```
 
-### /sched_rt_runtime_us
+### sched_rt_runtime_us
 
 ```c
 int sched_rt_handler(const struct ctl_table *table, int write, void *buffer,
@@ -7784,7 +7784,9 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                     if (curr) {
                         unsigned long w = scale_load_down(curr->load.weight);
 
-                        runtime += entity_key(cfs_rq, curr) * w;
+                        runtime += w * (cfs_rq, curr) {
+                            return vruntime_op(se->vruntime, "-", cfs_rq->zero_vruntime);
+                        }
                         weight += w;
                     }
 
@@ -7793,6 +7795,8 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                         runtime -= (weight - 1);
 
                     delta = div_s64(runtime, weight);
+                    /* = Σ(v_i - v0)*w_i / W
+                       = V - v0   (how far V is above zero_vruntime)*/
                 } else if (curr) {
                     /* When there is but one element, it is the average. */
                     delta = curr->vruntime - cfs_rq->zero_vruntime;
@@ -7973,7 +7977,6 @@ enqueue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
                 cfs_rq->pelt_clock_throttled = 0;
             }
         #endif
-        }
     }
 }
 ```
@@ -8268,12 +8271,25 @@ bool dequeue_entity(struct cfs_rq *cfs_rq, struct sched_entity *se, int flags) {
     update_stats_dequeue_fair(cfs_rq, se, flags);
 
     update_entity_lag(cfs_rq, se) {
+        u64 max_slice = TICK_NSEC + cfs_rq_max_slice(cfs_rq) {
+            struct sched_entity *root = __pick_root_entity(cfs_rq);
+            struct sched_entity *curr = cfs_rq->curr;
+            u64 max_slice = 0ULL;
+
+            if (curr && curr->on_rq)
+                max_slice = curr->slice;
+
+            if (root)
+                max_slice = max(max_slice, root->max_slice);
+
+            return max_slice;
+        }
         s64 vlag, limit;
 
-        SCHED_WARN_ON(!se->on_rq);
+        WARN_ON_ONCE(!se->on_rq);
 
         vlag = avg_vruntime(cfs_rq) - se->vruntime;
-        limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
+        limit = calc_delta_fair(max_slice, se);
 
         se->vlag = clamp(vlag, -limit, limit);
     }

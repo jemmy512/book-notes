@@ -3538,7 +3538,7 @@ void cpu_cgroup_attach(struct cgroup_taskset *tset)
             if (resched)
                 resched_curr(rq);
             else if (queued)
-		        wakeup_preempt(rq, tsk, 0);
+                wakeup_preempt(rq, tsk, 0);
 
             __balance_callbacks(rq, &rq_guard.rf);
         }
@@ -4414,26 +4414,21 @@ void update_cfs_group(struct sched_entity *se) {
     if (unlikely(se->load.weight != shares)) {
         reweight_entity(cfs_rq_of(se)/*cfs_rq*/, se, shares/*weight*/) {
             bool curr = cfs_rq->curr == se;
+            bool rel_vprot = false;
+            u64 vprot;
+
             if (se->on_rq) {
                 /* commit outstanding execution time */
                 update_curr(cfs_rq);
-                update_entity_lag(cfs_rq, se) {
-                    s64 vlag, limit;
-
-                    WARN_ON_ONCE(!se->on_rq);
-
-                    vlag = avg_vruntime(cfs_rq) - se->vruntime;
-                    limit = calc_delta_fair(max_t(u64, 2*se->slice, TICK_NSEC), se);
-
-                    se->vlag = clamp(vlag, -limit, limit);
-                }
+                update_entity_lag(cfs_rq, se);
                 se->deadline -= se->vruntime;
                 se->rel_deadline = 1;
-                cfs_rq->nr_queued--;
                 if (curr && protect_slice(se)) {
                     vprot = se->vprot - se->vruntime;
                     rel_vprot = true;
                 }
+
+                cfs_rq->nr_queued--;
                 if (!curr)
                     __dequeue_entity(cfs_rq, se);
                 update_load_sub(&cfs_rq->load, se->load.weight);
@@ -4441,19 +4436,27 @@ void update_cfs_group(struct sched_entity *se) {
             dequeue_load_avg(cfs_rq, se);
 
             /* Because we keep se->vlag = V - v_i, while: lag_i = w_i*(V - v_i),
-             * we need to scale se->vlag when w_i changes. */
+            * we need to scale se->vlag when w_i changes. */
             se->vlag = div_s64(se->vlag * se->load.weight, weight);
             if (se->rel_deadline)
                 se->deadline = div_s64(se->deadline * se->load.weight, weight);
 
+            if (rel_vprot)
+                vprot = div_s64(vprot * se->load.weight, weight);
+
             update_load_set(&se->load, weight);
 
-            u32 divider = get_pelt_divider(&se->avg);
-            se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
+            do {
+                u32 divider = get_pelt_divider(&se->avg);
+
+                se->avg.load_avg = div_u64(se_weight(se) * se->avg.load_sum, divider);
+            } while (0);
 
             enqueue_load_avg(cfs_rq, se);
             if (se->on_rq) {
                 place_entity(cfs_rq, se, 0);
+                if (rel_vprot)
+                    se->vprot = se->vruntime + vprot;
                 update_load_add(&cfs_rq->load, se->load.weight);
                 if (!curr)
                     __enqueue_entity(cfs_rq, se);
