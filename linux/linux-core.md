@@ -845,7 +845,13 @@ void __rcu_read_unlock(void)
     struct task_struct *t = current;
 
     barrier();  // critical section before exit code.
-    if (rcu_preempt_read_exit() == 0) {
+    ret = rcu_preempt_read_exit(void) {
+        int ret = READ_ONCE(current->rcu_read_lock_nesting) - 1;
+
+        WRITE_ONCE(current->rcu_read_lock_nesting, ret);
+        return ret;
+    }
+    if (ret == 0) {
         barrier();  // critical-section exit before .s check.
         if (unlikely(READ_ONCE(t->rcu_read_unlock_special.s)))
             rcu_read_unlock_special(t);
@@ -855,14 +861,6 @@ void __rcu_read_unlock(void)
 
         WARN_ON_ONCE(rrln < 0 || rrln > RCU_NEST_PMAX);
     }
-}
-
-static int rcu_preempt_read_exit(void)
-{
-    int ret = READ_ONCE(current->rcu_read_lock_nesting) - 1;
-
-    WRITE_ONCE(current->rcu_read_lock_nesting, ret);
-    return ret;
 }
 
 void rcu_read_unlock_special(struct task_struct *t)
@@ -3882,9 +3880,13 @@ void __rcu_report_exp_rnp(struct rcu_node *rnp,
 
     raw_lockdep_assert_held_rcu_node(rnp);
     for (;;) {
-        if (!sync_rcu_exp_done(rnp)) {
+        ret = sync_rcu_exp_done(rnp) {
+            return READ_ONCE(rnp->exp_tasks) == NULL && READ_ONCE(rnp->expmask) == 0;
+        }
+        if (!ret) {
             if (!rnp->expmask)
                 rcu_initiate_boost(rnp, flags);
+                    --->
             else
                 raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
             break;

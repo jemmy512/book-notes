@@ -111,8 +111,8 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
             * [[PATCH 00/24] Complete EEVDF](https://lore.kernel.org/all/20240727102732.960974693@infradead.org/)
             * [Completing the EEVDF scheduler](https://lwn.net/Articles/969062/) `Delayed Dequeue` ⊙ `Wakeup Preemption`
         * [OSPM 2015 - The EEVDF verifier: a tale of trying to catch up](https://lwn.net/Articles/1022054)
-        * [CFS的覆灭，Linux新调度器EEVDF详解](https://blog.csdn.net/qq_41603411/article/details/136277735)
         * [Linux 核心設計: Scheduler(5): EEVDF Scheduler 1](https://hackmd.io/@RinHizakura/SyG4t5u1a) ⊙ [2](https://hackmd.io/@RinHizakura/HkyEtNkjA)
+        * [内核江湖·神仙打架（三）：EEVDF——一个被鄙视了 16 年的算法，以最不学术的方式合入了内核](https://mp.weixin.qq.com/s/Eicst-Mqq77CecemY3jDvw)
     * [LWN Index - Core scheduling](https://lwn.net/Kernel/Index/#Scheduler-Core_scheduling)
     * [LWN Index - Deadline scheduling](https://lwn.net/Kernel/Index/#Scheduler-Deadline_scheduling)
     * [LWN Index - Group scheduling](https://lwn.net/Kernel/Index/#Scheduler-Group_scheduling)
@@ -2370,7 +2370,7 @@ SYSCALL_DEFINE3(sched_setscheduler) {
 
 ![](../images/kernel/proc-preempt-user-exec.png)
 
-##### return from system call
+##### exit_to_user_mode_loop
 ```c
 static void noinstr el0_svc(struct pt_regs *regs)
 {
@@ -2479,7 +2479,7 @@ void __exit_to_user_mode_prepare(struct pt_regs *regs)
 }
 ```
 
-##### return from interrupt
+##### irqentry_exit
 
 ```c
 static __always_inline void __el1_irq(struct pt_regs *regs,
