@@ -304,7 +304,7 @@ struct rcu_data {
                     /*  during and after the last grace */
                     /* period it is aware of. */
     struct irq_work defer_qs_iw;    /* Obtain later scheduler attention. */
-    int defer_qs_iw_pending;    /* Scheduler attention pending? */
+    int defer_qs_pending;    /* Scheduler attention pending? */
     struct work_struct strict_work;    /* Schedule readers for strict GPs. */
 
 
@@ -881,14 +881,32 @@ void rcu_read_unlock_special(struct task_struct *t)
         struct rcu_data *rdp = this_cpu_ptr(&rcu_data);
         struct rcu_node *rnp = rdp->mynode;
 
-        needs_exp = rcu_unlock_needs_exp_handling(t, rdp, rnp, irqs_were_disabled);
+        needs_exp = rcu_unlock_needs_exp_handling(t, rdp, rnp, irqs_were_disabled) {
+            if (t->rcu_blocked_node && READ_ONCE(t->rcu_blocked_node->exp_tasks))
+                return true;
+
+            if (rdp->grpmask & READ_ONCE(rnp->expmask))
+                return true;
+
+            if (IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD) &&
+                ((rdp->grpmask & READ_ONCE(rnp->qsmask)) || t->rcu_blocked_node))
+                return true;
+
+            if (IS_ENABLED(CONFIG_RCU_BOOST) && irqs_were_disabled && t->rcu_blocked_node)
+                return true;
+
+            return false;
+        }
 
         // Need to defer quiescent state until everything is enabled.
         if (use_softirq && (in_hardirq() || (needs_exp && !irqs_were_disabled))) {
             // Using softirq, safe to awaken, and either the
             // wakeup is free or there is either an expedited
             // GP in flight or a potential need to deboost.
-            raise_softirq_irqoff(RCU_SOFTIRQ); /* rcu_core_si */
+            if (rdp->defer_qs_pending != DEFER_QS_PENDING) {
+                rdp->defer_qs_pending = DEFER_QS_PENDING;
+                raise_softirq_irqoff(RCU_SOFTIRQ);  /* rcu_core_si */
+            }
         } else {
             // Enabling BH or preempt does reschedule, so...
             // Also if no expediting and no possible deboosting,
@@ -896,11 +914,11 @@ void rcu_read_unlock_special(struct task_struct *t)
             // tick enabled.
             set_need_resched_current();
             if (IS_ENABLED(CONFIG_IRQ_WORK) && irqs_were_disabled &&
-                needs_exp && rdp->defer_qs_iw_pending != DEFER_QS_PENDING &&
+                needs_exp && rdp->defer_qs_pending != DEFER_QS_PENDING &&
                 cpu_online(rdp->cpu)) {
                 // Get scheduler to re-evaluate and call hooks.
                 // If !IRQ_WORK, FQS scan will eventually IPI.
-                rdp->defer_qs_iw_pending = DEFER_QS_PENDING;
+                rdp->defer_qs_pending = DEFER_QS_PENDING;
                 irq_work_queue_on(&rdp->defer_qs_iw, rdp->cpu);
             }
         }
@@ -918,8 +936,8 @@ void rcu_read_unlock_special(struct task_struct *t)
         union rcu_special special;
 
         rdp = this_cpu_ptr(&rcu_data);
-        if (rdp->defer_qs_iw_pending == DEFER_QS_PENDING)
-            rdp->defer_qs_iw_pending = DEFER_QS_IDLE;
+        if (rdp->defer_qs_pending == DEFER_QS_PENDING)
+            rdp->defer_qs_pending = DEFER_QS_IDLE;
 
         /* If RCU core is waiting for this CPU to exit its critical section,
         * report the fact that it has exited.  Because irqs are disabled,
@@ -949,7 +967,6 @@ void rcu_read_unlock_special(struct task_struct *t)
 
         /* Clean up if blocked during RCU read-side critical section. */
         if (special.b.blocked) {
-
             /* Remove this task from the list it blocked on.  The task
             * now remains queued on the rcu_node corresponding to the
             * CPU it first blocked on, so there is no longer any need
@@ -958,10 +975,13 @@ void rcu_read_unlock_special(struct task_struct *t)
             raw_spin_lock_rcu_node(rnp); /* irqs already disabled. */
             WARN_ON_ONCE(rnp != t->rcu_blocked_node);
             WARN_ON_ONCE(!rcu_is_leaf_node(rnp));
-            empty_norm = !rcu_preempt_blocked_readers_cgp(rnp);
-            WARN_ON_ONCE(rnp->completedqs == rnp->gp_seq &&
-                    (!empty_norm || rnp->qsmask));
-            empty_exp = sync_rcu_exp_done(rnp);
+            empty_norm = !rcu_preempt_blocked_readers_cgp(rnp) {
+                return READ_ONCE(rnp->gp_tasks) != NULL;
+            }
+            WARN_ON_ONCE(rnp->completedqs == rnp->gp_seq && (!empty_norm || rnp->qsmask));
+            empty_exp = sync_rcu_exp_done(rnp) {
+                return READ_ONCE(rnp->exp_tasks) == NULL && READ_ONCE(rnp->expmask) == 0;
+            }
             np = rcu_next_node_entry(t, rnp);
             list_del_init(&t->rcu_node_entry);
             t->rcu_blocked_node = NULL;
@@ -980,7 +1000,9 @@ void rcu_read_unlock_special(struct task_struct *t)
             * we aren't waiting on any CPUs, report the quiescent state.
             * Note that rcu_report_unblock_qs_rnp() releases rnp->lock,
             * so we must take a snapshot of the expedited state. */
-            empty_exp_now = sync_rcu_exp_done(rnp);
+            empty_exp_now = sync_rcu_exp_done(rnp) {
+                return READ_ONCE(rnp->exp_tasks) == NULL && READ_ONCE(rnp->expmask) == 0;
+            }
             if (!empty_norm && !rcu_preempt_blocked_readers_cgp(rnp)) {
                 rcu_report_unblock_qs_rnp(rnp, flags);
             } else {
@@ -999,6 +1021,45 @@ void rcu_read_unlock_special(struct task_struct *t)
             local_irq_restore(flags);
         }
     }
+}
+
+static void __maybe_unused
+rcu_report_unblock_qs_rnp(struct rcu_node *rnp, unsigned long flags)
+    __releases(rnp->lock)
+{
+    unsigned long gps;
+    unsigned long mask;
+    struct rcu_node *rnp_p;
+
+    raw_lockdep_assert_held_rcu_node(rnp);
+    if (WARN_ON_ONCE(!IS_ENABLED(CONFIG_PREEMPT_RCU)) ||
+        WARN_ON_ONCE(rcu_preempt_blocked_readers_cgp(rnp)) ||
+        rnp->qsmask != 0) {
+        raw_spin_unlock_irqrestore_rcu_node(rnp, flags);
+        return;  /* Still need more quiescent states! */
+    }
+
+    rnp->completedqs = rnp->gp_seq;
+    rnp_p = rnp->parent;
+    if (rnp_p == NULL) {
+        /* Only one rcu_node structure in the tree, so don't
+         * try to report up to its nonexistent parent! */
+        rcu_report_qs_rsp(flags) {
+            raw_lockdep_assert_held_rcu_node(rcu_get_root());
+            WARN_ON_ONCE(!rcu_gp_in_progress());
+            WRITE_ONCE(rcu_state.gp_flags, rcu_state.gp_flags | RCU_GP_FLAG_FQS);
+            raw_spin_unlock_irqrestore_rcu_node(rcu_get_root(), flags);
+            rcu_gp_kthread_wake();
+        }
+        return;
+    }
+
+    /* Report up the rest of the hierarchy, tracking current ->gp_seq. */
+    gps = rnp->gp_seq;
+    mask = rnp->grpmask;
+    raw_spin_unlock_rcu_node(rnp);    /* irqs remain disabled. */
+    raw_spin_lock_rcu_node(rnp_p);    /* irqs already disabled. */
+    rcu_report_qs_rnp(mask, rnp_p, gps, flags);
 }
 ```
 
@@ -2146,7 +2207,19 @@ bool rcu_gp_init(void)
         if (!first || rcu_sr_is_wait_head(first))
             return start_new_poll;
 
-        wait_head = rcu_sr_get_wait_head();
+        wait_head = rcu_sr_get_wait_head() {
+            struct sr_wait_node *sr_wn;
+            int i;
+
+            for (i = 0; i < SR_NORMAL_GP_WAIT_HEAD_MAX; i++) {
+                sr_wn = &(rcu_state.srs_wait_nodes)[i];
+
+                if (!atomic_cmpxchg_acquire(&sr_wn->inuse, 0, 1))
+                    return &sr_wn->node;
+            }
+
+            return NULL;
+        }
         if (!wait_head) {
             // Kick another GP to retry.
             start_new_poll = true;
@@ -2612,6 +2685,107 @@ static noinline void rcu_gp_cleanup(void)
     // If strict, make all CPUs aware of the end of the old grace period.
     if (IS_ENABLED(CONFIG_RCU_STRICT_GRACE_PERIOD))
         on_each_cpu(rcu_strict_gp_boundary, NULL, 0);
+}
+
+static void rcu_sr_normal_gp_cleanup(void)
+{
+    struct llist_node *wait_tail, *next = NULL, *rcu = NULL;
+    int done = 0;
+
+    wait_tail = rcu_state.srs_wait_tail;
+    if (wait_tail == NULL)
+        return;
+
+    rcu_state.srs_wait_tail = NULL;
+    ASSERT_EXCLUSIVE_WRITER(rcu_state.srs_wait_tail);
+    WARN_ON_ONCE(!rcu_sr_is_wait_head(wait_tail));
+
+    /* Process (a) and (d) cases. See an illustration. */
+    llist_for_each_safe(rcu, next, wait_tail->next) {
+        if (rcu_sr_is_wait_head(rcu))
+            break;
+
+        rcu_sr_normal_complete(rcu) {
+            struct rcu_synchronize *rs = container_of(
+                (struct rcu_head *) node, struct rcu_synchronize, head);
+            complete(&rs->completion);
+        }
+        // It can be last, update a next on this step.
+        wait_tail->next = next;
+
+        if (++done == SR_MAX_USERS_WAKE_FROM_GP)
+            break;
+    }
+
+    /* Fast path, no more users to process except putting the second last
+     * wait head if no inflight-workers. If there are in-flight workers,
+     * they will remove the last wait head.
+     *
+     * Note that the ACQUIRE orders atomic access with list manipulation. */
+    if (wait_tail->next && wait_tail->next->next == NULL &&
+        rcu_sr_is_wait_head(wait_tail->next) &&
+        !atomic_read_acquire(&rcu_state.srs_cleanups_pending)) {
+        rcu_sr_put_wait_head(wait_tail->next);
+        wait_tail->next = NULL;
+    }
+
+    /* Concurrent sr_normal_gp_cleanup work might observe this update. */
+    ASSERT_EXCLUSIVE_WRITER(rcu_state.srs_done_tail);
+    smp_store_release(&rcu_state.srs_done_tail, wait_tail);
+
+    /* We schedule a work in order to perform a final processing
+     * of outstanding users(if still left) and releasing wait-heads
+     * added by rcu_sr_normal_gp_init() call. */
+    if (wait_tail->next) {
+        atomic_inc(&rcu_state.srs_cleanups_pending);
+        /* rcu_sr_normal_gp_cleanup_work */
+        if (!queue_work(sync_wq, &rcu_state.srs_cleanup_work))
+            atomic_dec(&rcu_state.srs_cleanups_pending);
+    }
+}
+
+void rcu_sr_normal_gp_cleanup_work(struct work_struct *work)
+{
+    struct llist_node *done, *rcu, *next, *head;
+
+    /* This work execution can potentially execute
+     * while a new done tail is being updated by
+     * grace period kthread in rcu_sr_normal_gp_cleanup().
+     * So, read and updates of done tail need to
+     * follow acq-rel semantics.
+     *
+     * Given that wq semantics guarantees that a single work
+     * cannot execute concurrently by multiple kworkers,
+     * the done tail list manipulations are protected here. */
+    done = smp_load_acquire(&rcu_state.srs_done_tail);
+    if (WARN_ON_ONCE(!done))
+        return;
+
+    WARN_ON_ONCE(!rcu_sr_is_wait_head(done));
+    head = done->next;
+    done->next = NULL;
+
+    /* The dummy node, which is pointed to by the
+     * done tail which is acq-read above is not removed
+     * here.  This allows lockless additions of new
+     * rcu_synchronize nodes in rcu_sr_normal_add_req(),
+     * while the cleanup work executes. The dummy
+     * nodes is removed, in next round of cleanup
+     * work execution. */
+    llist_for_each_safe(rcu, next, head) {
+        if (!rcu_sr_is_wait_head(rcu)) {
+            rcu_sr_normal_complete(rcu);
+            continue;
+        }
+
+        rcu_sr_put_wait_head(rcu) {
+            struct sr_wait_node *sr_wn = container_of(node, struct sr_wait_node, node);
+	        atomic_set_release(&sr_wn->inuse, 0);
+        }
+    }
+
+    /* Order list manipulations with atomic access. */
+    atomic_dec_return_release(&rcu_state.srs_cleanups_pending);
 }
 ```
 
@@ -6290,11 +6464,11 @@ void queued_spin_lock_slowpath(struct qspinlock *lock, u32 val)
     BUILD_BUG_ON(CONFIG_NR_CPUS >= (1U << _Q_TAIL_CPU_BITS));
 
 /* 1. Very first thing — special slowpath cases */
-	if (pv_enabled())
-		goto pv_queue;
+    if (pv_enabled())
+        goto pv_queue;
 
-	if (virt_spin_lock(lock))
-		return;
+    if (virt_spin_lock(lock))
+        return;
 
 /* 2. Pending -> locked handover optimistic spinning (very important!) */
     /* Wait for in-progress pending->locked hand-overs with a bounded
@@ -6600,108 +6774,106 @@ spin_unlock(spinlock_t *lock) {
 ```c
 static inline u64 paravirt_steal_clock(int cpu)
 {
-	return static_call(pv_steal_clock)(cpu);
+    return static_call(pv_steal_clock)(cpu);
 }
 
 int __init pv_time_init(void)
 {
-	int ret;
+    int ret;
 
-	if (!has_pv_steal_clock())
-		return 0;
+    if (!has_pv_steal_clock())
+        return 0;
 
-	ret = pv_time_init_stolen_time() {
+    ret = pv_time_init_stolen_time() {
         cpuhp_setup_state(CPUHP_AP_ONLINE_DYN,
             "hypervisor/arm/pvtime:online",
             stolen_time_cpu_online,
             stolen_time_cpu_down_prepare);
     }
-	if (ret)
-		return ret;
+    if (ret)
+        return ret;
 
-	static_call_update(pv_steal_clock, para_steal_clock);
+    static_call_update(pv_steal_clock, para_steal_clock);
 
-	static_key_slow_inc(&paravirt_steal_enabled);
-	if (steal_acc)
-		static_key_slow_inc(&paravirt_steal_rq_enabled);
+    static_key_slow_inc(&paravirt_steal_enabled);
+    if (steal_acc)
+        static_key_slow_inc(&paravirt_steal_rq_enabled);
 
-	pr_info("using stolen time PV\n");
+    pr_info("using stolen time PV\n");
 
-	return 0;
+    return 0;
 }
 
 u64 para_steal_clock(int cpu)
 {
-	struct pvclock_vcpu_stolen_time *kaddr = NULL;
-	struct pv_time_stolen_time_region *reg;
-	u64 ret = 0;
+    struct pvclock_vcpu_stolen_time *kaddr = NULL;
+    struct pv_time_stolen_time_region *reg;
+    u64 ret = 0;
 
-	reg = per_cpu_ptr(&stolen_time_region, cpu);
+    reg = per_cpu_ptr(&stolen_time_region, cpu);
 
-	/*
-	 * paravirt_steal_clock() may be called before the CPU
-	 * online notification callback runs. Until the callback
-	 * has run we just return zero.
-	 */
-	rcu_read_lock();
-	kaddr = rcu_dereference(reg->kaddr);
-	if (!kaddr) {
-		rcu_read_unlock();
-		return 0;
-	}
+    /* paravirt_steal_clock() may be called before the CPU
+     * online notification callback runs. Until the callback
+     * has run we just return zero. */
+    rcu_read_lock();
+    kaddr = rcu_dereference(reg->kaddr);
+    if (!kaddr) {
+        rcu_read_unlock();
+        return 0;
+    }
 
-	ret = le64_to_cpu(READ_ONCE(kaddr->stolen_time));
-	rcu_read_unlock();
-	return ret;
+    ret = le64_to_cpu(READ_ONCE(kaddr->stolen_time));
+    rcu_read_unlock();
+    return ret;
 }
 
 int stolen_time_cpu_online(unsigned int cpu)
 {
-	struct pvclock_vcpu_stolen_time *kaddr = NULL;
-	struct pv_time_stolen_time_region *reg;
-	struct arm_smccc_res res;
+    struct pvclock_vcpu_stolen_time *kaddr = NULL;
+    struct pv_time_stolen_time_region *reg;
+    struct arm_smccc_res res;
 
-	reg = this_cpu_ptr(&stolen_time_region);
+    reg = this_cpu_ptr(&stolen_time_region);
 
-	arm_smccc_1_1_invoke(ARM_SMCCC_HV_PV_TIME_ST, &res);
+    arm_smccc_1_1_invoke(ARM_SMCCC_HV_PV_TIME_ST, &res);
 
-	if (res.a0 == SMCCC_RET_NOT_SUPPORTED)
-		return -EINVAL;
+    if (res.a0 == SMCCC_RET_NOT_SUPPORTED)
+        return -EINVAL;
 
-	kaddr = memremap(res.a0,
-			      sizeof(struct pvclock_vcpu_stolen_time),
-			      MEMREMAP_WB);
+    kaddr = memremap(res.a0,
+                  sizeof(struct pvclock_vcpu_stolen_time),
+                  MEMREMAP_WB);
 
-	rcu_assign_pointer(reg->kaddr, kaddr);
+    rcu_assign_pointer(reg->kaddr, kaddr);
 
-	if (!reg->kaddr) {
-		pr_warn("Failed to map stolen time data structure\n");
-		return -ENOMEM;
-	}
+    if (!reg->kaddr) {
+        pr_warn("Failed to map stolen time data structure\n");
+        return -ENOMEM;
+    }
 
-	if (le32_to_cpu(kaddr->revision) != 0 ||
-	    le32_to_cpu(kaddr->attributes) != 0) {
-		pr_warn_once("Unexpected revision or attributes in stolen time data\n");
-		return -ENXIO;
-	}
+    if (le32_to_cpu(kaddr->revision) != 0 ||
+        le32_to_cpu(kaddr->attributes) != 0) {
+        pr_warn_once("Unexpected revision or attributes in stolen time data\n");
+        return -ENXIO;
+    }
 
-	return 0;
+    return 0;
 }
 
 int stolen_time_cpu_down_prepare(unsigned int cpu)
 {
-	struct pvclock_vcpu_stolen_time *kaddr = NULL;
-	struct pv_time_stolen_time_region *reg;
+    struct pvclock_vcpu_stolen_time *kaddr = NULL;
+    struct pv_time_stolen_time_region *reg;
 
-	reg = this_cpu_ptr(&stolen_time_region);
-	if (!reg->kaddr)
-		return 0;
+    reg = this_cpu_ptr(&stolen_time_region);
+    if (!reg->kaddr)
+        return 0;
 
-	kaddr = rcu_replace_pointer(reg->kaddr, NULL, true);
-	synchronize_rcu();
-	memunmap(kaddr);
+    kaddr = rcu_replace_pointer(reg->kaddr, NULL, true);
+    synchronize_rcu();
+    memunmap(kaddr);
 
-	return 0;
+    return 0;
 }
 ```
 
@@ -7584,34 +7756,27 @@ __rt_mutex_lock() {
                         /* XXX used to be waiter->prio, not waiter->task->prio */
                         prio = __rt_effective_prio(pi_task, p->normal_prio);
 
-                        /*
-                        * If nothing changed; bail early.
-                        */
+                        /* If nothing changed; bail early. */
                         if (p->pi_top_task == pi_task && prio == p->prio && !dl_prio(prio))
                             return;
 
                         rq = __task_rq_lock(p, &rf);
                         update_rq_clock(rq);
-                        /*
-                        * Set under pi_lock && rq->lock, such that the value can be used under
+                        /* Set under pi_lock && rq->lock, such that the value can be used under
                         * either lock.
                         *
                         * Note that there is loads of tricky to make this pointer cache work
                         * right. rt_mutex_slowunlock()+rt_mutex_postunlock() work together to
                         * ensure a task is de-boosted (pi_task is set to NULL) before the
                         * task is allowed to run again (and can exit). This ensures the pointer
-                        * points to a blocked task -- which guarantees the task is present.
-                        */
+                        * points to a blocked task -- which guarantees the task is present. */
                         p->pi_top_task = pi_task;
 
-                        /*
-                        * For FIFO/RR we only need to set prio, if that matches we're done.
-                        */
+                        /* For FIFO/RR we only need to set prio, if that matches we're done. */
                         if (prio == p->prio && !dl_prio(prio))
                             goto out_unlock;
 
-                        /*
-                        * Idle task boosting is a no-no in general. There is one
+                        /* Idle task boosting is a no-no in general. There is one
                         * exception, when PREEMPT_RT and NOHZ is active:
                         *
                         * The idle task calls get_next_timer_interrupt() and holds
@@ -7620,8 +7785,7 @@ __rt_mutex_lock() {
                         * ignore the boosting request, as the idle CPU runs this code
                         * with interrupts disabled and will complete the lock
                         * protected section without being interrupted. So there is no
-                        * real need to boost.
-                        */
+                        * real need to boost. */
                         if (unlikely(p == rq->idle)) {
                             WARN_ON(p != rq->curr);
                             WARN_ON(p->pi_blocked_on);
@@ -7641,15 +7805,13 @@ __rt_mutex_lock() {
                             queue_flag |= DEQUEUE_CLASS;
 
                         scoped_guard (sched_change, p, queue_flag) {
-                            /*
-                            * Boosting condition are:
+                            /* Boosting condition are:
                             * 1. -rt task is running and holds mutex A
                             *      --> -dl task blocks on mutex A
                             *
                             * 2. -dl task is running and holds mutex A
                             *      --> -dl task blocks on mutex A and could preempt the
-                            *          running task
-                            */
+                            *          running task */
                             if (dl_prio(prio)) {
                                 if (!dl_prio(p->normal_prio) ||
                                     (pi_task && dl_prio(pi_task->prio) &&
