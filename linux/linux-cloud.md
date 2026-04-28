@@ -3387,6 +3387,239 @@ void mem_cgroup_swapout(struct folio *folio, swp_entry_t entry)
 
 ### mem_cgroup_pressure
 
+### mod_lruvec_state
+
+**Memory Statistics**:
+```sh
+Global:             vm_zone_stat[]              (atomic_long_t array, zone-level)
+                    vm_node_stat[]              (atomic_long_t array, node-level)
+                    vm_event_states             (per-CPU, enum vm_event_item)
+
+Per-node (pgdat):   pgdat->vm_stat[]            (atomic_long_t, node_stat_item)
+
+Per-memcg:          mem_cgroup
+                        ->vmstats_percpu        (per-CPU: state[], events[])
+                        ->vmstats               (flushed aggregate: state[], state_local[])
+
+Per-lruvec:         mem_cgroup_per_node         (= memcg ∩ node)
+                        ->lruvec_stats_percpu   (per-CPU: state[])
+                        ->lruvec_stats          (flushed: state[], state_local[])
+```
+
+```c
+void mod_lruvec_state(struct lruvec *lruvec, enum node_stat_item idx, int val)
+{
+    /* 1. per-node (and global via SMP batching) */
+    mod_node_page_state(lruvec_pgdat(lruvec), idx, val) {
+        mod_node_state(pgdat, item, delta, 0) {
+            struct per_cpu_nodestat __percpu *pcp = pgdat->per_cpu_nodestats;
+            s8 __percpu *p = pcp->vm_node_stat_diff + item;
+            long n, t, z;
+            s8 o;
+
+            if (vmstat_item_in_bytes(item)) {
+                VM_WARN_ON_ONCE(delta & (PAGE_SIZE - 1));
+                delta >>= PAGE_SHIFT;
+            }
+
+            o = this_cpu_read(*p);
+            do {
+                z = 0;  /* overflow to node counters */
+
+                t = this_cpu_read(pcp->stat_threshold);
+
+                n = delta + (long)o;
+
+                if (abs(n) > t) {
+                    int os = overstep_mode * (t >> 1) ;
+
+                    /* Overflow must be added to node counters */
+                    z = n + os;
+                    n = -os;
+                }
+            } while (!this_cpu_try_cmpxchg(*p, &o, n));
+
+            if (z) {
+                node_page_state_add(z, pgdat, item) {
+                    atomic_long_add(x, &pgdat->vm_stat[item]);
+                    atomic_long_add(x, &vm_node_stat[item]);
+                }
+            }
+        }
+    }
+
+    /* 2. per-memcg + per-lruvec (writes into percpu slots) */
+    if (!mem_cgroup_disabled()) {
+        mod_memcg_lruvec_state(lruvec, idx, val) {
+            struct pglist_data *pgdat = lruvec_pgdat(lruvec);
+            struct mem_cgroup_per_node *pn;
+            struct mem_cgroup *memcg;
+
+            pn = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+            memcg = get_non_dying_memcg_start(pn->memcg);
+            pn = memcg->nodeinfo[pgdat->node_id];
+
+            __mod_memcg_lruvec_state(pn, idx, val) {
+                struct mem_cgroup *memcg = pn->memcg;
+                int i = memcg_stats_index(idx);
+                int cpu;
+
+                if (WARN_ONCE(BAD_STAT_IDX(i), "%s: missing stat item %d\n", __func__, idx))
+                    return;
+
+                cpu = get_cpu() {
+                    preempt_disable();
+                    __smp_processor_id();
+                }
+
+                /* Update memcg */
+                this_cpu_add(memcg->vmstats_percpu->state[i], val);
+
+                /* Update lruvec */
+                this_cpu_add(pn->lruvec_stats_percpu->state[i], val);
+
+                val = memcg_state_val_in_pages(idx, val) {
+                    int unit = memcg_page_state_unit(idx) {
+                        switch (item) {
+                        case MEMCG_PERCPU_B:
+                        case MEMCG_ZSWAP_B:
+                        case NR_SLAB_RECLAIMABLE_B:
+                        case NR_SLAB_UNRECLAIMABLE_B:
+                            return 1;
+                        case NR_KERNEL_STACK_KB:
+                            return SZ_1K;
+                        default:
+                        }
+                    }
+                    long res;
+
+                    if (!val || unit == PAGE_SIZE)
+                        return val;
+
+                    /* Get the absolute value of (val * unit / PAGE_SIZE). */
+                    res = mult_frac(abs(val), unit, PAGE_SIZE);
+                    /* Round up zero values. */
+                    res = res ? : 1;
+
+                    return val < 0 ? -res : res;
+                }
+                memcg_rstat_updated(memcg, val, cpu) {
+                    struct memcg_vmstats_percpu __percpu *statc_pcpu;
+                    struct memcg_vmstats_percpu *statc;
+                    unsigned long stats_updates;
+
+                    if (!val)
+                        return;
+
+                    css_rstat_updated(&memcg->css, cpu);
+                    statc_pcpu = memcg->vmstats_percpu;
+                    for (; statc_pcpu; statc_pcpu = statc->parent_pcpu) {
+                        statc = this_cpu_ptr(statc_pcpu);
+                        /* If @memcg is already flushable then all its ancestors are
+                        * flushable as well and also there is no need to increase
+                        * stats_updates. */
+                        if (memcg_vmstats_needs_flush(statc->vmstats))
+                            break;
+
+                        stats_updates = this_cpu_add_return(statc_pcpu->stats_updates, abs(val));
+                        if (stats_updates < MEMCG_CHARGE_BATCH)
+                            continue;
+
+                        stats_updates = this_cpu_xchg(statc_pcpu->stats_updates, 0);
+                        atomic_long_add(stats_updates, &statc->vmstats->stats_updates);
+                    }
+                }
+                trace_mod_memcg_lruvec_state(memcg, idx, val);
+
+                put_cpu();
+            }
+
+            get_non_dying_memcg_end();
+        }
+    }
+}
+```
+
+#### mem_cgroup_flush_stats
+
+```c
+static DECLARE_DEFERRABLE_WORK(stats_flush_dwork, flush_memcg_stats_dwork);
+
+void mem_cgroup_flush_stats_ratelimited(struct mem_cgroup *memcg)
+{
+	/* Only flush if the periodic flusher is one full cycle late */
+	if (time_after64(jiffies_64, READ_ONCE(flush_last_time) + 2*FLUSH_TIME)) {
+		mem_cgroup_flush_stats(memcg) {
+            if (mem_cgroup_disabled())
+                return;
+
+            if (!memcg)
+                memcg = root_mem_cgroup;
+
+            __mem_cgroup_flush_stats(memcg, false);
+        }
+    }
+}
+
+static void flush_memcg_stats_dwork(struct work_struct *w)
+{
+    /* Deliberately ignore memcg_vmstats_needs_flush() here so that flushing
+     * in latency-sensitive paths is as cheap as possible. */
+    __mem_cgroup_flush_stats(root_mem_cgroup, true) {
+        bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats) {
+            return atomic_long_read(&vmstats->stats_updates) > MEMCG_CHARGE_BATCH * num_online_cpus();
+        }
+
+        trace_memcg_flush_stats(memcg, atomic_long_read(&memcg->vmstats->stats_updates),
+            force, needs_flush);
+
+        if (!force && !needs_flush)
+            return;
+
+        if (mem_cgroup_is_root(memcg))
+            WRITE_ONCE(flush_last_time, jiffies_64);
+
+        css_rstat_flush(&memcg->css);
+    }
+
+    queue_delayed_work(system_dfl_wq, &stats_flush_dwork, FLUSH_TIME);
+}
+
+void css_rstat_flush(struct cgroup_subsys_state *css)
+{
+    int cpu;
+    bool is_self = css_is_self(css);
+
+    /* Since bpf programs can call this function, prevent access to
+     * uninitialized rstat pointers. */
+    if (!css_uses_rstat(css))
+        return;
+
+    might_sleep();
+    for_each_possible_cpu(cpu) {
+        struct cgroup_subsys_state *pos;
+
+        /* Reacquire for each CPU to avoid disabling IRQs too long */
+        __css_rstat_lock(css, cpu);
+        pos = css_rstat_updated_list(css, cpu);
+        for (; pos; pos = pos->rstat_flush_next) {
+            if (is_self) {
+                cgroup_base_stat_flush(pos->cgroup, cpu);
+                bpf_rstat_flush(pos->cgroup, cgroup_parent(pos->cgroup), cpu);
+            } else
+                pos->ss->css_rstat_flush(pos, cpu) {
+                    mem_cgroup_css_rstat_flush();
+                    blkcg_rstat_flush();
+                }
+        }
+        __css_rstat_unlock(css, cpu);
+        if (!cond_resched())
+            cpu_relax();
+    }
+}
+```
+
+
 ## cpu_cgroup
 
 ```c
