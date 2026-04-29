@@ -2767,6 +2767,8 @@ void __might_resched(const char *file, int line, unsigned int offsets)
 
 ![](../images/kernel/proc-dl-se.svg)
 
+**EDF** picks who runs (earliest absolute deadline wins). **CBS** enforces how much each task can run before it has to wait for its next period. **Admission control** ensures the set is feasible. The **throttling timer** is the mechanism that ties the three together.
+
 * [LWN - Deadline servers as a realtime throttling replacement](https://lwn.net/Articles/934415/)
     * [OSPM 2025 - Hierarchical CBS with deadline servers](https://lwn.net/Articles/1021332)
     * [[PATCH V7 0/9] SCHED_DEADLINE server infrastructure](https://lore.kernel.org/all/cover.1716811043.git.bristot@kernel.org/)
