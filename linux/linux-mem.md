@@ -16632,6 +16632,337 @@ static void swap_writepage_bdev_sync(struct folio *folio,
 }
 ```
 
+## zswap_store
+
+```c
+struct zswap_pool {
+    struct zs_pool          *zs_pool;
+    struct crypto_acomp_ctx __percpu *acomp_ctx;
+    struct percpu_ref       ref;
+    struct list_head        list;
+    struct work_struct      release_work;
+    struct hlist_node       node;
+    char                    tfm_name[CRYPTO_MAX_ALG_NAME];
+};
+
+/* swpentry - associated swap entry, the offset indexes into the xarray
+ * length   - the length in bytes of the compressed page data.
+ *            Needed during decompression. If equal to PAGE_SIZE, the
+ *            page is stored uncompressed.
+ * referenced - true if the entry recently entered the zswap pool.
+ *              Unset by the writeback logic. The entry is only reclaimed
+ *              by the writeback logic if referenced is unset.
+ * pool   - the zswap_pool the entry's data is in
+ * handle - zsmalloc allocation handle that stores the compressed page data
+ * objcg  - the obj_cgroup that the compressed memory is charged to
+ * lru    - handle to the pool's lru used to evict pages */
+struct zswap_entry {
+    swp_entry_t         swpentry;
+    unsigned int        length;
+    bool                referenced;
+    struct zswap_pool  *pool;
+    unsigned long       handle;
+    struct obj_cgroup  *objcg;
+    struct list_head    lru;
+};
+
+static struct xarray *zswap_trees[MAX_SWAPFILES];
+
+bool zswap_store(struct folio *folio)
+{
+    long nr_pages = folio_nr_pages(folio);
+    swp_entry_t swp = folio->swap;
+    struct obj_cgroup *objcg = NULL;
+    struct mem_cgroup *memcg = NULL;
+    struct zswap_pool *pool;
+    bool ret = false;
+    long index;
+
+    if (!zswap_enabled)
+        goto check_old;
+
+    objcg = get_obj_cgroup_from_folio(folio);
+    if (objcg && !obj_cgroup_may_zswap(objcg)) {
+        memcg = get_mem_cgroup_from_objcg(objcg);
+        if (shrink_memcg(memcg)) {
+            mem_cgroup_put(memcg);
+            goto put_objcg;
+        }
+        mem_cgroup_put(memcg);
+    }
+
+    if (zswap_check_limits())
+        goto put_objcg;
+
+    pool = zswap_pool_current_get();
+    if (!pool)
+        goto put_objcg;
+
+    if (objcg) {
+        memcg = get_mem_cgroup_from_objcg(objcg);
+        if (memcg_list_lru_alloc(memcg, &zswap_list_lru, GFP_KERNEL)) {
+            mem_cgroup_put(memcg);
+            goto put_pool;
+        }
+        mem_cgroup_put(memcg);
+    }
+
+    for (index = 0; index < nr_pages; ++index) {
+        struct page *page = folio_page(folio, index);
+
+        if (!zswap_store_page(page, objcg, pool)) {
+            goto put_pool;
+        }
+    }
+
+    if (objcg)
+        count_objcg_events(objcg, ZSWPOUT, nr_pages);
+
+    count_vm_events(ZSWPOUT, nr_pages);
+    ret = true;
+
+put_pool:
+    zswap_pool_put(pool);
+put_objcg:
+    obj_cgroup_put(objcg);
+    if (!ret && zswap_pool_reached_full)
+        queue_work(shrink_wq, &zswap_shrink_work);
+check_old:
+    /* If the zswap store fails or zswap is disabled, invalidate any
+     * stale entries previously stored at the offsets corresponding to
+     * each page of the folio. Otherwise, writeback could overwrite
+     * the new data in the swapfile. */
+    if (!ret) {
+        unsigned type = swp_type(swp);
+        pgoff_t offset = swp_offset(swp);
+        struct zswap_entry *entry;
+        struct xarray *tree;
+
+        for (index = 0; index < nr_pages; ++index) {
+            tree = swap_zswap_tree(swp_entry(type, offset + index));
+            entry = xa_erase(tree, offset + index);
+            if (entry)
+                zswap_entry_free(entry);
+        }
+    }
+
+    return ret;
+}
+
+static bool zswap_store_page(struct page *page,
+                             struct obj_cgroup *objcg,
+                             struct zswap_pool *pool)
+{
+    swp_entry_t page_swpentry = page_swap_entry(page);
+    struct zswap_entry *entry, *old;
+
+    entry = zswap_entry_cache_alloc(GFP_KERNEL, page_to_nid(page));
+    if (!entry) {
+        zswap_reject_kmemcache_fail++;
+        return false;
+    }
+
+    if (!zswap_compress(page, entry, pool))
+        goto compress_failed;
+
+    old = xa_store(swap_zswap_tree(page_swpentry),
+                   swp_offset(page_swpentry),
+                   entry, GFP_KERNEL);
+    if (xa_is_err(old)) {
+        zswap_reject_alloc_fail++;
+        goto store_failed;
+    }
+
+    /* Get rid of a possibly stale old entry (e.g. folio was redirtied). */
+    if (old)
+        zswap_entry_free(old);
+
+    zswap_pool_get(pool);
+    if (objcg) {
+        obj_cgroup_get(objcg);
+        obj_cgroup_charge_zswap(objcg, entry->length);
+    }
+    atomic_long_inc(&zswap_stored_pages);
+    if (entry->length == PAGE_SIZE)
+        atomic_long_inc(&zswap_stored_incompressible_pages);
+
+    entry->pool = pool;
+    entry->swpentry = page_swpentry;
+    entry->objcg = objcg;
+    entry->referenced = true;
+    if (entry->length) {
+        INIT_LIST_HEAD(&entry->lru);
+        zswap_lru_add(&zswap_list_lru, entry);
+    }
+    return true;
+
+store_failed:
+    zs_free(pool->zs_pool, entry->handle);
+compress_failed:
+    zswap_entry_cache_free(entry);
+    return false;
+}
+
+static bool zswap_compress(struct page *page, struct zswap_entry *entry,
+                            struct zswap_pool *pool)
+{
+    struct crypto_acomp_ctx *acomp_ctx;
+    struct scatterlist input, output;
+    int comp_ret = 0, alloc_ret = 0;
+    unsigned int dlen = PAGE_SIZE;
+    unsigned long handle;
+    gfp_t gfp;
+    u8 *dst;
+    bool mapped = false;
+
+    acomp_ctx = raw_cpu_ptr(pool->acomp_ctx);
+    mutex_lock(&acomp_ctx->mutex);
+
+    dst = acomp_ctx->buffer;
+    sg_init_table(&input, 1);
+    sg_set_page(&input, page, PAGE_SIZE, 0);
+    sg_init_one(&output, dst, PAGE_SIZE);
+    acomp_request_set_params(acomp_ctx->req, &input, &output, PAGE_SIZE, dlen);
+    comp_ret = crypto_wait_req(crypto_acomp_compress(acomp_ctx->req), &acomp_ctx->wait);
+    dlen = acomp_ctx->req->dlen;
+
+    /* If a page cannot be compressed into a size smaller than PAGE_SIZE,
+     * save the content as-is (uncompressed) to keep the LRU writeback
+     * order. If writeback is disabled for this memcg, reject the page. */
+    if (comp_ret || !dlen || dlen >= PAGE_SIZE) {
+        rcu_read_lock();
+        if (!mem_cgroup_zswap_writeback_enabled(folio_memcg(page_folio(page)))) {
+            rcu_read_unlock();
+            comp_ret = comp_ret ? comp_ret : -EINVAL;
+            goto unlock;
+        }
+        rcu_read_unlock();
+        comp_ret = 0;
+        dlen = PAGE_SIZE;
+        dst = kmap_local_page(page);
+        mapped = true;
+    }
+
+    gfp = GFP_NOWAIT | __GFP_NORETRY | __GFP_HIGHMEM | __GFP_MOVABLE;
+    handle = zs_malloc(pool->zs_pool, dlen, gfp, page_to_nid(page));
+    if (IS_ERR_VALUE(handle)) {
+        alloc_ret = PTR_ERR((void *)handle);
+        goto unlock;
+    }
+
+    zs_obj_write(pool->zs_pool, handle, dst, dlen);
+    entry->handle = handle;
+    entry->length = dlen;
+
+unlock:
+    if (mapped)
+        kunmap_local(dst);
+    if (comp_ret == -ENOSPC || alloc_ret == -ENOSPC)
+        zswap_reject_compress_poor++;
+    else if (comp_ret)
+        zswap_reject_compress_fail++;
+    else if (alloc_ret)
+        zswap_reject_alloc_fail++;
+
+    mutex_unlock(&acomp_ctx->mutex);
+    return comp_ret == 0 && alloc_ret == 0;
+}
+```
+
+## zswap_load
+
+```c
+/* Return: 0 on success (folio unlocked, marked up-to-date), or:
+ *  -EIO    : content was in zswap but decompression failed
+ *             (folio unlocked, NOT marked up-to-date → SIGBUS)
+ *  -EINVAL : content was in zswap but folio is large (unsupported)
+ *             (folio unlocked, NOT marked up-to-date → SIGBUS)
+ *  -ENOENT : content was not in zswap (folio remains locked) */
+int zswap_load(struct folio *folio)
+{
+    swp_entry_t swp = folio->swap;
+    pgoff_t offset = swp_offset(swp);
+    struct xarray *tree = swap_zswap_tree(swp);
+    struct zswap_entry *entry;
+
+    if (zswap_never_enabled())
+        return -ENOENT;
+
+    /* Large folios are not properly handled: they may be only partially
+     * stored in zswap. */
+    if (WARN_ON_ONCE(folio_test_large(folio))) {
+        folio_unlock(folio);
+        return -EINVAL;
+    }
+
+    entry = xa_load(tree, offset);
+    if (!entry)
+        return -ENOENT;
+
+    if (!zswap_decompress(entry, folio)) {
+        folio_unlock(folio);
+        return -EIO;
+    }
+
+    folio_mark_uptodate(folio);
+    count_vm_event(ZSWPIN);
+    if (entry->objcg)
+        count_objcg_events(entry->objcg, ZSWPIN, 1);
+
+    /* Invalidate the zswap entry: the swapcache is now the authoritative
+     * owner of the page. Having two in-memory copies wastes memory and
+     * outweighs the benefit of caching the compression work. */
+    folio_mark_dirty(folio);
+    xa_erase(tree, offset);
+    zswap_entry_free(entry);
+
+    folio_unlock(folio);
+    return 0;
+}
+
+static bool zswap_decompress(struct zswap_entry *entry, struct folio *folio)
+{
+    struct zswap_pool *pool = entry->pool;
+    struct scatterlist input[2]; /* zsmalloc returns an SG list of 1–2 entries */
+    struct scatterlist output;
+    struct crypto_acomp_ctx *acomp_ctx;
+    int ret = 0, dlen;
+
+    acomp_ctx = raw_cpu_ptr(pool->acomp_ctx);
+    mutex_lock(&acomp_ctx->mutex);
+    zs_obj_read_sg_begin(pool->zs_pool, entry->handle, input, entry->length);
+
+    /* Entries of length PAGE_SIZE are stored uncompressed. */
+    if (entry->length == PAGE_SIZE) {
+        void *dst;
+
+        dst = kmap_local_folio(folio, 0);
+        memcpy_from_sglist(dst, input, 0, PAGE_SIZE);
+        dlen = PAGE_SIZE;
+        kunmap_local(dst);
+        flush_dcache_folio(folio);
+    } else {
+        sg_init_table(&output, 1);
+        sg_set_folio(&output, folio, PAGE_SIZE, 0);
+        acomp_request_set_params(acomp_ctx->req, input, &output,
+                                 entry->length, PAGE_SIZE);
+        ret = crypto_wait_req(crypto_acomp_decompress(acomp_ctx->req),
+                              &acomp_ctx->wait);
+        dlen = acomp_ctx->req->dlen;
+    }
+
+    zs_obj_read_sg_end(pool->zs_pool, entry->handle);
+    mutex_unlock(&acomp_ctx->mutex);
+
+    if (!ret && dlen == PAGE_SIZE)
+        return true;
+
+    zswap_decompress_fail++;
+    pr_alert_ratelimited("Decompression error from zswap\n");
+    return false;
+}
+```
+
 # mm_core_init
 
 ```c
