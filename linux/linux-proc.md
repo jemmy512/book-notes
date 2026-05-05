@@ -225,6 +225,7 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
             * In absence of normal_prio, children of a priority boosted task will get boosted priority as well and this will cause CPU starvation for other tasks. To avoid such a situation, the kernel maintains nomral_prio of a task. Forked tasks usually get their effective prio set to normal_prio of the parent and hence don’t get boosted priority.
         * **prio**: is the effective priority of a task and is used in all scheduling related decision makings.
 
+* [Linux 内核十大技术创新 - 2025](https://mp.weixin.qq.com/s/QwDOP2e7KuXq0T31Etx2rg) ⊙ [2024](https://mp.weixin.qq.com/s/3wWPcmNU4IJX6c088qfJJw) ⊙ [2023](https://mp.weixin.qq.com/s/nwwCReagfzmby491BSF6KA) ⊙ [2022](https://mp.weixin.qq.com/s/GkOtj_Nr7dGiQ7sPVfPEvg)
 # cpu
 
 <img src='../images/kernel/init-cpu.png' style='max-height:850px'/>
@@ -9806,9 +9807,7 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) 
     }
 
     if (static_branch_unlikely(&sched_numa_balancing)){
-        task_tick_numa(rq, curr) {
-
-        }
+        task_tick_numa(rq, curr);
     }
 
     update_misfit_status(curr, rq);
