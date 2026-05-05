@@ -2194,7 +2194,7 @@ static struct mempolicy default_policy = {
 #ifndef CONFIG_NUMA
 static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order)
 {
-	return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
+    return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
         if (nid == NUMA_NO_NODE)
             nid = numa_mem_id();
 
@@ -2292,12 +2292,10 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
                     struct page *page;
                     gfp_t preferred_gfp;
 
-                    /*
-                    * This is a two pass approach. The first pass will only try the
+                    /* This is a two pass approach. The first pass will only try the
                     * preferred nodes but skip the direct reclaim and allow the
                     * allocation to fail, while the second pass will try all the
-                    * nodes in system.
-                    */
+                    * nodes in system. */
                     preferred_gfp = gfp | __GFP_NOWARN;
                     preferred_gfp &= ~(__GFP_DIRECT_RECLAIM | __GFP_NOFAIL);
                     page = __alloc_frozen_pages_noprof(preferred_gfp, order, nid, nodemask);
@@ -21508,8 +21506,629 @@ do_wp_page(vmf) {
 
 ## do_numa_page
 
-```c
+* [[PATCH -V14 0/3] NUMA balancing: optimize memory placement for memory tiering system](https://lore.kernel.org/all/20220301085329.3210428-1-ying.huang@intel.com/)
+* [[PATCH v15 00/10] mm/demotion: Memory tiers and demotion](https://lore.kernel.org/all/20220818131042.113280-1-aneesh.kumar@linux.ibm.com/)
 
+### task_tick_numa
+
+```c
+void task_tick_numa(struct rq *rq, struct task_struct *curr)
+{
+    struct callback_head *work = &curr->numa_work;
+    u64 period, now;
+
+    /* We don't care about NUMA placement if we don't have memory. */
+    if (!curr->mm || (curr->flags & (PF_EXITING | PF_KTHREAD)) || work->next != work)
+        return;
+
+    /* Using runtime rather than walltime has the dual advantage that
+     * we (mostly) drive the selection from busy threads and that the
+     * task needs to have done some actual work before we bother with
+     * NUMA placement. */
+    now = curr->se.sum_exec_runtime;
+    period = (u64)curr->numa_scan_period * NSEC_PER_MSEC;
+
+    if (now > curr->node_stamp + period) {
+        if (!curr->node_stamp)
+            curr->numa_scan_period = task_scan_start(curr);
+        curr->node_stamp += period;
+
+        if (!time_before(jiffies, curr->mm->numa_next_scan))
+            task_work_add(curr, work, TWA_RESUME); /* task_numa_work */
+    }
+}
+
+void task_numa_work(struct callback_head *work)
+{
+    unsigned long migrate, next_scan, now = jiffies;
+    struct task_struct *p = current;
+    struct mm_struct *mm = p->mm;
+    u64 runtime = p->se.sum_exec_runtime;
+    struct vm_area_struct *vma;
+    unsigned long start, end;
+    unsigned long nr_pte_updates = 0;
+    long pages, virtpages;
+    struct vma_iterator vmi;
+    bool vma_pids_skipped;
+    bool vma_pids_forced = false;
+
+    WARN_ON_ONCE(p != container_of(work, struct task_struct, numa_work));
+
+    work->next = work;
+    /* Who cares about NUMA placement when they're dying.
+     *
+     * NOTE: make sure not to dereference p->mm before this check,
+     * exit_task_work() happens _after_ exit_mm() so we could be called
+     * without p->mm even though we still had it when we enqueued this
+     * work. */
+    if (p->flags & PF_EXITING)
+        return;
+
+    /* Memory is pinned to only one NUMA node via cpuset.mems, naturally
+     * no page can be migrated. */
+    if (cpusets_enabled() && nodes_weight(cpuset_current_mems_allowed) == 1) {
+        trace_sched_skip_cpuset_numa(current, &cpuset_current_mems_allowed);
+        return;
+    }
+
+    if (!mm->numa_next_scan) {
+        mm->numa_next_scan = now +
+            msecs_to_jiffies(sysctl_numa_balancing_scan_delay);
+    }
+
+    /* Enforce maximal scan/migration frequency.. */
+    migrate = mm->numa_next_scan;
+    if (time_before(now, migrate))
+        return;
+
+    if (p->numa_scan_period == 0) {
+        p->numa_scan_period_max = task_scan_max(p);
+        p->numa_scan_period = task_scan_start(p);
+    }
+
+    next_scan = now + msecs_to_jiffies(p->numa_scan_period);
+    if (!try_cmpxchg(&mm->numa_next_scan, &migrate, next_scan))
+        return;
+
+    /* Delay this task enough that another task of this mm will likely win
+     * the next time around. */
+    p->node_stamp += 2 * TICK_NSEC;
+
+    pages = sysctl_numa_balancing_scan_size;
+    pages <<= 20 - PAGE_SHIFT; /* MB in pages */
+    virtpages = pages * 8;       /* Scan up to this much virtual space */
+    if (!pages)
+        return;
+
+
+    if (!mmap_read_trylock(mm))
+        return;
+
+    /* VMAs are skipped if the current PID has not trapped a fault within
+     * the VMA recently. Allow scanning to be forced if there is no
+     * suitable VMA remaining. */
+    vma_pids_skipped = false;
+
+retry_pids:
+    start = mm->numa_scan_offset;
+    vma_iter_init(&vmi, mm, start);
+    vma = vma_next(&vmi);
+    if (!vma) {
+        reset_ptenuma_scan(p) {
+            WRITE_ONCE(p->mm->numa_scan_seq, READ_ONCE(p->mm->numa_scan_seq) + 1);
+            p->mm->numa_scan_offset = 0;
+        }
+        start = 0;
+        vma_iter_set(&vmi, start);
+        vma = vma_next(&vmi);
+    }
+
+    for (; vma; vma = vma_next(&vmi)) {
+        /* mof: migrate on fault */
+        if (!vma_migratable(vma) || !vma_policy_mof(vma) ||
+            is_vm_hugetlb_page(vma) || (vma->vm_flags & VM_MIXEDMAP)) {
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_UNSUITABLE);
+            continue;
+        }
+
+        /* Shared library pages mapped by multiple processes are not
+         * migrated as it is expected they are cache replicated. Avoid
+         * hinting faults in read-only file-backed mappings or the vDSO
+         * as migrating the pages will be of marginal benefit. */
+        if (!vma->vm_mm ||
+            (vma->vm_file && (vma->vm_flags & (VM_READ|VM_WRITE)) == (VM_READ))) {
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_SHARED_RO);
+            continue;
+        }
+
+        /* Skip inaccessible VMAs to avoid any confusion between
+         * PROT_NONE and NUMA hinting PTEs */
+        if (!vma_is_accessible(vma)) {
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_INACCESSIBLE);
+            continue;
+        }
+
+        /* Initialise new per-VMA NUMAB state. */
+        if (!vma->numab_state) {
+            struct vma_numab_state *ptr;
+
+            ptr = kzalloc_obj(*ptr);
+            if (!ptr)
+                continue;
+
+            if (cmpxchg(&vma->numab_state, NULL, ptr)) {
+                kfree(ptr);
+                continue;
+            }
+
+            vma->numab_state->start_scan_seq = mm->numa_scan_seq;
+
+            vma->numab_state->next_scan = now +
+                msecs_to_jiffies(sysctl_numa_balancing_scan_delay);
+
+            /* Reset happens after 4 times scan delay of scan start */
+            vma->numab_state->pids_active_reset =  vma->numab_state->next_scan +
+                msecs_to_jiffies(VMA_PID_RESET_PERIOD);
+
+            /* Ensure prev_scan_seq does not match numa_scan_seq,
+             * to prevent VMAs being skipped prematurely on the
+             * first scan: */
+             vma->numab_state->prev_scan_seq = mm->numa_scan_seq - 1;
+        }
+
+        /* Scanning the VMAs of short lived tasks add more overhead. So
+         * delay the scan for new VMAs. */
+        if (mm->numa_scan_seq && time_before(jiffies, vma->numab_state->next_scan)) {
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_SCAN_DELAY);
+            continue;
+        }
+
+        /* RESET access PIDs regularly for old VMAs. */
+        if (mm->numa_scan_seq && time_after(jiffies, vma->numab_state->pids_active_reset)) {
+            vma->numab_state->pids_active_reset = vma->numab_state->pids_active_reset +
+                msecs_to_jiffies(VMA_PID_RESET_PERIOD);
+            vma->numab_state->pids_active[0] = READ_ONCE(vma->numab_state->pids_active[1]);
+            vma->numab_state->pids_active[1] = 0;
+        }
+
+        /* Do not rescan VMAs twice within the same sequence. */
+        if (vma->numab_state->prev_scan_seq == mm->numa_scan_seq) {
+            mm->numa_scan_offset = vma->vm_end;
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_SEQ_COMPLETED);
+            continue;
+        }
+
+        /* Do not scan the VMA if task has not accessed it, unless no other
+         * VMA candidate exists. */
+        if (!vma_pids_forced && !vma_is_accessed(mm, vma)) {
+            vma_pids_skipped = true;
+            trace_sched_skip_vma_numa(mm, vma, NUMAB_SKIP_PID_INACTIVE);
+            continue;
+        }
+
+        do {
+            start = max(start, vma->vm_start);
+            end = ALIGN(start + (pages << PAGE_SHIFT), HPAGE_SIZE);
+            end = min(end, vma->vm_end);
+            nr_pte_updates = change_prot_numa(vma, start, end);
+
+            /* Try to scan sysctl_numa_balancing_size worth of
+             * hpages that have at least one present PTE that
+             * is not already PTE-numa. If the VMA contains
+             * areas that are unused or already full of prot_numa
+             * PTEs, scan up to virtpages, to skip through those
+             * areas faster. */
+            if (nr_pte_updates)
+                pages -= (end - start) >> PAGE_SHIFT;
+            virtpages -= (end - start) >> PAGE_SHIFT;
+
+            start = end;
+            if (pages <= 0 || virtpages <= 0)
+                goto out;
+
+            cond_resched();
+        } while (end != vma->vm_end);
+
+        /* VMA scan is complete, do not scan until next sequence. */
+        vma->numab_state->prev_scan_seq = mm->numa_scan_seq;
+
+        /* Only force scan within one VMA at a time, to limit the
+         * cost of scanning a potentially uninteresting VMA. */
+        if (vma_pids_forced)
+            break;
+    }
+
+    /* If no VMAs are remaining and VMAs were skipped due to the PID
+     * not accessing the VMA previously, then force a scan to ensure
+     * forward progress: */
+    if (!vma && !vma_pids_forced && vma_pids_skipped) {
+        vma_pids_forced = true;
+        goto retry_pids;
+    }
+
+out:
+    /* It is possible to reach the end of the VMA list but the last few
+     * VMAs are not guaranteed to the vma_migratable. If they are not, we
+     * would find the !migratable VMA on the next scan but not reset the
+     * scanner to the start so check it now. */
+    if (vma)
+        mm->numa_scan_offset = start;
+    else
+        reset_ptenuma_scan(p);
+    mmap_read_unlock(mm);
+
+    /* Make sure tasks use at least 32x as much time to run other code
+     * than they used here, to limit NUMA PTE scanning overhead to 3% max.
+     * Usually update_task_scan_period slows down scanning enough; on an
+     * overloaded system we need to limit overhead on a per task basis. */
+    if (unlikely(p->se.sum_exec_runtime != runtime)) {
+        u64 diff = p->se.sum_exec_runtime - runtime;
+        p->node_stamp += 32 * diff;
+    }
+}
+```
+
+#### change_prot_numa
+
+```c
+unsigned long change_prot_numa(struct vm_area_struct *vma,
+            unsigned long addr, unsigned long end)
+{
+    struct mmu_gather tlb;
+    long nr_updated;
+
+    tlb_gather_mmu(&tlb, vma->vm_mm);
+
+    nr_updated = change_protection(&tlb, vma, addr, end, MM_CP_PROT_NUMA) {
+        pgprot_t newprot = vma->vm_page_prot;
+        long pages;
+
+        BUG_ON((cp_flags & MM_CP_UFFD_WP_ALL) == MM_CP_UFFD_WP_ALL);
+
+    #ifdef CONFIG_NUMA_BALANCING
+        /* Ordinary protection updates (mprotect, uffd-wp, softdirty tracking)
+        * are expected to reflect their requirements via VMA flags such that
+        * vma_set_page_prot() will adjust vma->vm_page_prot accordingly. */
+        if (cp_flags & MM_CP_PROT_NUMA)
+            newprot = PAGE_NONE;
+    #else
+        WARN_ON_ONCE(cp_flags & MM_CP_PROT_NUMA);
+    #endif
+
+        if (is_vm_hugetlb_page(vma))
+            pages = hugetlb_change_protection(vma, start, end, newprot, cp_flags);
+        else
+            pages = change_protection_range(tlb, vma, start, end, newprot, cp_flags);
+
+        return pages;
+    }
+    if (nr_updated > 0) {
+        count_vm_numa_events(NUMA_PTE_UPDATES, nr_updated);
+        count_memcg_events_mm(vma->vm_mm, NUMA_PTE_UPDATES, nr_updated);
+    }
+
+    tlb_finish_mmu(&tlb);
+
+    return nr_updated;
+}
+
+long change_protection_range(struct mmu_gather *tlb,
+        struct vm_area_struct *vma, unsigned long addr,
+        unsigned long end, pgprot_t newprot, unsigned long cp_flags)
+{
+    struct mm_struct *mm = vma->vm_mm;
+    pgd_t *pgd;
+    unsigned long next;
+    long pages = 0, ret;
+
+    BUG_ON(addr >= end);
+    pgd = pgd_offset(mm, addr);
+    tlb_start_vma(tlb, vma);
+    do {
+        next = pgd_addr_end(addr, end);
+        ret = change_prepare(vma, pgd, p4d, addr, cp_flags);
+        if (ret) {
+            pages = ret;
+            break;
+        }
+        if (pgd_none_or_clear_bad(pgd))
+            continue;
+        pages += change_p4d_range(tlb, vma, pgd, addr, next, newprot, cp_flags);
+    } while (pgd++, addr = next, addr != end);
+
+    tlb_end_vma(tlb, vma);
+
+    return pages;
+}
+```
+
+### __do_numa_page
+
+```c
+vm_fault_t do_numa_page(struct vm_fault *vmf)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct folio *folio = NULL;
+    int nid = NUMA_NO_NODE;
+    bool writable = false, ignore_writable = false;
+    bool pte_write_upgrade = vma_wants_manual_pte_write_upgrade(vma);
+    int last_cpupid;
+    int target_nid;
+    pte_t pte, old_pte;
+    int flags = 0, nr_pages;
+
+    /* The pte cannot be used safely until we verify, while holding the page
+     * table lock, that its contents have not changed during fault handling. */
+    spin_lock(vmf->ptl);
+    /* Read the live PTE from the page tables: */
+    old_pte = ptep_get(vmf->pte);
+
+    if (unlikely(!pte_same(old_pte, vmf->orig_pte))) {
+        pte_unmap_unlock(vmf->pte, vmf->ptl);
+        return 0;
+    }
+
+    pte = pte_modify(old_pte, vma->vm_page_prot);
+
+    /* Detect now whether the PTE could be writable; this information
+     * is only valid while holding the PT lock. */
+    writable = pte_write(pte);
+    if (!writable && pte_write_upgrade &&
+        can_change_pte_writable(vma, vmf->address, pte))
+        writable = true;
+
+    folio = vm_normal_folio(vma, vmf->address, pte);
+    if (!folio || folio_is_zone_device(folio))
+        goto out_map;
+
+    nid = folio_nid(folio);
+    nr_pages = folio_nr_pages(folio);
+
+    target_nid = numa_migrate_check(folio, vmf, vmf->address, &flags, writable, &last_cpupid);
+    if (target_nid == NUMA_NO_NODE)
+        goto out_map;
+    if (migrate_misplaced_folio_prepare(folio, vma, target_nid)) {
+        flags |= TNF_MIGRATE_FAIL;
+        goto out_map;
+    }
+    /* The folio is isolated and isolation code holds a folio reference. */
+    pte_unmap_unlock(vmf->pte, vmf->ptl);
+    writable = false;
+    ignore_writable = true;
+
+    /* Migrate to the requested node */
+    if (!migrate_misplaced_folio(folio, target_nid)) {
+        nid = target_nid;
+        flags |= TNF_MIGRATED;
+        task_numa_fault(last_cpupid, nid, nr_pages, flags);
+        return 0;
+    }
+
+    flags |= TNF_MIGRATE_FAIL;
+    vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, vmf->address, &vmf->ptl);
+    if (unlikely(!vmf->pte))
+        return 0;
+    if (unlikely(!pte_same(ptep_get(vmf->pte), vmf->orig_pte))) {
+        pte_unmap_unlock(vmf->pte, vmf->ptl);
+        return 0;
+    }
+out_map:
+    /* Make it present again, depending on how arch implements
+     * non-accessible ptes, some can allow access by kernel mode. */
+    if (folio && folio_test_large(folio))
+        numa_rebuild_large_mapping(vmf, vma, folio, pte, ignore_writable, pte_write_upgrade);
+    else
+        numa_rebuild_single_mapping(vmf, vma, vmf->address, vmf->pte, writable);
+    pte_unmap_unlock(vmf->pte, vmf->ptl);
+
+    if (nid != NUMA_NO_NODE)
+        task_numa_fault(last_cpupid, nid, nr_pages, flags);
+    return 0;
+}
+```
+
+### task_numa_fault
+
+```c
+void task_numa_fault(int last_cpupid, int mem_node, int pages, int flags)
+{
+    struct task_struct *p = current;
+    bool migrated = flags & TNF_MIGRATED;
+    int cpu_node = task_node(current);
+    int local = !!(flags & TNF_FAULT_LOCAL);
+    struct numa_group *ng;
+    int priv;
+
+    if (!static_branch_likely(&sched_numa_balancing))
+        return;
+
+    /* for example, ksmd faulting in a user's mm */
+    if (!p->mm)
+        return;
+
+    /* NUMA faults statistics are unnecessary for the slow memory
+     * node for memory tiering mode. */
+    if (!node_is_toptier(mem_node) &&
+        (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING ||
+         !cpupid_valid(last_cpupid)))
+        return;
+
+    /* Allocate buffer to track faults on a per-node basis */
+    if (unlikely(!p->numa_faults)) {
+        int size = sizeof(*p->numa_faults) * NR_NUMA_HINT_FAULT_BUCKETS * nr_node_ids;
+
+        p->numa_faults = kzalloc(size, GFP_KERNEL|__GFP_NOWARN);
+        if (!p->numa_faults)
+            return;
+
+        p->total_numa_faults = 0;
+        memset(p->numa_faults_locality, 0, sizeof(p->numa_faults_locality));
+    }
+
+    /* First accesses are treated as private, otherwise consider accesses
+     * to be private if the accessing pid has not changed */
+    if (unlikely(last_cpupid == (-1 & LAST_CPUPID_MASK))) {
+        priv = 1;
+    } else {
+        priv = cpupid_match_pid(p, last_cpupid);
+        if (!priv && !(flags & TNF_NO_GROUP))
+            task_numa_group(p, last_cpupid, flags, &priv);
+    }
+
+    /* If a workload spans multiple NUMA nodes, a shared fault that
+     * occurs wholly within the set of nodes that the workload is
+     * actively using should be counted as local. This allows the
+     * scan rate to slow down when a workload has settled down. */
+    ng = deref_curr_numa_group(p);
+    if (!priv && !local && ng && ng->active_nodes > 1 &&
+                numa_is_active_node(cpu_node, ng) &&
+                numa_is_active_node(mem_node, ng))
+        local = 1;
+
+    /* Retry to migrate task to preferred node periodically, in case it
+     * previously failed, or the scheduler moved us. */
+    if (time_after(jiffies, p->numa_migrate_retry)) {
+        task_numa_placement(p);
+        numa_migrate_preferred(p) {
+            unsigned long interval = HZ;
+
+            /* This task has no NUMA fault statistics yet */
+            if (unlikely(p->numa_preferred_nid == NUMA_NO_NODE || !p->numa_faults))
+                return;
+
+            /* Periodically retry migrating the task to the preferred node */
+            interval = min(interval, msecs_to_jiffies(p->numa_scan_period) / 16);
+            p->numa_migrate_retry = jiffies + interval;
+
+            /* Success if task is already running on preferred CPU */
+            if (task_node(p) == p->numa_preferred_nid)
+                return;
+
+            /* Otherwise, try migrate to a CPU on the preferred node */
+            task_numa_migrate(p);
+        }
+    }
+
+    if (migrated)
+        p->numa_pages_migrated += pages;
+    if (flags & TNF_MIGRATE_FAIL)
+        p->numa_faults_locality[2] += pages;
+
+    p->numa_faults[task_faults_idx(NUMA_MEMBUF, mem_node, priv)] += pages;
+    p->numa_faults[task_faults_idx(NUMA_CPUBUF, cpu_node, priv)] += pages;
+    p->numa_faults_locality[local] += pages;
+}
+
+void task_numa_placement(struct task_struct *p)
+    __context_unsafe(/* conditional locking */)
+{
+    int seq, nid, max_nid = NUMA_NO_NODE;
+    unsigned long max_faults = 0;
+    unsigned long fault_types[2] = { 0, 0 };
+    unsigned long total_faults;
+    u64 runtime, period;
+    spinlock_t *group_lock = NULL;
+    struct numa_group *ng;
+
+    /* The p->mm->numa_scan_seq field gets updated without
+     * exclusive access. Use READ_ONCE() here to ensure
+     * that the field is read in a single access: */
+    seq = READ_ONCE(p->mm->numa_scan_seq);
+    if (p->numa_scan_seq == seq)
+        return;
+    p->numa_scan_seq = seq;
+    p->numa_scan_period_max = task_scan_max(p);
+
+    total_faults = p->numa_faults_locality[0] + p->numa_faults_locality[1];
+    runtime = numa_get_avg_runtime(p, &period);
+
+    /* If the task is part of a group prevent parallel updates to group stats */
+    ng = deref_curr_numa_group(p);
+    if (ng) {
+        group_lock = &ng->lock;
+        spin_lock_irq(group_lock);
+    }
+
+    /* Find the node with the highest number of faults */
+    for_each_online_node(nid) {
+        /* Keep track of the offsets in numa_faults array */
+        int mem_idx, membuf_idx, cpu_idx, cpubuf_idx;
+        unsigned long faults = 0, group_faults = 0;
+        int priv;
+
+        for (priv = 0; priv < NR_NUMA_HINT_FAULT_TYPES; priv++) {
+            long diff, f_diff, f_weight;
+
+            mem_idx = task_faults_idx(NUMA_MEM, nid, priv);
+            membuf_idx = task_faults_idx(NUMA_MEMBUF, nid, priv);
+            cpu_idx = task_faults_idx(NUMA_CPU, nid, priv);
+            cpubuf_idx = task_faults_idx(NUMA_CPUBUF, nid, priv);
+
+            /* Decay existing window, copy faults since last scan */
+            diff = p->numa_faults[membuf_idx] - p->numa_faults[mem_idx] / 2;
+            fault_types[priv] += p->numa_faults[membuf_idx];
+            p->numa_faults[membuf_idx] = 0;
+
+            /* Normalize the faults_from, so all tasks in a group
+             * count according to CPU use, instead of by the raw
+             * number of faults. Tasks with little runtime have
+             * little over-all impact on throughput, and thus their
+             * faults are less important. */
+            f_weight = div64_u64(runtime << 16, period + 1);
+            f_weight = (f_weight * p->numa_faults[cpubuf_idx]) / (total_faults + 1);
+            f_diff = f_weight - p->numa_faults[cpu_idx] / 2;
+            p->numa_faults[cpubuf_idx] = 0;
+
+            p->numa_faults[mem_idx] += diff;
+            p->numa_faults[cpu_idx] += f_diff;
+            faults += p->numa_faults[mem_idx];
+            p->total_numa_faults += diff;
+            if (ng) {
+                /* safe because we can only change our own group
+                 *
+                 * mem_idx represents the offset for a given
+                 * nid and priv in a specific region because it
+                 * is at the beginning of the numa_faults array. */
+                ng->faults[mem_idx] += diff;
+                ng->faults[cpu_idx] += f_diff;
+                ng->total_faults += diff;
+                group_faults += ng->faults[mem_idx];
+            }
+        }
+
+        if (!ng) {
+            if (faults > max_faults) {
+                max_faults = faults;
+                max_nid = nid;
+            }
+        } else if (group_faults > max_faults) {
+            max_faults = group_faults;
+            max_nid = nid;
+        }
+    }
+
+    /* Cannot migrate task to CPU-less node */
+    max_nid = numa_nearest_node(max_nid, N_CPU);
+
+    if (ng) {
+        numa_group_count_active_nodes(ng);
+        spin_unlock_irq(group_lock);
+        max_nid = preferred_group_nid(p, max_nid);
+    }
+
+    if (max_faults) {
+        /* Set the new preferred node */
+        if (max_nid != p->numa_preferred_nid) {
+            sched_setnuma(p, max_nid) {
+                guard(task_rq_lock)(p);
+                scoped_guard (sched_change, p, DEQUEUE_SAVE)
+                    p->numa_preferred_nid = nid;
+            }
+        }
+    }
+
+    update_task_scan_period(p, fault_types[0], fault_types[1]);
+}
 ```
 
 ## do_kernel_fault
@@ -34158,4 +34777,3 @@ while true; do
 
 awk 'NR>1 {print $1, $2, $2-prev} {prev=$2}' /tmp/rss_log.txt | tail -20
 ```
-
