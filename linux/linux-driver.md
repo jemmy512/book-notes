@@ -631,15 +631,154 @@ struct gendisk {
 
 # DMA
 
+DMA APIs here are from different subsystems. The most important split is:
+
+- DMA-mapping API: map memory so a device can DMA to/from it
+- DMAEngine API: request and drive a DMA controller channel
+- DMA-buf API: share one buffer across drivers/devices/processes
+- IOVA API: advanced IOMMU-oriented mapping control
+
+## Which API to use when
+
+- Long-lived descriptor/ring memory shared by CPU and device: `dma_alloc_coherent()` / `dma_free_coherent()`
+- Existing kernel buffer for one DMA transaction: `dma_map_single()` / `dma_unmap_single()`
+- Page-backed buffer: `dma_map_page()` / `dma_unmap_page()`
+- Scatter-gather buffer: `dma_map_sg()` or `dma_map_sgtable()`
+- Physical or MMIO resource: `dma_map_phys()` or `dma_map_resource()`
+- Non-coherent platform cache handoff: `dma_sync_single_for_cpu()`, `dma_sync_single_for_device()`, `dma_sync_sg_for_cpu()`, `dma_sync_sg_for_device()`
+- Page allocation without a permanent linear kernel mapping: `dma_alloc_pages()` / `dma_free_pages()`
+- Large DMA allocation represented as an `sg_table`: `dma_alloc_noncontiguous()` / `dma_free_noncontiguous()`
+- Need an external DMA controller channel: `dma_request_slave_channel()`
+- Need fine-grained IOVA control with an IOMMU: `dma_iova_try_alloc()` family
+- Need to share one DMA buffer with another driver/device: `dma_buf_export()` + `dma_buf_attach()` + `dma_buf_map_attachment()`
+
 ## dma_alloc_coherent
+
+Use for memory that the CPU and device both access repeatedly, such as descriptor rings, doorbells, and firmware mailboxes.
+
+- Returns a CPU virtual address and a DMA address
+- Usually no explicit `dma_sync_*()` is needed
+- Free with `dma_free_coherent()`
+- Managed variant: `dmam_alloc_coherent()`
 
 ## dma_map_single
 
-## dma_sync_single_for_cpu
+Use for a normal kernel buffer that already exists and is being handed to hardware for a bounded transfer.
+
+- Maps a linear CPU buffer into device DMA address space
+- Pair with `dma_unmap_single()`
+- Do not let the CPU touch the buffer between map and unmap unless the ownership rules and sync calls are respected
+
+## dma_map_sgtable
+
+Use when the buffer is naturally scatter-gather, or already described by an `sg_table`.
+
+- `dma_map_sgtable()` is the modern form when you already have an `sg_table`
+- `dma_map_sg()` is the older scatterlist form
+- Pair with `dma_unmap_sgtable()` or `dma_unmap_sg()`
+- Device DMA addresses may be merged/coalesced compared with the original list
+
+## dma_map_phys
+
+Use when you already have a physical address and need to turn it into a DMA address for a given device.
+
+- Mostly used by lower-level code
+- `dma_map_resource()` is the safer helper for MMIO or P2P-style resource mappings
+- Pair with `dma_unmap_phys()` or `dma_unmap_resource()`
+
+## dma_alloc_noncontiguous
+
+Use when you want a DMA allocation represented as an `sg_table` instead of one flat CPU mapping.
+
+- Returns an `sg_table`
+- On IOMMU systems it can represent non-contiguous backing memory with a contiguous device view
+- Helpers: `dma_vmap_noncontiguous()`, `dma_vunmap_noncontiguous()`, `dma_mmap_noncontiguous()`
+- Free with `dma_free_noncontiguous()`
 
 ## dma_request_slave_channel
 
-##
+This belongs to DMAEngine, not the DMA-mapping API.
+
+- Requests a DMA controller channel associated with the device
+- Typical flow: request channel, prepare descriptor, submit, issue pending, wait for completion/callback
+- Use this when hardware transfers are performed by a standalone DMA engine rather than by the device doing bus mastering itself
+
+## dma_iova_try_alloc
+
+Reserve IOVA space for an advanced mapping flow.
+
+- Only relevant on IOMMU-backed configurations
+- Used when the driver wants explicit control over IOVA lifetime/layout
+
+## dma_iova_link
+
+Link physical memory into the reserved IOVA range.
+
+- Binds a physical range into a previously allocated IOVA window
+- Useful for multi-step construction of a DMA mapping
+
+## dma_iova_sync
+
+Synchronize IOVA mapping state after changes.
+
+- Typically used after linking/unlinking ranges
+- Makes mapping updates visible to the IOMMU/device side
+
+### dma_iova_destroy
+
+Tear down the IOVA mapping state when finished.
+
+- Releases linked mappings and associated state
+- Usually paired with `dma_iova_try_alloc()`
+
+## dma_buf_export
+
+Exporter-side entry point for the dma-buf framework.
+
+- Wraps a driver-owned buffer in a `struct dma_buf`
+- Usually followed by `dma_buf_fd()` to hand the buffer to userspace
+- The actual storage is owned by the exporter; dma-buf provides the sharing wrapper
+
+## dma_buf_attach
+
+Importer-side device attachment.
+
+- Associates a consumer device with a shared dma-buf
+- Exporter checks whether the device can access the backing storage
+- One attachment per importing device
+
+## dma_buf_map_attachment
+
+Get the importer-visible DMA mapping for an attached dma-buf.
+
+- Returns an `sg_table` mapped for the importing device
+- Under the hood, exporter code usually ends up using the DMA-mapping API such as `dma_map_sgtable()`
+- Pair with `dma_buf_unmap_attachment()`
+
+## Practical order
+
+### Bus-mastering device with its own DMA capability
+
+1. Set mask: `dma_set_mask_and_coherent()` or `dma_set_mask()` + `dma_set_coherent_mask()`
+2. Allocate ring memory with `dma_alloc_coherent()`
+3. Map payload buffers with `dma_map_single()` or `dma_map_sgtable()`
+4. Sync on non-coherent platforms if needed
+5. Unmap payload buffers when I/O completes
+
+### Driver using a DMA controller
+
+1. Request channel with `dma_request_slave_channel()`
+2. Prepare DMAEngine descriptor
+3. Submit and start transfer
+4. Completion callback or wait path handles teardown
+
+### Cross-device shared buffer
+
+1. Exporter calls `dma_buf_export()`
+2. Importer gets the fd and calls `dma_buf_get()`
+3. Importer calls `dma_buf_attach()`
+4. Importer calls `dma_buf_map_attachment()`
+5. Importer unmaps and detaches when done
 
 # MSI
 
