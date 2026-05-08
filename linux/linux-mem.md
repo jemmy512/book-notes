@@ -21927,7 +21927,249 @@ out_map:
 }
 ```
 
-### task_numa_fault
+#### numa_migrate_check
+
+```c
+int numa_migrate_check(struct folio *folio, struct vm_fault *vmf,
+              unsigned long addr, int *flags,
+              bool writable, int *last_cpupid)
+{
+    struct vm_area_struct *vma = vmf->vma;
+
+    /* Avoid grouping on RO pages in general. RO pages shouldn't hurt as
+     * much anyway since they can be in shared cache state. This misses
+     * the case where a mapping is writable but the process never writes
+     * to it but pte_write gets cleared during protection updates and
+     * pte_dirty has unpredictable behaviour between PTE scan updates,
+     * background writeback, dirty balancing and application behaviour. */
+    if (!writable)
+        *flags |= TNF_NO_GROUP;
+
+    /* Flag if the folio is shared between multiple address spaces. This
+     * is later used when determining whether to group tasks together */
+    if (folio_maybe_mapped_shared(folio) && (vma->vm_flags & VM_SHARED))
+        *flags |= TNF_SHARED;
+    /* For memory tiering mode, cpupid of slow memory page is used
+     * to record page access time.  So use default value. */
+    if (folio_use_access_time(folio))
+        *last_cpupid = (-1 & LAST_CPUPID_MASK);
+    else
+        *last_cpupid = folio_last_cpupid(folio);
+
+    /* Record the current PID accessing VMA */
+    vma_set_access_pid_bit(vma);
+
+    count_vm_numa_event(NUMA_HINT_FAULTS);
+#ifdef CONFIG_NUMA_BALANCING
+    count_memcg_folio_events(folio, NUMA_HINT_FAULTS, 1);
+#endif
+    if (folio_nid(folio) == numa_node_id()) {
+        count_vm_numa_event(NUMA_HINT_FAULTS_LOCAL);
+        *flags |= TNF_FAULT_LOCAL;
+    }
+
+    return mpol_misplaced(folio, vmf, addr);
+}
+
+int mpol_misplaced(struct folio *folio, struct vm_fault *vmf,
+           unsigned long addr)
+{
+    struct mempolicy *pol;
+    pgoff_t ilx;
+    struct zoneref *z;
+    int curnid = folio_nid(folio);
+    struct vm_area_struct *vma = vmf->vma;
+    int thiscpu = raw_smp_processor_id();
+    int thisnid = numa_node_id();
+    int polnid = NUMA_NO_NODE;
+    int ret = NUMA_NO_NODE;
+
+    /* Make sure ptl is held so that we don't preempt and we
+     * have a stable smp processor id */
+    lockdep_assert_held(vmf->ptl);
+    pol = get_vma_policy(vma, addr, folio_order(folio), &ilx);
+    if (!(pol->flags & MPOL_F_MOF))
+        goto out;
+
+    switch (pol->mode) {
+    case MPOL_INTERLEAVE:
+        polnid = interleave_nid(pol, ilx);
+        break;
+
+    case MPOL_WEIGHTED_INTERLEAVE:
+        polnid = weighted_interleave_nid(pol, ilx);
+        break;
+
+    case MPOL_PREFERRED:
+        if (node_isset(curnid, pol->nodes))
+            goto out;
+        polnid = first_node(pol->nodes);
+        break;
+
+    case MPOL_LOCAL:
+        polnid = numa_node_id();
+        break;
+
+    case MPOL_BIND:
+    case MPOL_PREFERRED_MANY:
+        /* Even though MPOL_PREFERRED_MANY can allocate pages outside
+         * policy nodemask we don't allow numa migration to nodes
+         * outside policy nodemask for now. This is done so that if we
+         * want demotion to slow memory to happen, before allocating
+         * from some DRAM node say 'x', we will end up using a
+         * MPOL_PREFERRED_MANY mask excluding node 'x'. In such scenario
+         * we should not promote to node 'x' from slow memory node. */
+        if (pol->flags & MPOL_F_MORON) {
+            /* Optimize placement among multiple nodes
+             * via NUMA balancing */
+            if (node_isset(thisnid, pol->nodes))
+                break;
+            goto out;
+        }
+
+        /* use current page if in policy nodemask,
+         * else select nearest allowed node, if any.
+         * If no allowed nodes, use current [!misplaced]. */
+        if (node_isset(curnid, pol->nodes))
+            goto out;
+        z = first_zones_zonelist(
+                node_zonelist(thisnid, GFP_HIGHUSER),
+                gfp_zone(GFP_HIGHUSER),
+                &pol->nodes);
+        polnid = zonelist_node_idx(z);
+        break;
+
+    default:
+        BUG();
+    }
+
+    /* Migrate the folio towards the node whose CPU is referencing it */
+    if (pol->flags & MPOL_F_MORON) {
+        polnid = thisnid;
+
+        if (!should_numa_migrate_memory(current, folio, curnid, thiscpu))
+            goto out;
+    }
+
+    if (curnid != polnid)
+        ret = polnid;
+out:
+    mpol_cond_put(pol);
+
+    return ret;
+}
+
+bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
+				int src_nid, int dst_cpu)
+{
+	struct numa_group *ng = deref_curr_numa_group(p);
+	int dst_nid = cpu_to_node(dst_cpu);
+	int last_cpupid, this_cpupid;
+
+	/*
+	 * Cannot migrate to memoryless nodes.
+	 */
+	if (!node_state(dst_nid, N_MEMORY))
+		return false;
+
+	/*
+	 * The pages in slow memory node should be migrated according
+	 * to hot/cold instead of private/shared.
+	 */
+	if (folio_use_access_time(folio)) {
+		struct pglist_data *pgdat;
+		unsigned long rate_limit;
+		unsigned int latency, th, def_th;
+		long nr = folio_nr_pages(folio);
+
+		pgdat = NODE_DATA(dst_nid);
+		if (pgdat_free_space_enough(pgdat)) {
+			/* workload changed, reset hot threshold */
+			pgdat->nbp_threshold = 0;
+			mod_node_page_state(pgdat, PGPROMOTE_CANDIDATE_NRL, nr);
+			return true;
+		}
+
+		def_th = sysctl_numa_balancing_hot_threshold;
+		rate_limit = MB_TO_PAGES(sysctl_numa_balancing_promote_rate_limit);
+		numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
+
+		th = pgdat->nbp_threshold ? : def_th;
+		latency = numa_hint_fault_latency(folio);
+		if (latency >= th)
+			return false;
+
+		return !numa_promotion_rate_limit(pgdat, rate_limit, nr);
+	}
+
+	this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
+	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
+
+	if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
+	    !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
+		return false;
+
+	/*
+	 * Allow first faults or private faults to migrate immediately early in
+	 * the lifetime of a task. The magic number 4 is based on waiting for
+	 * two full passes of the "multi-stage node selection" test that is
+	 * executed below.
+	 */
+	if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
+	    (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
+		return true;
+
+	/*
+	 * Multi-stage node selection is used in conjunction with a periodic
+	 * migration fault to build a temporal task<->page relation. By using
+	 * a two-stage filter we remove short/unlikely relations.
+	 *
+	 * Using P(p) ~ n_p / n_t as per frequentist probability, we can equate
+	 * a task's usage of a particular page (n_p) per total usage of this
+	 * page (n_t) (in a given time-span) to a probability.
+	 *
+	 * Our periodic faults will sample this probability and getting the
+	 * same result twice in a row, given these samples are fully
+	 * independent, is then given by P(n)^2, provided our sample period
+	 * is sufficiently short compared to the usage pattern.
+	 *
+	 * This quadric squishes small probabilities, making it less likely we
+	 * act on an unlikely task<->page relation.
+	 */
+	if (!cpupid_pid_unset(last_cpupid) &&
+				cpupid_to_nid(last_cpupid) != dst_nid)
+		return false;
+
+	/* Always allow migrate on private faults */
+	if (cpupid_match_pid(p, last_cpupid))
+		return true;
+
+	/* A shared fault, but p->numa_group has not been set up yet. */
+	if (!ng)
+		return true;
+
+	/*
+	 * Destination node is much more heavily used than the source
+	 * node? Allow migration.
+	 */
+	if (group_faults_cpu(ng, dst_nid) > group_faults_cpu(ng, src_nid) *
+					ACTIVE_NODE_FRACTION)
+		return true;
+
+	/*
+	 * Distribute memory according to CPU & memory use on each node,
+	 * with 3/4 hysteresis to avoid unnecessary memory migrations:
+	 *
+	 * faults_cpu(dst)   3   faults_cpu(src)
+	 * --------------- * - > ---------------
+	 * faults_mem(dst)   4   faults_mem(src)
+	 */
+	return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
+	       group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
+}
+```
+
+#### task_numa_fault
 
 ```c
 void task_numa_fault(int last_cpupid, int mem_node, int pages, int flags)
