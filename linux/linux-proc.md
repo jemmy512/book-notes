@@ -166,13 +166,13 @@ In ARMv8-A AArch64 architecture, there are several types of registers. Below is 
 * [PREEMPT_LAZY](https://lore.kernel.org/all/20241007074609.447006177@infradead.org)
     * [AWS工程师报告PostgreSQL性能在Linux 7.0下降50%到底是怎么一回事？](https://mp.weixin.qq.com/s/T3uTJrUtqBovrzN52omA1Q)
     * [内核江湖·翻车现场（八）：PREEMPT_NONE 之死——当架构洁癖撞上生产负载](https://mp.weixin.qq.com/s/bMElxAAksEY20ZQTyGWMOA)
-    * Does not set the preempt counter bit, so it won't preempt mid-execution on every **interrupt return**.
+    * Does not need_resched, so it won't preempt mid-execution on every **interrupt return**.
 
         ```c
         irqentry_exit_cond_resched() {
             if (!preempt_count()) {
                 need = need_resched() {
-                    tif_test_bit(TIF_NEED_RESCHED);
+                    return tif_test_bit(TIF_NEED_RESCHED);
                 }
                 if (need && arch_irqentry_exit_need_resched()) {
                     preempt_schedule_irq() {
@@ -2502,6 +2502,7 @@ static __always_inline void __el1_irq(struct pt_regs *regs,
                 }
             } else if (!regs_irqs_disabled(regs)) {
                 irqentry_exit_cond_resched() {
+                    /* raw_irqentry_exit_cond_resched */
                     if (!preempt_count()) {
                         rcu_irq_exit_check_preempt();
                         if (need_resched() && arch_irqentry_exit_need_resched()) {
@@ -16651,6 +16652,7 @@ static bool ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags)
 
             WRITE_ONCE(rq->ttwu_pending, 1);
         #ifdef CONFIG_SMP
+            /* p->wake_entry.u_flags = CSD_TYPE_TTWU; */
             __smp_call_single_queue(cpu, &p->wake_entry.llist) {
                 if (llist_add(node, &per_cpu(call_single_queue, cpu))) {
                     send_call_function_single_ipi(cpu) {
@@ -19847,7 +19849,10 @@ start_kernel();
                         hash_for_each(unbound_pool_hash, bkt, pool, hash_node) {
                             create_worker(pool);
                         }
-                        wq_watchdog_init();
+                        wq_watchdog_init() {
+                            timer_setup(&wq_watchdog_timer, wq_watchdog_timer_fn, TIMER_DEFERRABLE);
+	                        wq_watchdog_set_thresh(wq_watchdog_thresh);
+                        }
                     }
                 }
             }
