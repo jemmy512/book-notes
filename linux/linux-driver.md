@@ -107,11 +107,129 @@ struct of_device_id {
 
 ## ioremap
 
+```c
+#define ioremap(addr, size)    \
+    __ioremap_prot((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
+
+void __iomem *__ioremap_prot(phys_addr_t phys_addr, size_t size,
+                 pgprot_t pgprot)
+{
+    unsigned long last_addr = phys_addr + size - 1;
+
+    /* Don't allow outside PHYS_MASK */
+    if (last_addr & ~PHYS_MASK)
+        return NULL;
+
+    /* Don't allow RAM to be mapped. */
+    if (WARN_ONCE(pfn_is_map_memory(__phys_to_pfn(phys_addr)),
+              "ioremap attempted on RAM pfn\n"))
+        return NULL;
+
+    /* If a hook is registered (e.g. for confidential computing
+     * purposes), call that now and barf if it fails. */
+    if (unlikely(ioremap_prot_hook) &&
+        WARN_ON(ioremap_prot_hook(phys_addr, size, &pgprot))) {
+        return NULL;
+    }
+
+    return generic_ioremap_prot(phys_addr, size, pgprot);
+}
+
+void __iomem *generic_ioremap_prot(phys_addr_t phys_addr, size_t size,
+                   pgprot_t prot)
+{
+    unsigned long offset, vaddr;
+    phys_addr_t last_addr;
+    struct vm_struct *area;
+
+    /* An early platform driver might end up here */
+    if (WARN_ON_ONCE(!slab_is_available()))
+        return NULL;
+
+    /* Disallow wrap-around or zero size */
+    last_addr = phys_addr + size - 1;
+    if (!size || last_addr < phys_addr)
+        return NULL;
+
+    /* Page-align mappings */
+    offset = phys_addr & (~PAGE_MASK);
+    phys_addr -= offset;
+    size = PAGE_ALIGN(size + offset);
+
+    area = __get_vm_area_caller(size, VM_IOREMAP, IOREMAP_START,
+        IOREMAP_END, __builtin_return_address(0)) {
+            return __get_vm_area_node(size, 1, PAGE_SHIFT, flags, start, end,
+            NUMA_NO_NODE, GFP_KERNEL, caller);
+    }
+    if (!area)
+        return NULL;
+    vaddr = (unsigned long)area->addr;
+    area->phys_addr = phys_addr;
+
+    if (ioremap_page_range(vaddr, vaddr + size, phys_addr, prot)) {
+        free_vm_area(area);
+        return NULL;
+    }
+
+    return (void __iomem *)(vaddr + offset);
+}
+
+int ioremap_page_range(unsigned long addr, unsigned long end,
+        phys_addr_t phys_addr, pgprot_t prot)
+{
+    struct vm_struct *area;
+
+    area = find_vm_area((void *)addr);
+    if (!area || !(area->flags & VM_IOREMAP)) {
+        WARN_ONCE(1, "vm_area at addr %lx is not marked as VM_IOREMAP\n", addr);
+        return -EINVAL;
+    }
+    if (addr != (unsigned long)area->addr ||
+        (void *)end != area->addr + get_vm_area_size(area)) {
+        WARN_ONCE(1, "ioremap request [%lx,%lx) doesn't match vm_area [%lx, %lx)\n",
+              addr, end, (long)area->addr,
+              (long)area->addr + get_vm_area_size(area));
+        return -ERANGE;
+    }
+    return vmap_page_range(addr, end, phys_addr, prot) {
+        int err;
+
+        err = vmap_range_noflush(addr, end, phys_addr, pgprot_nx(prot), ioremap_max_page_shift)
+            --->
+        flush_cache_vmap(addr, end);
+        if (!err)
+            err = kmsan_ioremap_page_range(addr, end, phys_addr, prot,
+                            ioremap_max_page_shift);
+        return err;
+    }
+}
+```
+
 ## iounmap
 
 ## readl
 
 ## writel
+
+```c
+#define writel writel
+static inline void writel(u32 value, volatile void __iomem *addr)
+{
+	if (rwmmio_tracepoint_enabled(rwmmio_write))
+		log_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
+	__io_bw();
+	__raw_writel((u32 __force)__cpu_to_le32(value), addr);
+	__io_aw();
+	if (rwmmio_tracepoint_enabled(rwmmio_post_write))
+		log_post_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
+}
+
+static __always_inline void __raw_writel(u32 val, volatile void __iomem *addr)
+{
+	volatile u32 __iomem *ptr = addr;
+    asm volatile("str %w0, %1" : : "rZ" (val), "Qo" (*ptr));
+}
+```
 
 ## remap_pfn_range
 
@@ -779,6 +897,44 @@ Get the importer-visible DMA mapping for an attached dma-buf.
 3. Importer calls `dma_buf_attach()`
 4. Importer calls `dma_buf_map_attachment()`
 5. Importer unmaps and detaches when done
+
+# PCI
+
+## pci_scan_single_device
+
+```sh
+pci_scan_single_device()          [probe.c:2797]
+  └─ pci_scan_device()            [probe.c:2605]
+       ├─ pci_bus_read_dev_vendor_id()   ← probe device on bus
+       ├─ pci_alloc_dev()
+       └─ pci_setup_device()      [probe.c:2021]
+            └─ pci_read_bases()   [probe.c:325]  ← reads all BARs
+                 ├─ __pci_size_stdbars()          ← write all-1s, read back size mask
+                 │    └─ pci_read_config_dword() + pci_write_config_dword(~0)
+                 └─ __pci_read_base()             ← per-BAR decode
+                      ├─ decode_bar()             ← determine IO vs MEM, 32 vs 64-bit
+                      ├─ pci_size()               ← compute size from mask
+                      └─ pcibios_bus_to_resource() ← bus addr → CPU resource addr
+                           → populates dev->resource[i] with flags/start/end
+```
+
+## pci_assign_resource
+
+```sh
+pci_assign_resource()             [setup-res.c:362]
+  ├─ checks IORESOURCE_PCI_FIXED  ← skip if firmware-fixed
+  ├─ pci_resource_alignment()     ← compute required alignment
+  └─ _pci_assign_resource()       [setup-res.c:346]
+       └─ __pci_assign_resource() [setup-res.c:298]  ← walk up bus hierarchy
+            └─ pci_bus_alloc_resource()
+                 └─ allocate_resource()  ← find free window in parent bus
+                      └─ pcibios_align_resource()  ← arch alignment hook
+
+    pci_update_resource()             [setup-res.c:126]
+    └─ pci_std_update_resource()
+        └─ pci_write_config_dword(dev, reg, new_addr)
+                ← writes the assigned CPU/bus address back into the BAR register
+```
 
 # MSI
 
@@ -1787,11 +1943,11 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 }
 
 void *section_objs(const struct load_info *info,
-			  const char *name,
-			  size_t object_size,
-			  unsigned int *num)
+              const char *name,
+              size_t object_size,
+              unsigned int *num)
 {
-	unsigned int sec = find_sec(info, name) {
+    unsigned int sec = find_sec(info, name) {
         unsigned int i;
 
         for (i = 1; i < info->hdr->e_shnum; i++) {
@@ -1803,9 +1959,9 @@ void *section_objs(const struct load_info *info,
         return 0;
     }
 
-	/* Section 0 has sh_addr 0 and sh_size 0. */
-	*num = info->sechdrs[sec].sh_size / object_size;
-	return (void *)info->sechdrs[sec].sh_addr;
+    /* Section 0 has sh_addr 0 and sh_size 0. */
+    *num = info->sechdrs[sec].sh_size / object_size;
+    return (void *)info->sechdrs[sec].sh_addr;
 }
 ```
 
