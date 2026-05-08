@@ -3547,9 +3547,9 @@ static DECLARE_DEFERRABLE_WORK(stats_flush_dwork, flush_memcg_stats_dwork);
 
 void mem_cgroup_flush_stats_ratelimited(struct mem_cgroup *memcg)
 {
-	/* Only flush if the periodic flusher is one full cycle late */
-	if (time_after64(jiffies_64, READ_ONCE(flush_last_time) + 2*FLUSH_TIME)) {
-		mem_cgroup_flush_stats(memcg) {
+    /* Only flush if the periodic flusher is one full cycle late */
+    if (time_after64(jiffies_64, READ_ONCE(flush_last_time) + 2*FLUSH_TIME)) {
+        mem_cgroup_flush_stats(memcg) {
             if (mem_cgroup_disabled())
                 return;
 
@@ -4620,9 +4620,10 @@ void update_cfs_group(struct sched_entity *se) {
     }
     long shares;
 
-    if (!gcfs_rq) {
+    /* When a group becomes empty, preserve its weight. This matters for
+     * DELAY_DEQUEUE. */
+    if (!gcfs_rq || !gcfs_rq->load.weight)
         return;
-    }
 
     shares = calc_group_shares(gcfs_rq/*cfs_rq*/) {
         long tg_weight, tg_shares, load, shares;
@@ -4668,14 +4669,15 @@ void update_cfs_group(struct sched_entity *se) {
             }
             dequeue_load_avg(cfs_rq, se);
 
-            /* Because we keep se->vlag = V - v_i, while: lag_i = w_i*(V - v_i),
-            * we need to scale se->vlag when w_i changes. */
-            se->vlag = div_s64(se->vlag * se->load.weight, weight);
-            if (se->rel_deadline)
-                se->deadline = div_s64(se->deadline * se->load.weight, weight);
+            rescale_entity(se, weight, rel_vprot) {
+                unsigned long old_weight = se->load.weight;
+                se->vlag = div64_long(se->vlag * old_weight, weight);
+                if (se->rel_deadline)
+                    se->deadline = div64_long(se->deadline * old_weight, weight);
 
-            if (rel_vprot)
-                vprot = div_s64(vprot * se->load.weight, weight);
+                if (rel_vprot)
+                    se->vprot = div64_long(se->vprot * old_weight, weight);
+            }
 
             update_load_set(&se->load, weight);
 
@@ -4687,9 +4689,12 @@ void update_cfs_group(struct sched_entity *se) {
 
             enqueue_load_avg(cfs_rq, se);
             if (se->on_rq) {
-                place_entity(cfs_rq, se, 0);
                 if (rel_vprot)
-                    se->vprot = se->vruntime + vprot;
+                    se->vprot += avruntime;
+                se->deadline += avruntime;
+                se->rel_deadline = 0;
+                se->vruntime = avruntime - se->vlag;
+
                 update_load_add(&cfs_rq->load, se->load.weight);
                 if (!curr)
                     __enqueue_entity(cfs_rq, se);
