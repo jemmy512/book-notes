@@ -133,10 +133,11 @@ Patch | Draft
 * [STL](./cpp/stl.txt)
 * [GCC: new allocator malloc](https://github.com/Jemmy512/software-engineer/blob/master/OpenSource/new-allocator-malloc.md)
 
-# Others
+# Utils
 
-* [Make linux kernel :cn:](./make-kernel.md)
-* [Debug kernel with VS Code](./linux/vscode-debug-kernel.md)
+* [Make linux kernel](./utils/make-kernel.md)
+* [Debug kernel with VS Code](./utils/vscode-debug-kernel.md)
+* [trace32 common cmd](./utils/trace32-cmd.md)
 
 # English
 
