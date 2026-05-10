@@ -801,6 +801,15 @@ bootmem_init() {
 * start_kernel -> setup_arch -> bootmem_init -> arch_numa_init
 
 ```c
+int numa_distance_cnt;
+static u8 *numa_distance;
+
+nodemask_t numa_nodes_parsed __initdata;
+
+static struct numa_meminfo numa_meminfo __initdata_or_meminfo;
+static struct numa_meminfo numa_reserved_meminfo __initdata_or_meminfo;
+
+
 arch_numa_init() {
     if (!numa_off) {
         if (!acpi_disabled && !numa_init(arch_acpi_numa_init))
@@ -809,179 +818,83 @@ arch_numa_init() {
             return;
     }
 
-    numa_init(dummy_numa_init) {
+    numa_init(int (*init_func)(void)) {
+        int ret;
+
         nodes_clear(numa_nodes_parsed);
         nodes_clear(node_possible_map);
         nodes_clear(node_online_map);
 
-        ret = numa_alloc_distance() {
-            size = nr_node_ids * nr_node_ids * sizeof(numa_distance[0]);
-            numa_distance = memblock_alloc(size, PAGE_SIZE);
-            numa_distance_cnt = nr_node_ids;
+        ret = numa_memblks_init(init_func, /* memblock_force_top_down */ false) {
+            phys_addr_t max_addr = (phys_addr_t)ULLONG_MAX;
+            int ret;
 
-            /* fill with the default distances */
-            for (i = 0; i < numa_distance_cnt; i++) {
-                for (j = 0; j < numa_distance_cnt; j++) {
-                    numa_distance[i * numa_distance_cnt + j] = i == j
-                        ? LOCAL_DISTANCE : REMOTE_DISTANCE;
-                }
-            }
+            nodes_clear(numa_nodes_parsed);
+            nodes_clear(node_possible_map);
+            nodes_clear(node_online_map);
+            memset(&numa_meminfo, 0, sizeof(numa_meminfo));
+            WARN_ON(memblock_set_node(0, max_addr, &memblock.memory, NUMA_NO_NODE));
+            WARN_ON(memblock_set_node(0, max_addr, &memblock.reserved,
+                        NUMA_NO_NODE));
+            /* In case that parsing SRAT failed. */
+            WARN_ON(memblock_clear_hotplug(0, max_addr));
+            numa_reset_distance();
+
+            ret = init_func(); /* of_numa_init */
+            if (ret < 0)
+                return ret;
+
+            /*
+            * We reset memblock back to the top-down direction
+            * here because if we configured ACPI_NUMA, we have
+            * parsed SRAT in init_func(). It is ok to have the
+            * reset here even if we didn't configure ACPI_NUMA
+            * or acpi numa init fails and fallbacks to dummy
+            * numa init.
+            */
+            if (memblock_force_top_down)
+                memblock_set_bottom_up(false);
+
+            ret = numa_cleanup_meminfo(&numa_meminfo);
+            if (ret < 0)
+                return ret;
+
+            numa_emulation(&numa_meminfo, numa_distance_cnt);
+
+            return numa_register_meminfo(&numa_meminfo);
         }
         if (ret < 0)
-            return ret;
+            goto out_free_distance;
 
-        ret = init_func(); arch_acpi_numa_init() {
-            acpi_numa_init() {
-                int i, fake_pxm, cnt = 0;
-
-                if (acpi_disabled)
-                    return -EINVAL;
-
-                /* SRAT: System Resource Affinity Table */
-                ret = acpi_table_parse(ACPI_SIG_SRAT, acpi_parse_srat) {
-                    struct acpi_table_header *table = NULL;
-
-                    if (acpi_disabled)
-                        return -ENODEV;
-
-                    if (!id || !handler)
-                        return -EINVAL;
-
-                    if (strncmp(id, ACPI_SIG_MADT, 4) == 0)
-                        acpi_get_table(id, acpi_apic_instance, &table);
-                    else
-                        acpi_get_table(id, 0, &table);
-
-                    if (table) {
-                        handler(table); acpi_parse_srat() {
-                            struct acpi_table_srat *srat = (struct acpi_table_srat *)table;
-
-                            acpi_srat_revision = srat->header.revision;
-
-                            /* Real work done in acpi_table_parse_srat below. */
-                            return 0;
-                        }
-                        acpi_put_table(table);
-                        return 0;
-                    } else
-                        return -ENODEV;
-                }
-                if (!ret) {
-                    struct acpi_subtable_proc srat_proc[4];
-
-                    memset(srat_proc, 0, sizeof(srat_proc));
-                    srat_proc[0].id = ACPI_SRAT_TYPE_CPU_AFFINITY;
-                    srat_proc[0].handler = acpi_parse_processor_affinity;
-
-                    srat_proc[1].id = ACPI_SRAT_TYPE_X2APIC_CPU_AFFINITY;
-                    srat_proc[1].handler = acpi_parse_x2apic_affinity;
-
-                    srat_proc[2].id = ACPI_SRAT_TYPE_GICC_AFFINITY;
-                    srat_proc[2].handler = acpi_parse_gicc_affinity;
-
-                    srat_proc[3].id = ACPI_SRAT_TYPE_GENERIC_AFFINITY;
-                    srat_proc[3].handler = acpi_parse_gi_affinity;
-
-                    acpi_table_parse_entries_array(
-                        ACPI_SIG_SRAT,
-                        sizeof(struct acpi_table_srat),
-                        srat_proc, ARRAY_SIZE(srat_proc), 0
-                    );
-
-                    cnt = acpi_table_parse_srat(ACPI_SRAT_TYPE_MEMORY_AFFINITY,
-                        acpi_parse_memory_affinity, 0);
-                    acpi_parse_memory_affinity() {
-                        struct acpi_srat_mem_affinity *memory_affinity;
-
-                        memory_affinity = (struct acpi_srat_mem_affinity *)header;
-
-                        acpi_table_print_srat_entry(&header->common);
-
-                        /* let architecture-dependent part to do it */
-                        ret = acpi_numa_memory_affinity_init(memory_affinity) {
-                            u64 start, end;
-                            u32 hotpluggable;
-                            int node, pxm;
-
-                            hotpluggable = IS_ENABLED(CONFIG_MEMORY_HOTPLUG)
-                                && (ma->flags & ACPI_SRAT_MEM_HOT_PLUGGABLE);
-
-                            start = ma->base_address;
-                            end = start + ma->length;
-                            pxm = ma->proximity_domain;
-                            if (acpi_srat_revision <= 1)
-                                pxm &= 0xff;
-
-                            numa_add_memblk(node, start, end)
-                                --->
-
-                            node = acpi_map_pxm_to_node(pxm);
-                            node_set(node, numa_nodes_parsed);
-
-                            /* Mark hotplug range in memblock. */
-                            memblock_mark_hotplug(start, ma->length);
-                            max_possible_pfn = max(max_possible_pfn, PFN_UP(end - 1));
-
-                            return 0;
-                        }
-                        if (!)
-                            parsed_numa_memblks++;
-                        return 0;
-                    }
-                }
-
-                /* SLIT: System Locality Information Table */
-                acpi_table_parse(ACPI_SIG_SLIT, acpi_parse_slit);
-
-                /* fake_pxm is the next unused PXM value after SRAT parsing */
-                for (i = 0, fake_pxm = -1; i < MAX_NUMNODES; i++) {
-                    if (node_to_pxm_map[i] > fake_pxm)
-                        fake_pxm = node_to_pxm_map[i];
-                }
-                fake_pxm++;
-                acpi_table_parse_cedt(ACPI_CEDT_TYPE_CFMWS, acpi_parse_cfmws, &fake_pxm);
-
-                if (cnt < 0)
-                    return cnt;
-                else if (!parsed_numa_memblks)
-                    return -ENOENT;
-                return 0;
-            }
+        if (nodes_empty(numa_nodes_parsed)) {
+            pr_info("No NUMA configuration found\n");
+            ret = -EINVAL;
+            goto out_free_distance;
         }
 
-        ret = numa_register_nodes() {
-            for_each_node_mask(nid, numa_nodes_parsed) {
-                unsigned long start_pfn, end_pfn;
+        ret = numa_register_nodes();
+        if (ret < 0)
+            goto out_free_distance;
 
-                get_pfn_range_for_nid(nid, &start_pfn, &end_pfn);
-                setup_node_data(nid, start_pfn, end_pfn) {
-                    const size_t nd_size = roundup(sizeof(pg_data_t), SMP_CACHE_BYTES);
-                    u64 nd_pa;
-                    void *nd;
-                    int tnid;
-
-                    nd_pa = memblock_phys_alloc_try_nid(nd_size, SMP_CACHE_BYTES, nid);
-                    nd = __va(nd_pa);
-                    tnid = early_pfn_to_nid(nd_pa >> PAGE_SHIFT);
-
-                    node_data[nid] = nd;
-                    memset(NODE_DATA(nid), 0, sizeof(pg_data_t));
-                    NODE_DATA(nid)->node_id = nid;
-                    NODE_DATA(nid)->node_start_pfn = start_pfn;
-                    NODE_DATA(nid)->node_spanned_pages = end_pfn - start_pfn;
-                }
-
-                node_set_online(nid) {
-                    node_set_state(nid, N_ONLINE);
-                    nr_online_nodes = num_node_state(N_ONLINE);
-                }
-            }
-
-            /* Setup online nodes to actual nodes*/
-            node_possible_map = numa_nodes_parsed;
-        }
         setup_node_to_cpumask_map();
+
+        return 0;
     }
+}
+```
+
+### of_numa_init
+
+```c
+int __init of_numa_init(void)
+{
+    int r;
+
+    of_numa_parse_cpu_nodes();
+    r = of_numa_parse_memory_nodes();
+    if (r)
+        return r;
+    return of_numa_parse_distance_map();
 }
 ```
 
@@ -21512,8 +21425,38 @@ do_wp_page(vmf) {
 ### task_tick_numa
 
 ```c
+struct mm_struct {
+    /* numa_next_scan is the next time that PTEs will be remapped
+     * PROT_NONE to trigger NUMA hinting faults; such faults gather
+     * statistics and migrate pages to new nodes if necessary. */
+    unsigned long numa_next_scan;
+
+    /* Restart point for scanning and remapping PTEs. */
+    unsigned long numa_scan_offset;
+
+    /* numa_scan_seq prevents two threads remapping PTEs. */
+    int numa_scan_seq;
+
+    struct vma_numab_state *numab_state;
+};
+/* Approximate time to scan a full NUMA task in ms. The task scan period is
+ * calculated based on the tasks virtual memory size and
+ * numa_balancing_scan_size. */
+unsigned int sysctl_numa_balancing_scan_period_min = 1000;
+unsigned int sysctl_numa_balancing_scan_period_max = 60000;
+
+/* Portion of address space to scan in MB */
+unsigned int sysctl_numa_balancing_scan_size = 256;
+
+/* Scan @scan_size MB every @scan_period after an initial @scan_delay in ms */
+unsigned int sysctl_numa_balancing_scan_delay = 1000;
+
+/* The page with hint page fault latency < threshold in ms is considered hot */
+unsigned int sysctl_numa_balancing_hot_threshold = MSEC_PER_SEC;
+
 void task_tick_numa(struct rq *rq, struct task_struct *curr)
 {
+    /* init_task_work(&p->numa_work, task_numa_work); */
     struct callback_head *work = &curr->numa_work;
     u64 period, now;
 
@@ -21529,8 +21472,9 @@ void task_tick_numa(struct rq *rq, struct task_struct *curr)
     period = (u64)curr->numa_scan_period * NSEC_PER_MSEC;
 
     if (now > curr->node_stamp + period) {
-        if (!curr->node_stamp)
+        if (!curr->node_stamp) {
             curr->numa_scan_period = task_scan_start(curr);
+        }
         curr->node_stamp += period;
 
         if (!time_before(jiffies, curr->mm->numa_next_scan))
@@ -21753,8 +21697,12 @@ out:
      * scanner to the start so check it now. */
     if (vma)
         mm->numa_scan_offset = start;
-    else
-        reset_ptenuma_scan(p);
+    else {
+        reset_ptenuma_scan(p) {
+            WRITE_ONCE(p->mm->numa_scan_seq, READ_ONCE(p->mm->numa_scan_seq) + 1);
+            p->mm->numa_scan_offset = 0;
+        }
+    }
     mmap_read_unlock(mm);
 
     /* Make sure tasks use at least 32x as much time to run other code
@@ -22060,112 +22008,100 @@ out:
 }
 
 bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
-				int src_nid, int dst_cpu)
+                int src_nid, int dst_cpu)
 {
-	struct numa_group *ng = deref_curr_numa_group(p);
-	int dst_nid = cpu_to_node(dst_cpu);
-	int last_cpupid, this_cpupid;
+    struct numa_group *ng = deref_curr_numa_group(p);
+    int dst_nid = cpu_to_node(dst_cpu);
+    int last_cpupid, this_cpupid;
 
-	/*
-	 * Cannot migrate to memoryless nodes.
-	 */
-	if (!node_state(dst_nid, N_MEMORY))
-		return false;
+    /* Cannot migrate to memoryless nodes. */
+    if (!node_state(dst_nid, N_MEMORY))
+        return false;
 
-	/*
-	 * The pages in slow memory node should be migrated according
-	 * to hot/cold instead of private/shared.
-	 */
-	if (folio_use_access_time(folio)) {
-		struct pglist_data *pgdat;
-		unsigned long rate_limit;
-		unsigned int latency, th, def_th;
-		long nr = folio_nr_pages(folio);
+    /* The pages in slow memory node should be migrated according
+     * to hot/cold instead of private/shared. */
+    if (folio_use_access_time(folio)) {
+        struct pglist_data *pgdat;
+        unsigned long rate_limit;
+        unsigned int latency, th, def_th;
+        long nr = folio_nr_pages(folio);
 
-		pgdat = NODE_DATA(dst_nid);
-		if (pgdat_free_space_enough(pgdat)) {
-			/* workload changed, reset hot threshold */
-			pgdat->nbp_threshold = 0;
-			mod_node_page_state(pgdat, PGPROMOTE_CANDIDATE_NRL, nr);
-			return true;
-		}
+        pgdat = NODE_DATA(dst_nid);
+        if (pgdat_free_space_enough(pgdat)) {
+            /* workload changed, reset hot threshold */
+            pgdat->nbp_threshold = 0;
+            mod_node_page_state(pgdat, PGPROMOTE_CANDIDATE_NRL, nr);
+            return true;
+        }
 
-		def_th = sysctl_numa_balancing_hot_threshold;
-		rate_limit = MB_TO_PAGES(sysctl_numa_balancing_promote_rate_limit);
-		numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
+        def_th = sysctl_numa_balancing_hot_threshold;
+        rate_limit = MB_TO_PAGES(sysctl_numa_balancing_promote_rate_limit);
+        numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
 
-		th = pgdat->nbp_threshold ? : def_th;
-		latency = numa_hint_fault_latency(folio);
-		if (latency >= th)
-			return false;
+        th = pgdat->nbp_threshold ? : def_th;
+        latency = numa_hint_fault_latency(folio);
+        if (latency >= th)
+            return false;
 
-		return !numa_promotion_rate_limit(pgdat, rate_limit, nr);
-	}
+        return !numa_promotion_rate_limit(pgdat, rate_limit, nr);
+    }
 
-	this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
-	last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
+    this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
+    last_cpupid = folio_xchg_last_cpupid(folio, this_cpupid);
 
-	if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
-	    !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
-		return false;
+    if (!(sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING) &&
+        !node_is_toptier(src_nid) && !cpupid_valid(last_cpupid))
+        return false;
 
-	/*
-	 * Allow first faults or private faults to migrate immediately early in
-	 * the lifetime of a task. The magic number 4 is based on waiting for
-	 * two full passes of the "multi-stage node selection" test that is
-	 * executed below.
-	 */
-	if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
-	    (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
-		return true;
+    /* Allow first faults or private faults to migrate immediately early in
+     * the lifetime of a task. The magic number 4 is based on waiting for
+     * two full passes of the "multi-stage node selection" test that is
+     * executed below. */
+    if ((p->numa_preferred_nid == NUMA_NO_NODE || p->numa_scan_seq <= 4) &&
+        (cpupid_pid_unset(last_cpupid) || cpupid_match_pid(p, last_cpupid)))
+        return true;
 
-	/*
-	 * Multi-stage node selection is used in conjunction with a periodic
-	 * migration fault to build a temporal task<->page relation. By using
-	 * a two-stage filter we remove short/unlikely relations.
-	 *
-	 * Using P(p) ~ n_p / n_t as per frequentist probability, we can equate
-	 * a task's usage of a particular page (n_p) per total usage of this
-	 * page (n_t) (in a given time-span) to a probability.
-	 *
-	 * Our periodic faults will sample this probability and getting the
-	 * same result twice in a row, given these samples are fully
-	 * independent, is then given by P(n)^2, provided our sample period
-	 * is sufficiently short compared to the usage pattern.
-	 *
-	 * This quadric squishes small probabilities, making it less likely we
-	 * act on an unlikely task<->page relation.
-	 */
-	if (!cpupid_pid_unset(last_cpupid) &&
-				cpupid_to_nid(last_cpupid) != dst_nid)
-		return false;
+    /* Multi-stage node selection is used in conjunction with a periodic
+     * migration fault to build a temporal task<->page relation. By using
+     * a two-stage filter we remove short/unlikely relations.
+     *
+     * Using P(p) ~ n_p / n_t as per frequentist probability, we can equate
+     * a task's usage of a particular page (n_p) per total usage of this
+     * page (n_t) (in a given time-span) to a probability.
+     *
+     * Our periodic faults will sample this probability and getting the
+     * same result twice in a row, given these samples are fully
+     * independent, is then given by P(n)^2, provided our sample period
+     * is sufficiently short compared to the usage pattern.
+     *
+     * This quadric squishes small probabilities, making it less likely we
+     * act on an unlikely task<->page relation. */
+    if (!cpupid_pid_unset(last_cpupid) &&
+                cpupid_to_nid(last_cpupid) != dst_nid)
+        return false;
 
-	/* Always allow migrate on private faults */
-	if (cpupid_match_pid(p, last_cpupid))
-		return true;
+    /* Always allow migrate on private faults */
+    if (cpupid_match_pid(p, last_cpupid))
+        return true;
 
-	/* A shared fault, but p->numa_group has not been set up yet. */
-	if (!ng)
-		return true;
+    /* A shared fault, but p->numa_group has not been set up yet. */
+    if (!ng)
+        return true;
 
-	/*
-	 * Destination node is much more heavily used than the source
-	 * node? Allow migration.
-	 */
-	if (group_faults_cpu(ng, dst_nid) > group_faults_cpu(ng, src_nid) *
-					ACTIVE_NODE_FRACTION)
-		return true;
+    /* Destination node is much more heavily used than the source
+     * node? Allow migration. */
+    if (group_faults_cpu(ng, dst_nid) > group_faults_cpu(ng, src_nid) *
+                    ACTIVE_NODE_FRACTION)
+        return true;
 
-	/*
-	 * Distribute memory according to CPU & memory use on each node,
-	 * with 3/4 hysteresis to avoid unnecessary memory migrations:
-	 *
-	 * faults_cpu(dst)   3   faults_cpu(src)
-	 * --------------- * - > ---------------
-	 * faults_mem(dst)   4   faults_mem(src)
-	 */
-	return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
-	       group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
+    /* Distribute memory according to CPU & memory use on each node,
+     * with 3/4 hysteresis to avoid unnecessary memory migrations:
+     *
+     * faults_cpu(dst)   3   faults_cpu(src)
+     * --------------- * - > ---------------
+     * faults_mem(dst)   4   faults_mem(src) */
+    return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
+           group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
 }
 ```
 
