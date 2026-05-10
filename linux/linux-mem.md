@@ -481,9 +481,71 @@ start_kernel()
     }
 ```
 
-# setup_arch
+# memory_init
+
+## mm_init_flow
+
+```
+arch/arm64/kernel/head.S
+  __primary_switched()
+    → init_pg_dir built (identity + kernel mappings)
+    → MMU enabled (TTBR0 = idmap, TTBR1 = init_pg_dir)
+    → branch to start_kernel()
+
+start_kernel()
+  │
+  ├─ mm_core_init_early()           [mm/mm_init.c:2685]
+  │    └─ free_area_init()          ← initializes struct zone, sets up node/zone layout
+  │
+  └─ setup_arch()                   [arch/arm64/kernel/setup.c:281]
+       │
+       ├─ early_fixmap_init()        ← fixmap page tables (for early ioremap, FDT access)
+       ├─ setup_machine_fdt()        ← parse DTB, call early_init_dt_scan_memory()
+       │                               → populates memblock.memory regions
+       ├─ parse_early_param()
+       │
+       ├─ arm64_memblock_init()      [arch/arm64/mm/init.c:193]
+       │    ├─ compute memstart_addr (align DRAM base to PUD/PMD boundary)
+       │    ├─ clip linear region to vabits_actual (48 or 52 bits)
+       │    ├─ memblock_remove()     ← trim memory outside linear map range
+       │    ├─ memblock_reserve()    ← kernel _text.._end, initrd
+       │    └─ early_init_fdt_scan_reserved_mem()  ← /reserved-memory nodes
+       │
+       ├─ paging_init()             [arch/arm64/mm/mmu.c:1420]
+       │    ├─ map_mem(swapper_pg_dir)   ← build linear map (TTBR1 final mapping)
+       │    │    └─ maps all memblock.memory → PAGE_OFFSET + pa
+       │    ├─ memblock_allow_resize()
+       │    ├─ create_idmap()           ← identity map for trampoline
+       │    └─ declare_kernel_vmas()    ← register kernel VMAs (text, data, BSS…)
+       │
+       ├─ bootmem_init()            [arch/arm64/mm/init.c:300]
+       │    ├─ set max_pfn, min_low_pfn, max_low_pfn
+       │    ├─ arch_numa_init()         ← parse NUMA topology (ACPI/DT)
+       │    ├─ kvm_hyp_reserve()
+       │    ├─ dma_limits_init()        ← compute arm64_dma_phys_limit, set ZONE_DMA/DMA32
+       │    ├─ dma_contiguous_reserve() ← reserve CMA region
+       │    ├─ arch_reserve_crashkernel()
+       │    └─ memblock_dump_all()
+       │
+       └─ kasan_init()                 ← map KASAN shadow region in page tables
+
+
+kernel_init_freeable()
+  ├─ setup_per_cpu_pageset()           ← per-CPU page frame caches (pcp)
+  └─ page_alloc_init_late()   [mm/mm_init.c:2298]
+       ├─ deferred_init_memmap()       ← initialize struct page for deferred pfns (large RAM)
+       ├─ page_ext_init()              ← deferred page_ext init
+       └─ mem_init_print_info()        ← print final "Memory: X available" line
+```
 
 ```c
+void start_kernel(void)
+{
+    setup_arch(&command_line);
+	mm_core_init_early();
+    mm_core_init();
+}
+
 setup_arch(&command_line);
     setup_initial_init_mm(_stext, _etext, _edata, _end) {
         init_mm.start_code = (unsigned long)start_code;
@@ -770,6 +832,60 @@ bootmem_init() {
     reserve_crashkernel();
 }
 ```
+
+## mm_core_init
+
+```c
+void start_kernel(void) {
+    mm_core_init() {
+        build_all_zonelists(NULL);
+            --->
+        page_alloc_init_cpuhp();
+
+        page_ext_init_flatmem();
+        mem_debugging_and_hardening_init();
+        kfence_alloc_pool();
+        report_meminit();
+        kmsan_init_shadow();
+        stack_depot_early_init();
+
+        memblock_free_all();
+        mem_init() {
+            page_alloc_available = true;
+	        swiotlb_update_mem_attributes() {
+                struct io_tlb_pool *mem = &io_tlb_default_mem.defpool;
+                unsigned long bytes;
+
+                if (!mem->nslabs || mem->late_alloc)
+                    return;
+                bytes = PAGE_ALIGN(mem->nslabs << IO_TLB_SHIFT);
+                set_memory_decrypted((unsigned long)mem->vaddr, bytes >> PAGE_SHIFT);
+            }
+        }
+
+        mem_init_print_info();
+        kmem_cache_init();
+
+        page_ext_init_flatmem_late();
+        kmemleak_init();
+        ptlock_cache_init();
+        pgtable_cache_init();
+        debug_objects_mem_init();
+        vmalloc_init()
+            --->
+        /* If no deferred init page_ext now, as vmap is fully initialized */
+        if (!deferred_struct_pages)
+            page_ext_init();
+        /* Should be run before the first non-init thread is created */
+        init_espfix_bsp();
+        /* Should be run after espfix64 is set up. */
+        pti_init();
+        kmsan_init_runtime();
+        mm_cache_init();
+    }
+}
+```
+
 
 # numa
 
@@ -16543,50 +16659,10 @@ static void swap_writepage_bdev_sync(struct folio *folio,
 }
 ```
 
-# mm_core_init
+# zswap
 
-```c
-void start_kernel(void) {
-    mm_core_init() {
-        build_all_zonelists(NULL);
-            --->
-        page_alloc_init_cpuhp();
+> mm/zswap.c, mm/zsmalloc.c
 
-        page_ext_init_flatmem();
-        mem_debugging_and_hardening_init();
-        kfence_alloc_pool();
-        report_meminit();
-        kmsan_init_shadow();
-        stack_depot_early_init();
-
-        mem_init() {
-            /* release free pages to the buddy allocator */
-            memblock_free_all();
-                --->
-        }
-
-        mem_init_print_info();
-        kmem_cache_init();
-
-        page_ext_init_flatmem_late();
-        kmemleak_init();
-        ptlock_cache_init();
-        pgtable_cache_init();
-        debug_objects_mem_init();
-        vmalloc_init()
-            --->
-        /* If no deferred init page_ext now, as vmap is fully initialized */
-        if (!deferred_struct_pages)
-            page_ext_init();
-        /* Should be run before the first non-init thread is created */
-        init_espfix_bsp();
-        /* Should be run after espfix64 is set up. */
-        pti_init();
-        kmsan_init_runtime();
-        mm_cache_init();
-    }
-}
-```
 
 # memblock
 
@@ -24838,6 +24914,34 @@ unsigned long kernel_physical_mapping_init(
   return paddr_last;
 }
 ```
+
+# get_user_pages
+
+> mm/gup.c
+
+# HMM
+
+> mm/hmm.c
+
+# DAMON
+
+> mm/damon/
+
+# Memory failure
+
+> mm/memory-failure.c
+
+# secretmem
+
+> mm/secretmem.c
+
+# KSM
+
+> mm/ksm.c
+
+# userfaultfd
+
+> mm/userfaultfd.c
 
 # fork
 
