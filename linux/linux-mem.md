@@ -11438,6 +11438,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 ![](../images/kernel/mem-page_compact.svg)
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
+* [Oracle - Linux Memory Compaction: Internals and Debugging — Part 1: How Compaction Works](https://blogs.oracle.com/linux/linux-memory-compaction-part-1)
 
 ---
 
