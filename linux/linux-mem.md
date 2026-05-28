@@ -542,7 +542,7 @@ kernel_init_freeable()
 void start_kernel(void)
 {
     setup_arch(&command_line);
-	mm_core_init_early();
+    mm_core_init_early();
     mm_core_init();
 }
 
@@ -852,7 +852,7 @@ void start_kernel(void) {
         memblock_free_all();
         mem_init() {
             page_alloc_available = true;
-	        swiotlb_update_mem_attributes() {
+            swiotlb_update_mem_attributes() {
                 struct io_tlb_pool *mem = &io_tlb_default_mem.defpool;
                 unsigned long bytes;
 
@@ -960,14 +960,12 @@ arch_numa_init() {
             if (ret < 0)
                 return ret;
 
-            /*
-            * We reset memblock back to the top-down direction
+            /* We reset memblock back to the top-down direction
             * here because if we configured ACPI_NUMA, we have
             * parsed SRAT in init_func(). It is ok to have the
             * reset here even if we didn't configure ACPI_NUMA
             * or acpi numa init fails and fallbacks to dummy
-            * numa init.
-            */
+            * numa init. */
             if (memblock_force_top_down)
                 memblock_set_bottom_up(false);
 
@@ -1011,6 +1009,175 @@ int __init of_numa_init(void)
     if (r)
         return r;
     return of_numa_parse_distance_map();
+}
+```
+
+### numa_emulation
+
+```c
+void __init numa_emulation(struct numa_meminfo *numa_meminfo, int numa_dist_cnt)
+{
+    static struct numa_meminfo ei __initdata;
+    static struct numa_meminfo pi __initdata;
+    const u64 max_addr = PFN_PHYS(max_pfn);
+    u8 *phys_dist = NULL;
+    size_t phys_size = numa_dist_cnt * numa_dist_cnt * sizeof(phys_dist[0]);
+    int max_emu_nid, dfl_phys_nid;
+    int i, j, ret;
+    nodemask_t physnode_mask = numa_nodes_parsed;
+
+    if (!emu_cmdline)
+        goto no_emu;
+
+    memset(&ei, 0, sizeof(ei));
+    pi = *numa_meminfo;
+
+    for (i = 0; i < MAX_NUMNODES; i++)
+        emu_nid_to_phys[i] = NUMA_NO_NODE;
+
+    /* If the numa=fake command-line contains a 'M' or 'G', it represents
+     * the fixed node size.  Otherwise, if it is just a single number N,
+     * split the system RAM into N fake nodes. */
+    if (strchr(emu_cmdline, 'U')) {
+        unsigned long n;
+        int nid = 0;
+
+        n = simple_strtoul(emu_cmdline, &emu_cmdline, 0);
+        ret = -1;
+        for_each_node_mask(i, physnode_mask) {
+            /* The reason we pass in blk[0] is due to
+             * numa_remove_memblk_from() called by
+             * emu_setup_memblk() will delete entry 0
+             * and then move everything else up in the pi.blk
+             * array. Therefore we should always be looking
+             * at blk[0]. */
+            ret = split_nodes_size_interleave_uniform(&ei, &pi,
+                    pi.blk[0].start, pi.blk[0].end, 0,
+                    n, &pi.blk[0], nid);
+            if (ret < 0)
+                break;
+            if (ret < n) {
+                pr_info("%s: phys: %d only got %d of %ld nodes, failing\n",
+                        __func__, i, ret, n);
+                ret = -1;
+                break;
+            }
+            nid = ret;
+        }
+    } else if (strchr(emu_cmdline, 'M') || strchr(emu_cmdline, 'G')) {
+        u64 size;
+
+        size = memparse(emu_cmdline, &emu_cmdline);
+        ret = split_nodes_size_interleave(&ei, &pi, 0, max_addr, size);
+    } else {
+        unsigned long n;
+
+        n = simple_strtoul(emu_cmdline, &emu_cmdline, 0);
+        ret = split_nodes_interleave(&ei, &pi, 0, max_addr, n);
+    }
+    if (*emu_cmdline == ':')
+        emu_cmdline++;
+
+    if (ret < 0)
+        goto no_emu;
+
+    if (numa_cleanup_meminfo(&ei) < 0) {
+        pr_warn("NUMA: Warning: constructed meminfo invalid, disabling emulation\n");
+        goto no_emu;
+    }
+
+    /* copy the physical distance table */
+    if (numa_dist_cnt) {
+        phys_dist = memblock_alloc(phys_size, PAGE_SIZE);
+        if (!phys_dist) {
+            pr_warn("NUMA: Warning: can't allocate copy of distance table, disabling emulation\n");
+            goto no_emu;
+        }
+
+        for (i = 0; i < numa_dist_cnt; i++)
+            for (j = 0; j < numa_dist_cnt; j++)
+                phys_dist[i * numa_dist_cnt + j] =
+                    node_distance(i, j);
+    }
+
+    /* Determine the max emulated nid and the default phys nid to use
+     * for unmapped nodes. */
+    max_emu_nid = setup_emu2phys_nid(&dfl_phys_nid);
+
+    /* Make sure numa_nodes_parsed only contains emulated nodes */
+    nodes_clear(numa_nodes_parsed);
+    for (i = 0; i < ARRAY_SIZE(ei.blk); i++)
+        if (ei.blk[i].start != ei.blk[i].end &&
+            ei.blk[i].nid != NUMA_NO_NODE)
+            node_set(ei.blk[i].nid, numa_nodes_parsed);
+
+    /* fix pxm_to_node_map[] and node_to_pxm_map[] to avoid collision
+     * with faked numa nodes, particularly during later memory hotplug
+     * handling, and also update numa_nodes_parsed accordingly. */
+    ret = fix_pxm_node_maps(max_emu_nid);
+    if (ret < 0)
+        goto no_emu;
+
+    /* commit */
+    *numa_meminfo = ei;
+
+    numa_emu_update_cpu_to_node(emu_nid_to_phys, max_emu_nid + 1);
+
+    /* make sure all emulated nodes are mapped to a physical node */
+    for (i = 0; i < max_emu_nid + 1; i++)
+        if (emu_nid_to_phys[i] == NUMA_NO_NODE)
+            emu_nid_to_phys[i] = dfl_phys_nid;
+
+    /* transform distance table */
+    numa_reset_distance();
+    for (i = 0; i < max_emu_nid + 1; i++) {
+        for (j = 0; j < max_emu_nid + 1; j++) {
+            int physi = emu_nid_to_phys[i];
+            int physj = emu_nid_to_phys[j];
+            int dist;
+
+            if (get_option(&emu_cmdline, &dist) == 2)
+                ;
+            else if (physi >= numa_dist_cnt || physj >= numa_dist_cnt)
+                dist = physi == physj ?
+                    LOCAL_DISTANCE : REMOTE_DISTANCE;
+            else
+                dist = phys_dist[physi * numa_dist_cnt + physj];
+
+            numa_set_distance(i, j, dist);
+        }
+    }
+    for (i = 0; i < numa_distance_cnt; i++) {
+        for (j = 0; j < numa_distance_cnt; j++) {
+            int physi, physj;
+            u8 dist;
+
+            /* distance between fake nodes is already ok */
+            if (emu_nid_to_phys[i] != NUMA_NO_NODE &&
+                emu_nid_to_phys[j] != NUMA_NO_NODE)
+                continue;
+            if (emu_nid_to_phys[i] != NUMA_NO_NODE)
+                physi = emu_nid_to_phys[i];
+            else
+                physi = i - max_emu_nid;
+            if (emu_nid_to_phys[j] != NUMA_NO_NODE)
+                physj = emu_nid_to_phys[j];
+            else
+                physj = j - max_emu_nid;
+            dist = phys_dist[physi * numa_dist_cnt + physj];
+            numa_set_distance(i, j, dist);
+        }
+    }
+
+    /* free the copied physical distance table */
+    memblock_free(phys_dist, phys_size);
+    return;
+
+no_emu:
+    numa_nodes_parsed = physnode_mask;
+    /* No emulation.  Build identity emu_nid_to_phys[] for numa_add_cpu() */
+    for (i = 0; i < ARRAY_SIZE(emu_nid_to_phys); i++)
+        emu_nid_to_phys[i] = i;
 }
 ```
 
@@ -21502,6 +21669,22 @@ do_wp_page(vmf) {
 ### task_tick_numa
 
 ```c
+struct plist_data {
+#ifdef CONFIG_NUMA_BALANCING
+    /* start time in ms of current promote rate limit period */
+    unsigned int nbp_rl_start;
+    /* number of promote candidate pages at start time of current rate limit period */
+    unsigned long nbp_rl_nr_cand;
+    /* promote threshold in ms */
+    unsigned int nbp_threshold;
+    /* start time in ms of current promote threshold adjustment period */
+    unsigned int nbp_th_start;
+    /* number of promote candidate pages at start time of current promote
+     * threshold adjustment period */
+    unsigned long nbp_th_nr_cand;
+#endif
+};
+
 struct mm_struct {
     /* numa_next_scan is the next time that PTEs will be remapped
      * PROT_NONE to trigger NUMA hinting faults; such faults gather
@@ -21516,6 +21699,32 @@ struct mm_struct {
 
     struct vma_numab_state *numab_state;
 };
+
+struct task_struct {
+    #ifdef CONFIG_NUMA_BALANCING
+    int                     numa_scan_seq;
+    unsigned int            numa_scan_period;
+    unsigned int            numa_scan_period_max;
+    int                     numa_preferred_nid;
+    unsigned long           numa_migrate_retry;
+    /* Migration stamp: */
+    u64                     node_stamp;
+    u64                     last_task_numa_placement;
+    u64                     last_sum_exec_runtime;
+    struct callback_head    numa_work;
+
+    struct numa_group __rcu     *numa_group;
+
+    unsigned long               *numa_faults;
+    unsigned long               total_numa_faults;
+
+    unsigned long               numa_faults_locality[3];
+
+    unsigned long               numa_pages_migrated;
+#endif /* CONFIG_NUMA_BALANCING */
+};
+
+
 /* Approximate time to scan a full NUMA task in ms. The task scan period is
  * calculated based on the tasks virtual memory size and
  * numa_balancing_scan_size. */
@@ -21788,6 +21997,8 @@ out:
      * overloaded system we need to limit overhead on a per task basis. */
     if (unlikely(p->se.sum_exec_runtime != runtime)) {
         u64 diff = p->se.sum_exec_runtime - runtime;
+        /* Rate-limits scanning overhead to ~3% CPU:
+         * overhead = diff / (diff + 32 * diff) = 1/33 = 3.03% */
         p->node_stamp += 32 * diff;
     }
 }
@@ -21876,7 +22087,11 @@ vm_fault_t do_numa_page(struct vm_fault *vmf)
     struct folio *folio = NULL;
     int nid = NUMA_NO_NODE;
     bool writable = false, ignore_writable = false;
-    bool pte_write_upgrade = vma_wants_manual_pte_write_upgrade(vma);
+    bool pte_write_upgrade = vma_wants_manual_pte_write_upgrade(vma) {
+        if (vma->vm_flags & VM_SHARED)
+            return vma_wants_writenotify(vma, vma->vm_page_prot);
+        return !!(vma->vm_flags & VM_WRITE);
+    }
     int last_cpupid;
     int target_nid;
     pte_t pte, old_pte;
@@ -22097,7 +22312,11 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
 
     /* The pages in slow memory node should be migrated according
      * to hot/cold instead of private/shared. */
-    if (folio_use_access_time(folio)) {
+    ret = folio_use_access_time(folio) {
+        return (sysctl_numa_balancing_mode & NUMA_BALANCING_MEMORY_TIERING)
+            && !node_is_toptier(folio_nid(folio));
+    }
+    if (ret) {
         struct pglist_data *pgdat;
         unsigned long rate_limit;
         unsigned int latency, th, def_th;
@@ -22114,13 +22333,35 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
         def_th = sysctl_numa_balancing_hot_threshold;
         rate_limit = MB_TO_PAGES(sysctl_numa_balancing_promote_rate_limit);
         numa_promotion_adjust_threshold(pgdat, rate_limit, def_th);
+            --->
 
         th = pgdat->nbp_threshold ? : def_th;
-        latency = numa_hint_fault_latency(folio);
+        latency = numa_hint_fault_latency(folio) {
+            int last_time, time;
+
+            time = jiffies_to_msecs(jiffies);
+            last_time = folio_xchg_access_time(folio, time);
+
+            return (time - last_time) & PAGE_ACCESS_TIME_MASK;
+        }
         if (latency >= th)
             return false;
 
-        return !numa_promotion_rate_limit(pgdat, rate_limit, nr);
+        return !numa_promotion_rate_limit(pgdat, rate_limit, nr) {
+            unsigned long nr_cand;
+            unsigned int now, start;
+
+            now = jiffies_to_msecs(jiffies);
+            mod_node_page_state(pgdat, PGPROMOTE_CANDIDATE, nr);
+            nr_cand = node_page_state(pgdat, PGPROMOTE_CANDIDATE);
+            start = pgdat->nbp_rl_start;
+            if (now - start > MSEC_PER_SEC &&
+                cmpxchg(&pgdat->nbp_rl_start, start, now) == start)
+                pgdat->nbp_rl_nr_cand = nr_cand;
+            if (nr_cand - pgdat->nbp_rl_nr_cand >= rate_limit)
+                return true;
+            return false;
+        }
     }
 
     this_cpupid = cpu_pid_to_cpupid(dst_cpu, current->pid);
@@ -22142,7 +22383,8 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
      * migration fault to build a temporal task<->page relation. By using
      * a two-stage filter we remove short/unlikely relations.
      *
-     * Using P(p) ~ n_p / n_t as per frequentist probability, we can equate
+     * Using P(p) ~ n_p / n_t (this task's faults / total faults on the page)
+     * as per frequentist probability, we can equate
      * a task's usage of a particular page (n_p) per total usage of this
      * page (n_t) (in a given time-span) to a probability.
      *
@@ -22153,8 +22395,7 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
      *
      * This quadric squishes small probabilities, making it less likely we
      * act on an unlikely task<->page relation. */
-    if (!cpupid_pid_unset(last_cpupid) &&
-                cpupid_to_nid(last_cpupid) != dst_nid)
+    if (!cpupid_pid_unset(last_cpupid) && cpupid_to_nid(last_cpupid) != dst_nid)
         return false;
 
     /* Always allow migrate on private faults */
@@ -22179,6 +22420,33 @@ bool should_numa_migrate_memory(struct task_struct *p, struct folio *folio,
      * faults_mem(dst)   4   faults_mem(src) */
     return group_faults_cpu(ng, dst_nid) * group_faults(p, src_nid) * 3 >
            group_faults_cpu(ng, src_nid) * group_faults(p, dst_nid) * 4;
+}
+
+void numa_promotion_adjust_threshold(struct pglist_data *pgdat,
+                        unsigned long rate_limit,
+                        unsigned int ref_th)
+{
+    unsigned int now, start, th_period, unit_th, th;
+    unsigned long nr_cand, ref_cand, diff_cand;
+
+    now = jiffies_to_msecs(jiffies);
+    th_period = sysctl_numa_balancing_scan_period_max;
+    start = pgdat->nbp_th_start;
+    if (now - start > th_period && cmpxchg(&pgdat->nbp_th_start, start, now) == start) {
+        ref_cand = rate_limit * sysctl_numa_balancing_scan_period_max / MSEC_PER_SEC;
+        nr_cand = node_page_state(pgdat, PGPROMOTE_CANDIDATE);
+        diff_cand = nr_cand - pgdat->nbp_th_nr_cand;
+        unit_th = ref_th * 2 / NUMA_MIGRATION_ADJUST_STEPS;
+        th = pgdat->nbp_threshold ? : ref_th;
+
+        if (diff_cand > ref_cand * 11 / 10)
+            th = max(th - unit_th, unit_th);
+        else if (diff_cand < ref_cand * 9 / 10)
+            th = min(th + unit_th, ref_th * 2);
+
+        pgdat->nbp_th_nr_cand = nr_cand;
+        pgdat->nbp_threshold = th;
+    }
 }
 ```
 
@@ -22383,6 +22651,67 @@ void task_numa_placement(struct task_struct *p)
     }
 
     update_task_scan_period(p, fault_types[0], fault_types[1]);
+}
+
+void update_task_scan_period(struct task_struct *p,
+            unsigned long shared, unsigned long private)
+{
+    unsigned int period_slot;
+    int lr_ratio, ps_ratio;
+    int diff;
+
+    unsigned long remote = p->numa_faults_locality[0];
+    unsigned long local = p->numa_faults_locality[1];
+
+    /* If there were no record hinting faults then either the task is
+     * completely idle or all activity is in areas that are not of interest
+     * to automatic numa balancing. Related to that, if there were failed
+     * migration then it implies we are migrating too quickly or the local
+     * node is overloaded. In either case, scan slower */
+    if (local + shared == 0 || p->numa_faults_locality[2]) {
+        p->numa_scan_period = min(p->numa_scan_period_max,
+            p->numa_scan_period << 1);
+
+        p->mm->numa_next_scan = jiffies +
+            msecs_to_jiffies(p->numa_scan_period);
+
+        return;
+    }
+
+    /* Prepare to scale scan period relative to the current period.
+     *     == NUMA_PERIOD_THRESHOLD scan period stays the same
+     *       <  NUMA_PERIOD_THRESHOLD scan period decreases (scan faster)
+     *     >= NUMA_PERIOD_THRESHOLD scan period increases (scan slower) */
+    period_slot = DIV_ROUND_UP(p->numa_scan_period, NUMA_PERIOD_SLOTS);
+    lr_ratio = (local * NUMA_PERIOD_SLOTS) / (local + remote);
+    ps_ratio = (private * NUMA_PERIOD_SLOTS) / (private + shared);
+
+    if (ps_ratio >= NUMA_PERIOD_THRESHOLD) {
+        /* Most memory accesses are local. There is no need to
+         * do fast NUMA scanning, since memory is already local. */
+        int slot = ps_ratio - NUMA_PERIOD_THRESHOLD;
+        if (!slot)
+            slot = 1;
+        diff = slot * period_slot;
+    } else if (lr_ratio >= NUMA_PERIOD_THRESHOLD) {
+        /* Most memory accesses are shared with other tasks.
+         * There is no point in continuing fast NUMA scanning,
+         * since other tasks may just move the memory elsewhere. */
+        int slot = lr_ratio - NUMA_PERIOD_THRESHOLD;
+        if (!slot)
+            slot = 1;
+        diff = slot * period_slot;
+    } else {
+        /* Private memory faults exceed (SLOTS-THRESHOLD)/SLOTS,
+         * yet they are not on the local NUMA node. Speed up
+         * NUMA scanning to get the memory moved over. */
+        int ratio = max(lr_ratio, ps_ratio);
+        diff = -(NUMA_PERIOD_THRESHOLD - ratio) * period_slot;
+    }
+
+    p->numa_scan_period = clamp(p->numa_scan_period + diff,
+            task_scan_min(p), task_scan_max(p));
+    memset(p->numa_faults_locality, 0, sizeof(p->numa_faults_locality));
 }
 ```
 
