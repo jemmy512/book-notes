@@ -133,7 +133,7 @@ Feature | (Data Memory Barrier)DMB | (Data Synchronization Barrier)DSB
 **Write-Back to Memory** | Does not force dirty cache lines in the **M (Modified)** state to be written back. | Forces dirty cache lines in the **M (Modified)** state to be written back if necessary.
 **Scope** | Configurable (ISH, OSH, NSH, ST). | Configurable (ISH, OSH, NSH, ST).
 **Performance** | Lower overhead. | Higher overhead.
-**Use Cases** | When **ordering**of memory accesses is required, but **completion**is not strictly necessary. | When **ordering **and **completion **of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
+**Use Cases** | When **ordering**of memory accesses is required, but **completion**is not strictly necessary. | When **ordering** and **completion** of memory accesses are required, such as before changing memory mappings, dealing with device memory, or when strict synchronization is essential. Used to implement memory_order_seq_cst.
 **Core Stalling** | Does not stall the core; subsequent instructions may execute immediately. | Stalls the core until all memory operations are globally visible.
 
 ---
