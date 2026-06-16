@@ -1,146 +1,3 @@
-# Table of Contents
-
-<details>
-<summary>▾ Expand ▴ Collapse</summary>
-
-* [socket](#socket)
-* [bind](#bind)
-* [listen](#listen)
-* [connect](#connect)
-    * [send](#send)
-    * [receive](#receive)
-        * [tcp_conn_request](#tcp_conn_request)
-        * [tcp_rcv_synsent_state_process](#tcp_rcv_synsent_state_process)
-        * [tcp_check_req](#tcp_check_req)
-    * [call graph](#call-graph-connect)
-* [accept](#accept)
-* [accept queue](#accept-queue)
-    * [TCP_LISTEN inet_csk_reqsk_queue_hash_add](#inet_csk_reqsk_queue_hash_add)
-    * [TCP_NEW_SYN_RECV inet_ehash_nolisten](#inet_ehash_nolisten)
-    * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_drop](#inet_csk_reqsk_queue_drop)
-    * [TCP_NEW_SYN_RECV inet_csk_reqsk_queue_add](#inet_csk_reqsk_queue_add)
-    * [Accept reqsk_queue_remove](#reqsk_queue_remove)
-    * [queue_is_full_len](#queue_is_full_len)
-* [shutdown](#shutdown)
-* [sk_buf](#sk_buff)
-    * [skb_clone](#skb_clone)
-    * [kfree_skb_partial](#kfree_skb_partial)
-* [write](#write)
-    * [vfs layer](#vfs-layer-tx)
-    * [socket layer](#socket-layer-tx)
-    * [tcp layer](#tcp-layer-tx)
-        * [copy data](#copy-data)
-        * [tso_fragment](#tso_fragment)
-        * [tcp_transmit_skb](#tcp_transmit_skb)
-    * [ip layer](#ip-layer-tx)
-        * [build ip header](#build-ip-header)
-        * [send package](#send-package)
-        * [skb_gso_segment](#skb_gso_segment)
-            * [skb_mac_gso_segment](#skb_mac_gso_segment)
-            * [inet_gso_segment](#inet_gso_segment)
-            * [tcp4_gso_segment](#tcp4_gso_segment)
-        * [ip_fragment](#ip_fragment)
-    * [mac layer](#mac-layer-tx)
-        * [neighbour](#neighbour)
-        * [neigh_output](#neigh_output)
-    * [dev layer](#dev-layer-tx)
-    * [driver layer](#driver-layer-tx)
-    * [call graph](#call-graph-write)
-
-* [read](#read)
-    * [driver layer](#driver-layer-rx)
-    * [mac layer](#mac-layer-rx)
-        * [vlan_do_receive](#vlan_do_receive)
-        * [:link: br_handle_frame](#br_handle_frame)
-    * [ip layer](#ip-layer-rx)
-    * [tcp layer](#tcp-layer-rx)
-        * [tcp_v4_rcv-TCP_NEW_SYN_RECV](#tcp_v4_rcv-TCP_NEW_SYN_RECV)
-        * [tcp_v4_do_rcv-TCP_ESTABLISHED](#tcp_v4_do_rcv-TCP_ESTABLISHED)
-        * [tcp_rcv_state_process](#tcp_rcv_state_process)
-        * [tcp_data_queue](#tcp_data_queue)
-    * [vfs layer](#vfs-layer-rx)
-    * [socket layer](#socket-layer-rx])
-    * [call graph](#call-graph-read)
-
-* [epoll](#epoll)
-    * [call graph](#call-graph-epoll)
-    * [epoll_create](#epoll_create)
-    * [epoll_ctl](#epoll_ctl)
-        * [ep_insert](#ep_insert)
-            * [ep_item_poll](#ep_item_poll)
-        * [ep_modify](#ep_modify)
-        * [ep_remove](#ep_remove)
-    * [epoll_wait](#epoll_wait)
-    * [sock_def_readable](#sock_def_readable)
-    * [sock_def_write_space](#sock_def_write_space)
-    * [eventpoll_init](#eventpoll_init)
-    * [evetfd](#evetfd)
-
-* [select](#select)
-* [poll](#poll)
-
-* [route](#route)
-  * [route out](#route-out)
-  * [route in](#route-in)
-
-* [bridge](#bridge)
-    * [br_add_bridge](#br_add_bridge)
-    * [br_add_if](#br_add_if)
-    * [br_handle_frame](#br_handle_frame)
-        * [br_forward](#br_forward)
-        * [br_pass_frame_up](#br_pass_frame_up)
-
-* [congestion control](#congestion-control)
-    * [tcp_ca_state](#tcp_ca_state)
-        * [TCPF_CA_Recovery](#TCPF_CA_Recovery)
-        * [TCP_CA_CWR](#TCP_CA_CWR)
-        * [TCP_CA_Loss](#TCP_CA_Loss)
-        * [TCP_CA_Disorder](#TCP_CA_Disorder)
-    * [ecn](#ecn)
-    * [tcp_ack](#tcp_ack)
-    * [tcp_congestion_ops](#tcp_congestion_ops)
-        * [ssthresh](#ssthresh)
-        * [cong_avoid](#cong_avoid)
-        * [cwnd_event](#cwnd_event)
-        * [pkts_acked](#pkts_acked  )
-        * [hystart](#hystart)
-        * [set_state](#set_state)
-    * [tcp_fastretrans_alert](#tcp_fastretrans_alert)
-    * [tcp_cong_control](#tcp_cong_control)
-    * [tcp_slow_start](#tcp_slow_start)
-    * [tcp_cong_avoid](#tcp_cong_avoid)
-    * [tcp_xmit_recovery](#tcp_xmit_recovery)
-    * [tcp_cwnd_test](#tcp_cwnd_test)
-    * [tcp_cwnd_validate](#tcp_cwnd_validate)
-
-* [tcp_timer](#tcp_timer)
-    * [timer_lifecycle](#timer_lifecycle)
-      * [timer_init](#timer_init)
-      * [timer_reset](#timer_reset)
-      * [timer_clear](#timer_clear)
-
-    * [tcp_write_timer](#tcp_write_timer)
-        * [tcp_retransmit_skb](#tcp_retransmit_skb)
-    * [tcp_delack_timer](#tcp_delack_timer)
-    * [tcp_keepalive_timer](#tcp_keepalive_timer)
-* [tcpdump](#tcpdump)
-    * [register_prot_hook](#register_prot_hook)
-    * [receive](#tcpdump_rcv)
-    * [send](#tcpdump_snd)
-* [ACK, SYN, FIN](#ACK-SYN-FIN)
-    * [tcp_ack](#tcp_ack)
-    * [tcp_send_ack](#tcp_send_ack)
-    * [tcp_send_delayed_ack](#tcp_send_delayed_ack)
-    * [tcp_send_synack](#tcp_send_synack)
-    * [tcp_fin](#tcp_fin)
-    * [tcp_send_fin](#tcp_send_fin)
-* [tcp timer](#tcp_timer)
-* [inet_init](#inet_init)
-* [net_dev_init](#net_dev_init)
-* [ebpf](#ebpf)
-
-</details>
-
 * [git.net](https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git/)
 * [git.net-next](https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git/)
 * [lore.netdev](https://lore.kernel.org/netdev/)
@@ -5427,80 +5284,80 @@ int zerocopy_fill_skb_from_iter(struct sk_buff *skb,
 
 ```c
 ssize_t skb_splice_from_iter(struct sk_buff *skb, struct iov_iter *iter,
-			     ssize_t maxsize)
+                 ssize_t maxsize)
 {
-	size_t frag_limit = READ_ONCE(net_hotdata.sysctl_max_skb_frags);
-	struct page *pages[8], **ppages = pages;
-	ssize_t spliced = 0, ret = 0;
-	unsigned int i;
+    size_t frag_limit = READ_ONCE(net_hotdata.sysctl_max_skb_frags);
+    struct page *pages[8], **ppages = pages;
+    ssize_t spliced = 0, ret = 0;
+    unsigned int i;
 
-	while (iter->count > 0) {
-		ssize_t space, nr, len;
-		size_t off;
+    while (iter->count > 0) {
+        ssize_t space, nr, len;
+        size_t off;
 
-		ret = -EMSGSIZE;
-		space = frag_limit - skb_shinfo(skb)->nr_frags;
-		if (space < 0)
-			break;
+        ret = -EMSGSIZE;
+        space = frag_limit - skb_shinfo(skb)->nr_frags;
+        if (space < 0)
+            break;
 
-		/* We might be able to coalesce without increasing nr_frags */
-		nr = clamp_t(size_t, space, 1, ARRAY_SIZE(pages));
+        /* We might be able to coalesce without increasing nr_frags */
+        nr = clamp_t(size_t, space, 1, ARRAY_SIZE(pages));
 
-		len = iov_iter_extract_pages(iter, &ppages, maxsize, nr, 0, &off);
-		if (len <= 0) {
-			ret = len ?: -EIO;
-			break;
-		}
+        len = iov_iter_extract_pages(iter, &ppages, maxsize, nr, 0, &off);
+        if (len <= 0) {
+            ret = len ?: -EIO;
+            break;
+        }
 
-		i = 0;
-		do {
-			struct page *page = pages[i++];
-			size_t part = min_t(size_t, PAGE_SIZE - off, len);
+        i = 0;
+        do {
+            struct page *page = pages[i++];
+            size_t part = min_t(size_t, PAGE_SIZE - off, len);
 
-			ret = -EIO;
-			if (WARN_ON_ONCE(!sendpage_ok(page)))
-				goto out;
+            ret = -EIO;
+            if (WARN_ON_ONCE(!sendpage_ok(page)))
+                goto out;
 
-			ret = skb_append_pagefrags(skb, page, off, part, frag_limit);
-			if (ret < 0) {
-				iov_iter_revert(iter, len);
-				goto out;
-			}
+            ret = skb_append_pagefrags(skb, page, off, part, frag_limit);
+            if (ret < 0) {
+                iov_iter_revert(iter, len);
+                goto out;
+            }
 
-			if (skb->ip_summed == CHECKSUM_NONE)
-				skb_splice_csum_page(skb, page, off, part);
+            if (skb->ip_summed == CHECKSUM_NONE)
+                skb_splice_csum_page(skb, page, off, part);
 
-			off = 0;
-			spliced += part;
-			maxsize -= part;
-			len -= part;
-		} while (len > 0);
+            off = 0;
+            spliced += part;
+            maxsize -= part;
+            len -= part;
+        } while (len > 0);
 
-		if (maxsize <= 0)
-			break;
-	}
+        if (maxsize <= 0)
+            break;
+    }
 
 out:
-	skb_len_add(skb, spliced);
-	return spliced ?: ret;
+    skb_len_add(skb, spliced);
+    return spliced ?: ret;
 }
 
 int skb_append_pagefrags(struct sk_buff *skb, struct page *page,
-			 int offset, size_t size, size_t max_frags)
+             int offset, size_t size, size_t max_frags)
 {
-	int i = skb_shinfo(skb)->nr_frags;
+    int i = skb_shinfo(skb)->nr_frags;
 
-	if (skb_can_coalesce(skb, i, page, offset)) {
-		skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], size);
-	} else if (i < max_frags) {
-		skb_zcopy_downgrade_managed(skb);
-		get_page(page);
-		skb_fill_page_desc_noacc(skb, i, page, offset, size);
-	} else {
-		return -EMSGSIZE;
-	}
+    if (skb_can_coalesce(skb, i, page, offset)) {
+        skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], size);
+    } else if (i < max_frags) {
+        skb_zcopy_downgrade_managed(skb);
+        get_page(page);
+        skb_fill_page_desc_noacc(skb, i, page, offset, size);
+    } else {
+        return -EMSGSIZE;
+    }
 
-	return 0;
+    return 0;
 }
 ```
 
@@ -6822,7 +6679,9 @@ struct sk_buff *skb_mac_gso_segment(struct sk_buff *skb,
     rcu_read_lock();
     list_for_each_entry_rcu(ptype, &offload_base, list) {
         if (ptype->type == type && ptype->callbacks.gso_segment) {
-            segs = ptype->callbacks.gso_segment(skb, features);
+            segs = ptype->callbacks.gso_segment(skb, features) {
+                inet_gso_segment();
+            }
             break;
         }
     }
@@ -6937,8 +6796,8 @@ out:
 #### tcp4_gso_segment
 
 ```c
-struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
-          netdev_features_t features)
+static struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
+                    netdev_features_t features)
 {
     if (!(skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4))
         return ERR_PTR(-EINVAL);
@@ -6946,12 +6805,29 @@ struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
     if (!pskb_may_pull(skb, sizeof(struct tcphdr)))
         return ERR_PTR(-EINVAL);
 
+    /* is_flist.4 tx segementation */
+    if (skb_shinfo(skb)->gso_type & SKB_GSO_FRAGLIST) {
+        struct tcphdr *th = tcp_hdr(skb);
+
+        if ((skb_pagelen(skb) - th->doff * 4 == skb_shinfo(skb)->gso_size) &&
+            !(skb_shinfo(skb)->gso_type & SKB_GSO_DODGY))
+            return __tcp4_gso_segment_list(skb, features) {
+                skb = skb_segment_list(skb, features, skb_mac_header_len(skb));
+                if (IS_ERR(skb))
+                    return skb;
+
+                return __tcpv4_gso_segment_list_csum(skb);
+            }
+
+        skb->ip_summed = CHECKSUM_NONE;
+    }
+
     if (unlikely(skb->ip_summed != CHECKSUM_PARTIAL)) {
         const struct iphdr *iph = ip_hdr(skb);
         struct tcphdr *th = tcp_hdr(skb);
 
         /* Set up checksum pseudo header, usually expect stack to
-        * have done this already. */
+         * have done this already. */
 
         th->check = 0;
         skb->ip_summed = CHECKSUM_PARTIAL;
@@ -6959,6 +6835,584 @@ struct sk_buff *tcp4_gso_segment(struct sk_buff *skb,
     }
 
     return tcp_gso_segment(skb, features);
+}
+
+struct sk_buff *tcp_gso_segment(struct sk_buff *skb,
+                netdev_features_t features)
+{
+    struct sk_buff *segs = ERR_PTR(-EINVAL);
+    unsigned int sum_truesize = 0;
+    struct tcphdr *th;
+    unsigned int thlen;
+    unsigned int seq;
+    unsigned int oldlen;
+    unsigned int mss;
+    struct sk_buff *gso_skb = skb;
+    __sum16 newcheck;
+    bool ooo_okay, copy_destructor;
+    bool ecn_cwr_mask;
+    __wsum delta;
+
+    th = tcp_hdr(skb);
+    thlen = th->doff * 4;
+    if (thlen < sizeof(*th))
+        goto out;
+
+    if (unlikely(skb_checksum_start(skb) != skb_transport_header(skb)))
+        goto out;
+
+    if (!pskb_may_pull(skb, thlen))
+        goto out;
+
+    oldlen = ~skb->len;
+    __skb_pull(skb, thlen);
+
+    mss = skb_shinfo(skb)->gso_size;
+    if (unlikely(skb->len <= mss))
+        goto out;
+
+    if (skb_gso_ok(skb, features | NETIF_F_GSO_ROBUST)) {
+        /* Packet is from an untrusted source, reset gso_segs. */
+
+        skb_shinfo(skb)->gso_segs = DIV_ROUND_UP(skb->len, mss);
+
+        segs = NULL;
+        goto out;
+    }
+
+    copy_destructor = gso_skb->destructor == tcp_wfree;
+    ooo_okay = gso_skb->ooo_okay;
+    /* All segments but the first should have ooo_okay cleared */
+    skb->ooo_okay = 0;
+
+    segs = skb_segment(skb, features);
+    if (IS_ERR(segs))
+        goto out;
+
+    /* Only first segment might have ooo_okay set */
+    segs->ooo_okay = ooo_okay;
+
+    /* GSO partial and frag_list segmentation only requires splitting
+     * the frame into an MSS multiple and possibly a remainder, both
+     * cases return a GSO skb. So update the mss now. */
+    if (skb_is_gso(segs))
+        mss *= skb_shinfo(segs)->gso_segs;
+
+    delta = (__force __wsum)htonl(oldlen + thlen + mss);
+
+    skb = segs;
+    th = tcp_hdr(skb);
+    seq = ntohl(th->seq);
+
+    if (unlikely(skb_shinfo(gso_skb)->tx_flags & SKBTX_ANY_TSTAMP))
+        tcp_gso_tstamp(segs, gso_skb, seq, mss);
+
+    newcheck = ~csum_fold(csum_add(csum_unfold(th->check), delta));
+
+    ecn_cwr_mask = !!(skb_shinfo(gso_skb)->gso_type & SKB_GSO_TCP_ACCECN);
+
+    while (skb->next) {
+        th->fin = th->psh = 0;
+        th->check = newcheck;
+
+        if (skb->ip_summed == CHECKSUM_PARTIAL)
+            gso_reset_checksum(skb, ~th->check);
+        else
+            th->check = gso_make_checksum(skb, ~th->check);
+
+        seq += mss;
+        if (copy_destructor) {
+            skb->destructor = gso_skb->destructor;
+            skb->sk = gso_skb->sk;
+            sum_truesize += skb->truesize;
+        }
+        skb = skb->next;
+        th = tcp_hdr(skb);
+
+        th->seq = htonl(seq);
+
+        th->cwr &= ecn_cwr_mask;
+    }
+
+    /* Following permits TCP Small Queues to work well with GSO :
+     * The callback to TCP stack will be called at the time last frag
+     * is freed at TX completion, and not right now when gso_skb
+     * is freed by GSO engine */
+    if (copy_destructor) {
+        int delta;
+
+        swap(gso_skb->sk, skb->sk);
+        swap(gso_skb->destructor, skb->destructor);
+        sum_truesize += skb->truesize;
+        delta = sum_truesize - gso_skb->truesize;
+        /* In some pathological cases, delta can be negative.
+         * We need to either use refcount_add() or refcount_sub_and_test() */
+        if (likely(delta >= 0))
+            refcount_add(delta, &skb->sk->sk_wmem_alloc);
+        else
+            WARN_ON_ONCE(refcount_sub_and_test(-delta, &skb->sk->sk_wmem_alloc));
+    }
+
+    delta = (__force __wsum)htonl(oldlen +
+                      (skb_tail_pointer(skb) -
+                       skb_transport_header(skb)) +
+                      skb->data_len);
+    th->check = ~csum_fold(csum_add(csum_unfold(th->check), delta));
+    if (skb->ip_summed == CHECKSUM_PARTIAL)
+        gso_reset_checksum(skb, ~th->check);
+    else
+        th->check = gso_make_checksum(skb, ~th->check);
+out:
+    return segs;
+}
+```
+
+##### skb_segment
+
+```c
+struct sk_buff *skb_segment(struct sk_buff *head_skb,
+                netdev_features_t features)
+{
+    struct sk_buff *segs = NULL;
+    struct sk_buff *tail = NULL;
+    struct sk_buff *list_skb = skb_shinfo(head_skb)->frag_list;
+    unsigned int mss = skb_shinfo(head_skb)->gso_size;
+    unsigned int doffset = head_skb->data - skb_mac_header(head_skb);
+    unsigned int offset = doffset;
+    unsigned int tnl_hlen = skb_tnl_header_len(head_skb);
+    unsigned int partial_segs = 0;
+    unsigned int headroom;
+    unsigned int len = head_skb->len;
+    struct sk_buff *frag_skb;
+    skb_frag_t *frag;
+    __be16 proto;
+    bool csum, sg;
+    int err = -ENOMEM;
+    int i = 0;
+    int nfrags, pos;
+
+    if ((skb_shinfo(head_skb)->gso_type & SKB_GSO_DODGY) &&
+        mss != GSO_BY_FRAGS && mss != skb_headlen(head_skb)) {
+        struct sk_buff *check_skb;
+
+        for (check_skb = list_skb; check_skb; check_skb = check_skb->next) {
+            if (skb_headlen(check_skb) && !check_skb->head_frag) {
+                /* gso_size is untrusted, and we have a frag_list with
+                 * a linear non head_frag item.
+                 *
+                 * If head_skb's headlen does not fit requested gso_size,
+                 * it means that the frag_list members do NOT terminate
+                 * on exact gso_size boundaries. Hence we cannot perform
+                 * skb_frag_t page sharing. Therefore we must fallback to
+                 * copying the frag_list skbs; we do so by disabling SG. */
+                features &= ~NETIF_F_SG;
+                break;
+            }
+        }
+    }
+
+    __skb_push(head_skb, doffset);
+    proto = skb_network_protocol(head_skb, NULL);
+    if (unlikely(!proto))
+        return ERR_PTR(-EINVAL);
+
+    sg = !!(features & NETIF_F_SG);
+    csum = !!can_checksum_protocol(features, proto);
+
+    if (sg && csum && (mss != GSO_BY_FRAGS))  {
+        if (!(features & NETIF_F_GSO_PARTIAL)) {
+            struct sk_buff *iter;
+            unsigned int frag_len;
+
+            if (!list_skb ||
+                !net_gso_ok(features, skb_shinfo(head_skb)->gso_type))
+                goto normal;
+
+            /* If we get here then all the required
+             * GSO features except frag_list are supported.
+             * Try to split the SKB to multiple GSO SKBs
+             * with no frag_list.
+             * Currently we can do that only when the buffers don't
+             * have a linear part and all the buffers except
+             * the last are of the same length. */
+            frag_len = list_skb->len;
+            skb_walk_frags(head_skb, iter) {
+                if (frag_len != iter->len && iter->next)
+                    goto normal;
+                if (skb_headlen(iter) && !iter->head_frag)
+                    goto normal;
+
+                len -= iter->len;
+            }
+
+            if (len != frag_len)
+                goto normal;
+        }
+
+        /* GSO partial only requires that we trim off any excess that
+         * doesn't fit into an MSS sized block, so take care of that
+         * now.
+         * Cap len to not accidentally hit GSO_BY_FRAGS. */
+        partial_segs = min(len, GSO_BY_FRAGS - 1) / mss;
+        if (partial_segs > 1)
+            mss *= partial_segs;
+        else
+            partial_segs = 0;
+    }
+
+normal:
+    headroom = skb_headroom(head_skb);
+    pos = skb_headlen(head_skb);
+
+    if (skb_orphan_frags(head_skb, GFP_ATOMIC))
+        return ERR_PTR(-ENOMEM);
+
+    nfrags = skb_shinfo(head_skb)->nr_frags;
+    frag = skb_shinfo(head_skb)->frags;
+    frag_skb = head_skb;
+
+    do {
+        struct sk_buff *nskb;
+        skb_frag_t *nskb_frag;
+        int hsize;
+        int size;
+
+        if (unlikely(mss == GSO_BY_FRAGS)) {
+            len = list_skb->len;
+        } else {
+            len = head_skb->len - offset;
+            if (len > mss)
+                len = mss;
+        }
+
+        hsize = skb_headlen(head_skb) - offset;
+
+        if (hsize <= 0 && i >= nfrags && skb_headlen(list_skb) &&
+            (skb_headlen(list_skb) == len || sg)) {
+            BUG_ON(skb_headlen(list_skb) > len);
+
+            nskb = skb_clone(list_skb, GFP_ATOMIC);
+            if (unlikely(!nskb))
+                goto err;
+
+            i = 0;
+            nfrags = skb_shinfo(list_skb)->nr_frags;
+            frag = skb_shinfo(list_skb)->frags;
+            frag_skb = list_skb;
+            pos += skb_headlen(list_skb);
+
+            while (pos < offset + len) {
+                BUG_ON(i >= nfrags);
+
+                size = skb_frag_size(frag);
+                if (pos + size > offset + len)
+                    break;
+
+                i++;
+                pos += size;
+                frag++;
+            }
+
+            list_skb = list_skb->next;
+
+            if (unlikely(pskb_trim(nskb, len))) {
+                kfree_skb(nskb);
+                goto err;
+            }
+
+            hsize = skb_end_offset(nskb);
+            if (skb_cow_head(nskb, doffset + headroom)) {
+                kfree_skb(nskb);
+                goto err;
+            }
+
+            nskb->truesize += skb_end_offset(nskb) - hsize;
+            skb_release_head_state(nskb);
+            __skb_push(nskb, doffset);
+        } else {
+            if (hsize < 0)
+                hsize = 0;
+            if (hsize > len || !sg)
+                hsize = len;
+
+            nskb = __alloc_skb(hsize + doffset + headroom,
+                       GFP_ATOMIC, skb_alloc_rx_flag(head_skb),
+                       NUMA_NO_NODE);
+
+            if (unlikely(!nskb))
+                goto err;
+
+            skb_reserve(nskb, headroom);
+            __skb_put(nskb, doffset);
+        }
+
+        if (segs)
+            tail->next = nskb;
+        else
+            segs = nskb;
+        tail = nskb;
+
+        __copy_skb_header(nskb, head_skb);
+
+        skb_headers_offset_update(nskb, skb_headroom(nskb) - headroom);
+        skb_reset_mac_len(nskb);
+
+        skb_copy_from_linear_data_offset(head_skb, -tnl_hlen,
+                         nskb->data - tnl_hlen,
+                         doffset + tnl_hlen);
+
+        if (nskb->len == len + doffset)
+            goto perform_csum_check;
+
+        if (!sg) {
+            if (!csum) {
+                if (!nskb->remcsum_offload)
+                    nskb->ip_summed = CHECKSUM_NONE;
+                SKB_GSO_CB(nskb)->csum =
+                    skb_copy_and_csum_bits(head_skb, offset,
+                                   skb_put(nskb,
+                                       len),
+                                   len);
+                SKB_GSO_CB(nskb)->csum_start =
+                    skb_headroom(nskb) + doffset;
+            } else {
+                if (skb_copy_bits(head_skb, offset, skb_put(nskb, len), len))
+                    goto err;
+            }
+            continue;
+        }
+
+        nskb_frag = skb_shinfo(nskb)->frags;
+
+        skb_copy_from_linear_data_offset(head_skb, offset,
+                         skb_put(nskb, hsize), hsize);
+
+        skb_shinfo(nskb)->flags |= (skb_shinfo(head_skb)->flags |
+                        skb_shinfo(frag_skb)->flags) &
+                       SKBFL_SHARED_FRAG;
+
+        if (skb_zerocopy_clone(nskb, frag_skb, GFP_ATOMIC))
+            goto err;
+
+        while (pos < offset + len) {
+            if (i >= nfrags) {
+                if (skb_orphan_frags(list_skb, GFP_ATOMIC) ||
+                    skb_zerocopy_clone(nskb, list_skb,
+                               GFP_ATOMIC))
+                    goto err;
+
+                i = 0;
+                nfrags = skb_shinfo(list_skb)->nr_frags;
+                frag = skb_shinfo(list_skb)->frags;
+                frag_skb = list_skb;
+
+                skb_shinfo(nskb)->flags |= skb_shinfo(frag_skb)->flags & SKBFL_SHARED_FRAG;
+
+                if (!skb_headlen(list_skb)) {
+                    BUG_ON(!nfrags);
+                } else {
+                    BUG_ON(!list_skb->head_frag);
+
+                    /* to make room for head_frag. */
+                    i--;
+                    frag--;
+                }
+
+                list_skb = list_skb->next;
+            }
+
+            if (unlikely(skb_shinfo(nskb)->nr_frags >=
+                     MAX_SKB_FRAGS)) {
+                net_warn_ratelimited(
+                    "skb_segment: too many frags: %u %u\n",
+                    pos, mss);
+                err = -EINVAL;
+                goto err;
+            }
+
+            *nskb_frag = (i < 0) ? skb_head_frag_to_page_desc(frag_skb) : *frag;
+            __skb_frag_ref(nskb_frag);
+            size = skb_frag_size(nskb_frag);
+
+            if (pos < offset) {
+                skb_frag_off_add(nskb_frag, offset - pos);
+                skb_frag_size_sub(nskb_frag, offset - pos);
+            }
+
+            skb_shinfo(nskb)->nr_frags++;
+
+            if (pos + size <= offset + len) {
+                i++;
+                frag++;
+                pos += size;
+            } else {
+                skb_frag_size_sub(nskb_frag, pos + size - (offset + len));
+                goto skip_fraglist;
+            }
+
+            nskb_frag++;
+        }
+
+skip_fraglist:
+        nskb->data_len = len - hsize;
+        nskb->len += nskb->data_len;
+        nskb->truesize += nskb->data_len;
+
+perform_csum_check:
+        if (!csum) {
+            if (skb_has_shared_frag(nskb) &&
+                __skb_linearize(nskb))
+                goto err;
+
+            if (!nskb->remcsum_offload)
+                nskb->ip_summed = CHECKSUM_NONE;
+            SKB_GSO_CB(nskb)->csum =
+                skb_checksum(nskb, doffset,
+                         nskb->len - doffset, 0);
+            SKB_GSO_CB(nskb)->csum_start =
+                skb_headroom(nskb) + doffset;
+        }
+    } while ((offset += len) < head_skb->len);
+
+    /* Some callers want to get the end of the list.
+     * Put it in segs->prev to avoid walking the list.
+     * (see validate_xmit_skb_list() for example) */
+    segs->prev = tail;
+
+    if (partial_segs) {
+        struct sk_buff *iter;
+        int type = skb_shinfo(head_skb)->gso_type;
+        unsigned short gso_size = skb_shinfo(head_skb)->gso_size;
+
+        /* Update type to add partial and then remove dodgy if set */
+        type |= (features & NETIF_F_GSO_PARTIAL) / NETIF_F_GSO_PARTIAL * SKB_GSO_PARTIAL;
+        type &= ~SKB_GSO_DODGY;
+
+        /* Update GSO info and prepare to start updating headers on
+         * our way back down the stack of protocols. */
+        for (iter = segs; iter; iter = iter->next) {
+            skb_shinfo(iter)->gso_size = gso_size;
+            skb_shinfo(iter)->gso_segs = partial_segs;
+            skb_shinfo(iter)->gso_type = type;
+            SKB_GSO_CB(iter)->data_offset = skb_headroom(iter) + doffset;
+        }
+
+        if (tail->len - doffset <= gso_size)
+            skb_shinfo(tail)->gso_size = 0;
+        else if (tail != segs)
+            skb_shinfo(tail)->gso_segs = DIV_ROUND_UP(tail->len - doffset, gso_size);
+    }
+
+    /* Following permits correct backpressure, for protocols
+     * using skb_set_owner_w().
+     * Idea is to tranfert ownership from head_skb to last segment. */
+    if (head_skb->destructor == sock_wfree) {
+        swap(tail->truesize, head_skb->truesize);
+        swap(tail->destructor, head_skb->destructor);
+        swap(tail->sk, head_skb->sk);
+    }
+    return segs;
+
+err:
+    kfree_skb_list(segs);
+    return ERR_PTR(err);
+}
+```
+
+##### skb_segment_list
+
+```c
+struct sk_buff *skb_segment_list(struct sk_buff *skb,
+                 netdev_features_t features,
+                 unsigned int offset)
+{
+    struct sk_buff *list_skb = skb_shinfo(skb)->frag_list;
+    unsigned int tnl_hlen = skb_tnl_header_len(skb);
+    unsigned int delta_len = 0;
+    struct sk_buff *tail = NULL;
+    struct sk_buff *nskb, *tmp;
+    int len_diff, err;
+
+    /* Only skb_gro_receive_list generated skbs arrive here */
+    DEBUG_NET_WARN_ON_ONCE(!(skb_shinfo(skb)->gso_type & SKB_GSO_FRAGLIST));
+
+    skb_push(skb, -skb_network_offset(skb) + offset);
+
+    /* Ensure the head is writeable before touching the shared info */
+    err = skb_unclone(skb, GFP_ATOMIC);
+    if (err)
+        goto err_linearize;
+
+    skb_shinfo(skb)->frag_list = NULL;
+
+    while (list_skb) {
+        nskb = list_skb;
+        list_skb = list_skb->next;
+
+        DEBUG_NET_WARN_ON_ONCE(nskb->sk);
+
+        err = 0;
+        if (skb_shared(nskb)) {
+            tmp = skb_clone(nskb, GFP_ATOMIC);
+            if (tmp) {
+                consume_skb(nskb);
+                nskb = tmp;
+                err = skb_unclone(nskb, GFP_ATOMIC);
+            } else {
+                err = -ENOMEM;
+            }
+        }
+
+        if (!tail)
+            skb->next = nskb;
+        else
+            tail->next = nskb;
+
+        if (unlikely(err)) {
+            nskb->next = list_skb;
+            goto err_linearize;
+        }
+
+        tail = nskb;
+
+        delta_len += nskb->len;
+
+        skb_push(nskb, -skb_network_offset(nskb) + offset);
+
+        skb_release_head_state(nskb);
+        len_diff = skb_network_header_len(nskb) - skb_network_header_len(skb);
+        __copy_skb_header(nskb, skb);
+
+        skb_headers_offset_update(nskb, skb_headroom(nskb) - skb_headroom(skb));
+        nskb->transport_header += len_diff;
+        skb_copy_from_linear_data_offset(skb, -tnl_hlen,
+                         nskb->data - tnl_hlen,
+                         offset + tnl_hlen);
+
+        if (skb_needs_linearize(nskb, features) &&
+            __skb_linearize(nskb))
+            goto err_linearize;
+    }
+
+    skb->data_len = skb->data_len - delta_len;
+    skb->len = skb->len - delta_len;
+
+    skb_gso_reset(skb);
+
+    skb->prev = tail;
+
+    if (skb_needs_linearize(skb, features) &&
+        __skb_linearize(skb))
+        goto err_linearize;
+
+    skb_get(skb);
+
+    return skb;
+
+err_linearize:
+    kfree_skb_list(skb->next);
+    skb->next = NULL;
+    return ERR_PTR(-ENOMEM);
 }
 ```
 
@@ -7144,7 +7598,7 @@ fail:
 }
 ```
 
-## mac layer tx
+### ip_finish_output2
 
 ```c
 /* ip_finish_output -> */
@@ -7179,28 +7633,7 @@ int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
     }
 
     rcu_read_lock();
-    neigh = ip_neigh_for_gw(rt, skb, &is_v6gw) {
-        struct net_device *dev = rt->dst.dev;
-        struct neighbour *neigh;
-
-        if (likely(rt->rt_gw_family == AF_INET)) {
-            neigh = ip_neigh_gw4(dev, rt->rt_gw4) {
-                struct neighbour *neigh;
-
-                neigh = __ipv4_neigh_lookup_noref(dev, (__force u32)daddr);
-                if (unlikely(!neigh))
-                    neigh = __neigh_create(&arp_tbl, &daddr, dev, false);
-
-                return neigh;
-            }
-        } else if (rt->rt_gw_family == AF_INET6) {
-            neigh = ip_neigh_gw6(dev, &rt->rt_gw6);
-            *is_v6gw = true;
-        } else {
-            neigh = ip_neigh_gw4(dev, ip_hdr(skb)->daddr);
-        }
-        return neigh;
-    }
+    neigh = ip_neigh_for_gw(rt, skb, &is_v6gw);
     if (!IS_ERR(neigh)) {
         int res;
 
@@ -7219,27 +7652,63 @@ int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-### neigh_lookup_noref
+## mac layer tx
+
+### neigh_lookup
 
 ```c
-struct neighbour *__ipv4_neigh_lookup_noref(
-  struct net_device *dev, u32 key)
+struct neighbour *ip_neigh_for_gw(struct rtable *rt,
+                        struct sk_buff *skb,
+                        bool *is_v6gw)
 {
-   if (dev->flags & (IFF_LOOPBACK | IFF_POINTOPOINT))
-        key = INADDR_ANY;
+    struct net_device *dev = rt->dst.dev;
+    struct neighbour *neigh;
 
-    return ___neigh_lookup_noref(&arp_tbl, neigh_key_eq32, arp_hashfn, &key, dev) {
-        struct neigh_hash_table *nht = rcu_dereference(tbl->nht);
-        struct neighbour *n;
-        u32 hash_val;
-
-        hash_val = hash(pkey, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
-        neigh_for_each_in_bucket_rcu(n, &nht->hash_heads[hash_val])
-            if (n->dev == dev && key_eq(n, pkey))
-                return n;
-
-        return NULL;
+    if (likely(rt->rt_gw_family == AF_INET)) {
+        neigh = ip_neigh_gw4(dev, rt->rt_gw4);
+    } else if (rt->rt_gw_family == AF_INET6) {
+        neigh = ip_neigh_gw6(dev, &rt->rt_gw6);
+        *is_v6gw = true;
+    } else {
+        neigh = ip_neigh_gw4(dev, ip_hdr(skb)->daddr);
     }
+    return neigh;
+}
+
+static inline struct neighbour *ip_neigh_gw4(struct net_device *dev,
+                         __be32 daddr)
+{
+    struct neighbour *neigh;
+
+    neigh = __ipv4_neigh_lookup_noref(dev, (__force u32)daddr) {
+        if (dev->flags & (IFF_LOOPBACK | IFF_POINTOPOINT))
+            key = INADDR_ANY;
+
+        return ___neigh_lookup_noref(&arp_tbl, neigh_key_eq32, arp_hashfn, &key, dev);
+    }
+    if (unlikely(!neigh))
+        neigh = __neigh_create(&arp_tbl, &daddr, dev, false);
+
+    return neigh;
+}
+
+struct neighbour *neigh_lookup(struct neigh_table *tbl, const void *pkey,
+                   struct net_device *dev)
+{
+    struct neighbour *n;
+
+    NEIGH_CACHE_STAT_INC(tbl, lookups);
+
+    rcu_read_lock();
+    n = __neigh_lookup_noref(tbl, pkey, dev);
+    if (n) {
+        if (!refcount_inc_not_zero(&n->refcnt))
+            n = NULL;
+        NEIGH_CACHE_STAT_INC(tbl, hits);
+    }
+
+    rcu_read_unlock();
+    return n;
 }
 
 struct neigh_table arp_tbl = {
@@ -7262,6 +7731,13 @@ struct neigh_table arp_tbl = {
 ### neigh_create
 
 ```c
+struct neighbour *neigh_create(struct neigh_table *tbl,
+                         const void *pkey,
+                         struct net_device *dev)
+{
+    return __neigh_create(tbl, pkey, dev, true);
+}
+
 struct neighbour *__neigh_create(struct neigh_table *tbl,
   const void *pkey, struct net_device *dev, bool want_ref)
 {
@@ -7331,28 +7807,94 @@ struct neighbour *neigh_alloc(struct neigh_table *tbl, struct net_device *dev)
 /* __neigh_create -> arp_tbl.constructor -> */
 int arp_constructor(struct neighbour *neigh)
 {
-  __be32 addr = *(__be32 *)neigh->primary_key;
-  struct net_device *dev = neigh->dev;
-  struct in_device *in_dev;
-  struct neigh_parms *parms;
+    __be32 addr;
+    struct net_device *dev = neigh->dev;
+    struct in_device *in_dev;
+    struct neigh_parms *parms;
+    u32 inaddr_any = INADDR_ANY;
 
-  neigh->type = inet_addr_type_dev_table(dev_net(dev), dev, addr);
+    if (dev->flags & (IFF_LOOPBACK | IFF_POINTOPOINT))
+        memcpy(neigh->primary_key, &inaddr_any, arp_tbl.key_len);
 
-  parms = in_dev->arp_parms;
-  __neigh_parms_put(neigh->parms);
-  neigh->parms = neigh_parms_clone(parms);
+    addr = *(__be32 *)neigh->primary_key;
+    rcu_read_lock();
+    in_dev = __in_dev_get_rcu(dev);
+    if (!in_dev) {
+        rcu_read_unlock();
+        return -EINVAL;
+    }
 
-  neigh->ops = &arp_hh_ops;
+    neigh->type = inet_addr_type_dev_table(dev_net(dev), dev, addr);
 
-  neigh->output = neigh->ops->output;
+    parms = in_dev->arp_parms;
+    __neigh_parms_put(neigh->parms);
+    neigh->parms = neigh_parms_clone(parms);
+    rcu_read_unlock();
+
+    if (!dev->header_ops) {
+        neigh->nud_state = NUD_NOARP;
+        neigh->ops = &arp_direct_ops;
+        neigh->output = neigh_direct_output;
+    } else {
+        /* Good devices (checked by reading texts, but only Ethernet is
+           tested)
+
+           ARPHRD_ETHER: (ethernet, apfddi)
+           ARPHRD_FDDI: (fddi)
+           ARPHRD_IEEE802: (tr)
+           ARPHRD_METRICOM: (strip)
+           ARPHRD_ARCNET:
+           etc. etc. etc.
+
+           ARPHRD_IPDDP will also work, if author repairs it.
+           I did not it, because this driver does not work even
+           in old paradigm. */
+
+        if (neigh->type == RTN_MULTICAST) {
+            neigh->nud_state = NUD_NOARP;
+            arp_mc_map(addr, neigh->ha, dev, 1);
+        } else if (dev->flags & (IFF_NOARP | IFF_LOOPBACK)) {
+            neigh->nud_state = NUD_NOARP;
+            memcpy(neigh->ha, dev->dev_addr, dev->addr_len);
+        } else if (neigh->type == RTN_BROADCAST ||
+               (dev->flags & IFF_POINTOPOINT)) {
+            neigh->nud_state = NUD_NOARP;
+            memcpy(neigh->ha, dev->broadcast, dev->addr_len);
+        }
+
+        if (dev->header_ops->cache)
+            neigh->ops = &arp_hh_ops;
+        else
+            neigh->ops = &arp_generic_ops;
+
+        if (neigh->nud_state & NUD_VALID)
+            neigh->output = neigh->ops->connected_output;
+        else
+            neigh->output = neigh->ops->output;
+    }
+    return 0;
 }
 
-const struct neigh_ops arp_hh_ops = {
-  .family             = AF_INET,
-  .solicit            = arp_solicit,
-  .error_report       = arp_error_report,
-  .output             = neigh_resolve_output,
-  .connected_output   = neigh_resolve_output,
+static const struct neigh_ops arp_generic_ops = {
+    .family           = AF_INET,
+    .solicit          = arp_solicit,
+    .error_report     = arp_error_report,
+    .output           = neigh_resolve_output,
+    .connected_output = neigh_connected_output,
+};
+
+static const struct neigh_ops arp_hh_ops = {
+    .family           = AF_INET,
+    .solicit          = arp_solicit,
+    .error_report     = arp_error_report,
+    .output           = neigh_resolve_output,
+    .connected_output = neigh_resolve_output,
+};
+
+static const struct neigh_ops arp_direct_ops = {
+    .family           = AF_INET,
+    .output           = neigh_direct_output,
+    .connected_output = neigh_direct_output,
 };
 ```
 
@@ -7492,7 +8034,11 @@ out_dead:
     trace_neigh_event_send_dead(neigh, 1);
     return 1;
 }
+```
 
+#### neigh_probe
+
+```c
 static void neigh_probe(struct neighbour *neigh)
     __releases(neigh->lock)
 {
@@ -7501,13 +8047,76 @@ static void neigh_probe(struct neighbour *neigh)
     if (skb)
         skb = skb_clone(skb, GFP_ATOMIC);
     write_unlock(&neigh->lock);
-    if (neigh->ops->solicit)
-        neigh->ops->solicit(neigh, skb);
+    if (neigh->ops->solicit) {
+        neigh->ops->solicit(neigh, skb) {
+            arp_solicit();
+        }
+    }
     atomic_inc(&neigh->probes);
     consume_skb(skb);
 }
 
-/* arp_solicit -> */
+void arp_solicit(struct neighbour *neigh, struct sk_buff *skb)
+{
+    __be32 saddr = 0;
+    u8 dst_ha[MAX_ADDR_LEN], *dst_hw = NULL;
+    struct net_device *dev = neigh->dev;
+    __be32 target = *(__be32 *)neigh->primary_key;
+    int probes = atomic_read(&neigh->probes);
+    struct in_device *in_dev;
+    struct dst_entry *dst = NULL;
+
+    rcu_read_lock();
+    in_dev = __in_dev_get_rcu(dev);
+    if (!in_dev) {
+        rcu_read_unlock();
+        return;
+    }
+    switch (IN_DEV_ARP_ANNOUNCE(in_dev)) {
+    default:
+    case 0:        /* By default announce any local IP */
+        if (skb && inet_addr_type_dev_table(dev_net(dev), dev, ip_hdr(skb)->saddr) == RTN_LOCAL)
+            saddr = ip_hdr(skb)->saddr;
+        break;
+    case 1:        /* Restrict announcements of saddr in same subnet */
+        if (!skb)
+            break;
+        saddr = ip_hdr(skb)->saddr;
+        if (inet_addr_type_dev_table(dev_net(dev), dev, saddr) == RTN_LOCAL) {
+            /* saddr should be known to target */
+            if (inet_addr_onlink(in_dev, target, saddr))
+                break;
+        }
+        saddr = 0;
+        break;
+    case 2:        /* Avoid secondary IPs, get a primary/preferred one */
+        break;
+    }
+    rcu_read_unlock();
+
+    if (!saddr)
+        saddr = inet_select_addr(dev, target, RT_SCOPE_LINK);
+
+    probes -= NEIGH_VAR(neigh->parms, UCAST_PROBES);
+    if (probes < 0) {
+        if (!(READ_ONCE(neigh->nud_state) & NUD_VALID))
+            pr_debug("trying to ucast probe in NUD_INVALID\n");
+        neigh_ha_snapshot(dst_ha, neigh, dev);
+        dst_hw = dst_ha;
+    } else {
+        probes -= NEIGH_VAR(neigh->parms, APP_PROBES);
+        if (probes < 0) {
+            neigh_app_ns(neigh);
+            return;
+        }
+    }
+
+    if (skb && !(dev->priv_flags & IFF_XMIT_DST_RELEASE))
+        dst = skb_dst(skb);
+    arp_send_dst(ARPOP_REQUEST, ETH_P_ARP, target, dev, saddr,
+             dst_hw, dev->dev_addr, NULL, dst);
+}
+
 /* Create and send an arp packet. */
 static void arp_send_dst(int type, int ptype, __be32 dest_ip,
              struct net_device *dev, __be32 src_ip,
@@ -7540,6 +8149,499 @@ static void arp_send_dst(int type, int ptype, __be32 dest_ip,
 static int arp_xmit_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
     return dev_queue_xmit(skb);
+}
+```
+
+### arp_rcv
+
+```c
+int arp_rcv(struct sk_buff *skb, struct net_device *dev,
+           struct packet_type *pt, struct net_device *orig_dev)
+{
+    enum skb_drop_reason drop_reason;
+    const struct arphdr *arp;
+
+    /* do not tweak dropwatch on an ARP we will ignore */
+    if (dev->flags & IFF_NOARP ||
+        skb->pkt_type == PACKET_OTHERHOST ||
+        skb->pkt_type == PACKET_LOOPBACK)
+        goto consumeskb;
+
+    skb = skb_share_check(skb, GFP_ATOMIC);
+    if (!skb)
+        goto out_of_mem;
+
+    /* ARP header, plus 2 device addresses, plus 2 IP addresses.  */
+    drop_reason = pskb_may_pull_reason(skb, arp_hdr_len(dev));
+    if (drop_reason != SKB_NOT_DROPPED_YET)
+        goto freeskb;
+
+    arp = arp_hdr(skb);
+    if (arp->ar_hln != dev->addr_len || arp->ar_pln != 4) {
+        drop_reason = SKB_DROP_REASON_NOT_SPECIFIED;
+        goto freeskb;
+    }
+
+    memset(NEIGH_CB(skb), 0, sizeof(struct neighbour_cb));
+
+    return NF_HOOK(NFPROTO_ARP, NF_ARP_IN,
+               dev_net(dev), NULL, skb, dev, NULL,
+               arp_process);
+
+consumeskb:
+    consume_skb(skb);
+    return NET_RX_SUCCESS;
+freeskb:
+    kfree_skb_reason(skb, drop_reason);
+out_of_mem:
+    return NET_RX_DROP;
+}
+
+int arp_process(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+    struct net_device *dev = skb->dev;
+    struct in_device *in_dev = __in_dev_get_rcu(dev);
+    struct arphdr *arp;
+    unsigned char *arp_ptr;
+    struct rtable *rt;
+    unsigned char *sha;
+    unsigned char *tha = NULL;
+    __be32 sip, tip;
+    u16 dev_type = dev->type;
+    int addr_type;
+    struct neighbour *n;
+    struct dst_entry *reply_dst = NULL;
+    bool is_garp = false;
+
+    /* arp_rcv below verifies the ARP header and verifies the device
+     * is ARP'able. */
+
+    if (!in_dev)
+        goto out_free_skb;
+
+    arp = arp_hdr(skb);
+
+    switch (dev_type) {
+    default:
+        if (arp->ar_pro != htons(ETH_P_IP) ||
+            htons(dev_type) != arp->ar_hrd)
+            goto out_free_skb;
+        break;
+    case ARPHRD_ETHER:
+    case ARPHRD_FDDI:
+    case ARPHRD_IEEE802:
+        /* ETHERNET, and Fibre Channel (which are IEEE 802
+         * devices, according to RFC 2625) devices will accept ARP
+         * hardware types of either 1 (Ethernet) or 6 (IEEE 802.2).
+         * This is the case also of FDDI, where the RFC 1390 says that
+         * FDDI devices should accept ARP hardware of (1) Ethernet,
+         * however, to be more robust, we'll accept both 1 (Ethernet)
+         * or 6 (IEEE 802.2) */
+        if ((arp->ar_hrd != htons(ARPHRD_ETHER) &&
+             arp->ar_hrd != htons(ARPHRD_IEEE802)) ||
+            arp->ar_pro != htons(ETH_P_IP))
+            goto out_free_skb;
+        break;
+    case ARPHRD_AX25:
+        if (arp->ar_pro != htons(AX25_P_IP) ||
+            arp->ar_hrd != htons(ARPHRD_AX25))
+            goto out_free_skb;
+        break;
+    case ARPHRD_NETROM:
+        if (arp->ar_pro != htons(AX25_P_IP) ||
+            arp->ar_hrd != htons(ARPHRD_NETROM))
+            goto out_free_skb;
+        break;
+    }
+
+    /* Understand only these message types */
+
+    if (arp->ar_op != htons(ARPOP_REPLY) &&
+        arp->ar_op != htons(ARPOP_REQUEST))
+        goto out_free_skb;
+
+/*    Extract fields */
+    arp_ptr = (unsigned char *)(arp + 1);
+    sha    = arp_ptr;
+    arp_ptr += dev->addr_len;
+    memcpy(&sip, arp_ptr, 4);
+    arp_ptr += 4;
+    switch (dev_type) {
+#if IS_ENABLED(CONFIG_FIREWIRE_NET)
+    case ARPHRD_IEEE1394:
+        break;
+#endif
+    default:
+        tha = arp_ptr;
+        arp_ptr += dev->addr_len;
+    }
+    memcpy(&tip, arp_ptr, 4);
+/*    Check for bad requests for 127.x.x.x and requests for multicast
+ *    addresses.  If this is one such, delete it. */
+    if (ipv4_is_multicast(tip) ||
+        (!IN_DEV_ROUTE_LOCALNET(in_dev) && ipv4_is_loopback(tip)))
+        goto out_free_skb;
+
+ /*    For some 802.11 wireless deployments (and possibly other networks),
+  *    there will be an ARP proxy and gratuitous ARP frames are attacks
+  *    and thus should not be accepted. */
+    if (sip == tip && IN_DEV_ORCONF(in_dev, DROP_GRATUITOUS_ARP))
+        goto out_free_skb;
+
+/*     Special case: We must set Frame Relay source Q.922 address */
+    if (dev_type == ARPHRD_DLCI)
+        sha = dev->broadcast;
+
+/*  Process entry.  The idea here is we want to send a reply if it is a
+ *  request for us or if it is a request for someone else that we hold
+ *  a proxy for.  We want to add an entry to our cache if it is a reply
+ *  to us or if it is a request for our address.
+ *  (The assumption for this last is that if someone is requesting our
+ *  address, they are probably intending to talk to us, so it saves time
+ *  if we cache their address.  Their address is also probably not in
+ *  our cache, since ours is not in their cache.)
+ *
+ *  Putting this another way, we only care about replies if they are to
+ *  us, in which case we add them to the cache.  For requests, we care
+ *  about those for us and those for our proxies.  We reply to both,
+ *  and in the case of requests for us we add the requester to the arp
+ *  cache. */
+
+    if (arp->ar_op == htons(ARPOP_REQUEST) && skb_metadata_dst(skb))
+        reply_dst = (struct dst_entry *)
+                iptunnel_metadata_reply(skb_metadata_dst(skb),
+                            GFP_ATOMIC);
+
+    /* Special case: IPv4 duplicate address detection packet (RFC2131) */
+    if (sip == 0) {
+        if (arp->ar_op == htons(ARPOP_REQUEST) &&
+            inet_addr_type_dev_table(net, dev, tip) == RTN_LOCAL &&
+            !arp_ignore(in_dev, sip, tip))
+            arp_send_dst(ARPOP_REPLY, ETH_P_ARP, sip, dev, tip,
+                     sha, dev->dev_addr, sha, reply_dst);
+        goto out_consume_skb;
+    }
+
+    if (arp->ar_op == htons(ARPOP_REQUEST) &&
+        ip_route_input_noref(skb, tip, sip, 0, dev) == 0) {
+
+        rt = skb_rtable(skb);
+        addr_type = rt->rt_type;
+
+        if (addr_type == RTN_LOCAL) {
+            int dont_send;
+
+            dont_send = arp_ignore(in_dev, sip, tip);
+            if (!dont_send && IN_DEV_ARPFILTER(in_dev))
+                dont_send = arp_filter(sip, tip, dev);
+            if (!dont_send) {
+                n = neigh_event_ns(&arp_tbl, sha, &sip, dev);
+                if (n) {
+                    arp_send_dst(ARPOP_REPLY, ETH_P_ARP,
+                             sip, dev, tip, sha,
+                             dev->dev_addr, sha,
+                             reply_dst);
+                    neigh_release(n);
+                }
+            }
+            goto out_consume_skb;
+        } else if (IN_DEV_FORWARD(in_dev)) {
+            if (addr_type == RTN_UNICAST  &&
+                (arp_fwd_proxy(in_dev, dev, rt) ||
+                 arp_fwd_pvlan(in_dev, dev, rt, sip, tip) ||
+                 (rt->dst.dev != dev &&
+                  pneigh_lookup(&arp_tbl, net, &tip, dev)))) {
+                n = neigh_event_ns(&arp_tbl, sha, &sip, dev);
+                if (n)
+                    neigh_release(n);
+
+                if (NEIGH_CB(skb)->flags & LOCALLY_ENQUEUED ||
+                    skb->pkt_type == PACKET_HOST ||
+                    NEIGH_VAR(in_dev->arp_parms, PROXY_DELAY) == 0) {
+                    arp_send_dst(ARPOP_REPLY, ETH_P_ARP,
+                             sip, dev, tip, sha,
+                             dev->dev_addr, sha,
+                             reply_dst);
+                } else {
+                    pneigh_enqueue(&arp_tbl,
+                               in_dev->arp_parms, skb);
+                    goto out_free_dst;
+                }
+                goto out_consume_skb;
+            }
+        }
+    }
+
+    /* Update our ARP tables */
+
+    n = __neigh_lookup(&arp_tbl, &sip, dev, 0);
+
+    addr_type = -1;
+    if (n || arp_accept(in_dev, sip)) {
+        is_garp = arp_is_garp(net, dev, &addr_type, arp->ar_op, sip, tip, sha, tha);
+    }
+
+    if (arp_accept(in_dev, sip)) {
+        /* Unsolicited ARP is not accepted by default.
+           It is possible, that this option should be enabled for some
+           devices (strip is candidate) */
+        if (!n &&
+            (is_garp ||
+             (arp->ar_op == htons(ARPOP_REPLY) &&
+              (addr_type == RTN_UNICAST ||
+               (addr_type < 0 &&
+            /* postpone calculation to as late as possible */
+            inet_addr_type_dev_table(net, dev, sip) ==
+                RTN_UNICAST)))))
+            n = __neigh_lookup(&arp_tbl, &sip, dev, 1);
+    }
+
+    if (n) {
+        int state = NUD_REACHABLE;
+        int override;
+
+        /* If several different ARP replies follows back-to-back,
+           use the FIRST one. It is possible, if several proxy
+           agents are active. Taking the first reply prevents
+           arp trashing and chooses the fastest router. */
+        override = time_after(jiffies,
+                      n->updated +
+                      NEIGH_VAR(n->parms, LOCKTIME)) ||
+               is_garp;
+
+        /* Broadcast replies and request packets
+           do not assert neighbour reachability. */
+        if (arp->ar_op != htons(ARPOP_REPLY) ||
+            skb->pkt_type != PACKET_HOST)
+            state = NUD_STALE;
+        neigh_update(n, sha, state, override ? NEIGH_UPDATE_F_OVERRIDE : 0, 0);
+        neigh_release(n);
+    }
+
+out_consume_skb:
+    consume_skb(skb);
+
+out_free_dst:
+    dst_release(reply_dst);
+    return NET_RX_SUCCESS;
+
+out_free_skb:
+    kfree_skb(skb);
+    return NET_RX_DROP;
+}
+```
+
+### neigh_update
+
+```c
+int neigh_update(struct neighbour *neigh, const u8 *lladdr, u8 new,
+         u32 flags, u32 nlmsg_pid)
+{
+    return __neigh_update(neigh, lladdr, new, flags, nlmsg_pid, NULL);
+}
+
+int __neigh_update(struct neighbour *neigh, const u8 *lladdr,
+              u8 new, u32 flags, u32 nlmsg_pid,
+              struct netlink_ext_ack *extack)
+{
+    bool gc_update = false, managed_update = false;
+    bool process_arp_queue = false;
+    int update_isrouter = 0;
+    struct net_device *dev;
+    int err, notify = 0;
+    u8 old;
+
+    trace_neigh_update(neigh, lladdr, new, flags, nlmsg_pid);
+
+    write_lock_bh(&neigh->lock);
+
+    dev    = neigh->dev;
+    old    = neigh->nud_state;
+    err    = -EPERM;
+
+    if (neigh->dead) {
+        NL_SET_ERR_MSG(extack, "Neighbor entry is now dead");
+        new = old;
+        goto out;
+    }
+    if (!(flags & NEIGH_UPDATE_F_ADMIN) && (old & (NUD_NOARP | NUD_PERMANENT)))
+        goto out;
+
+    neigh_update_flags(neigh, flags, &notify, &gc_update, &managed_update);
+    if (flags & (NEIGH_UPDATE_F_USE | NEIGH_UPDATE_F_MANAGED)) {
+        new = old & ~NUD_PERMANENT;
+        WRITE_ONCE(neigh->nud_state, new);
+        err = 0;
+        goto out;
+    }
+
+    if (!(new & NUD_VALID)) {
+        neigh_del_timer(neigh);
+        if (old & NUD_CONNECTED)
+            neigh_suspect(neigh);
+        WRITE_ONCE(neigh->nud_state, new);
+        err = 0;
+        notify = old & NUD_VALID;
+        if ((old & (NUD_INCOMPLETE | NUD_PROBE)) && (new & NUD_FAILED)) {
+            neigh_invalidate(neigh);
+            notify = 1;
+        }
+        goto out;
+    }
+
+    /* Compare new lladdr with cached one */
+    if (!dev->addr_len) {
+        /* First case: device needs no address. */
+        lladdr = neigh->ha;
+    } else if (lladdr) {
+        /* The second case: if something is already cached
+           and a new address is proposed:
+           - compare new & old
+           - if they are different, check override flag */
+        if ((old & NUD_VALID) && !memcmp(lladdr, neigh->ha, dev->addr_len))
+            lladdr = neigh->ha;
+    } else {
+        /* No address is supplied; if we know something,
+           use it, otherwise discard the request. */
+        err = -EINVAL;
+        if (!(old & NUD_VALID)) {
+            NL_SET_ERR_MSG(extack, "No link layer address given");
+            goto out;
+        }
+        lladdr = neigh->ha;
+    }
+
+    /* Update confirmed timestamp for neighbour entry after we
+     * received ARP packet even if it doesn't change IP to MAC binding. */
+    if (new & NUD_CONNECTED)
+        neigh->confirmed = jiffies;
+
+    /* If entry was valid and address is not changed,
+       do not change entry state, if new one is STALE. */
+    err = 0;
+    update_isrouter = flags & NEIGH_UPDATE_F_OVERRIDE_ISROUTER;
+    if (old & NUD_VALID) {
+        if (lladdr != neigh->ha && !(flags & NEIGH_UPDATE_F_OVERRIDE)) {
+            update_isrouter = 0;
+            if ((flags & NEIGH_UPDATE_F_WEAK_OVERRIDE) &&
+                (old & NUD_CONNECTED)) {
+                lladdr = neigh->ha;
+                new = NUD_STALE;
+            } else
+                goto out;
+        } else {
+            if (lladdr == neigh->ha && new == NUD_STALE &&
+                !(flags & NEIGH_UPDATE_F_ADMIN))
+                new = old;
+        }
+    }
+
+    /* Update timestamp only once we know we will make a change to the
+     * neighbour entry. Otherwise we risk to move the locktime window with
+     * noop updates and ignore relevant ARP updates. */
+    if (new != old || lladdr != neigh->ha)
+        neigh->updated = jiffies;
+
+    if (new != old) {
+        neigh_del_timer(neigh);
+        if (new & NUD_PROBE)
+            atomic_set(&neigh->probes, 0);
+        if (new & NUD_IN_TIMER)
+            neigh_add_timer(neigh, (jiffies +
+                        ((new & NUD_REACHABLE) ?
+                         neigh->parms->reachable_time :
+                         0)));
+        WRITE_ONCE(neigh->nud_state, new);
+        notify = 1;
+    }
+
+    if (lladdr != neigh->ha) {
+        write_seqlock(&neigh->ha_lock);
+        memcpy(&neigh->ha, lladdr, dev->addr_len);
+        write_sequnlock(&neigh->ha_lock);
+        neigh_update_hhs(neigh);
+        if (!(new & NUD_CONNECTED))
+            neigh->confirmed = jiffies -
+                      (NEIGH_VAR(neigh->parms, BASE_REACHABLE_TIME) << 1);
+        notify = 1;
+    }
+    if (new == old)
+        goto out;
+    if (new & NUD_CONNECTED) {
+        neigh_connect(neigh) {
+            WRITE_ONCE(neigh->output, neigh->ops->connected_output);
+        }
+    } else {
+        neigh_suspect(neigh) {
+            WRITE_ONCE(neigh->output, neigh->ops->output);
+        }
+    }
+
+    if (!(old & NUD_VALID))
+        process_arp_queue = true;
+
+out:
+    if (update_isrouter)
+        neigh_update_is_router(neigh, flags, &notify);
+
+    if (notify)
+        __neigh_notify(neigh, RTM_NEWNEIGH, 0, nlmsg_pid);
+
+    if (process_arp_queue)
+        neigh_update_process_arp_queue(neigh);
+
+    write_unlock_bh(&neigh->lock);
+
+    if (((new ^ old) & NUD_PERMANENT) || gc_update)
+        neigh_update_gc_list(neigh);
+    if (managed_update)
+        neigh_update_managed_list(neigh);
+
+    if (notify)
+        call_netevent_notifiers(NETEVENT_NEIGH_UPDATE, neigh);
+
+    trace_neigh_update_done(neigh, err);
+    return err;
+}
+
+void neigh_update_process_arp_queue(struct neighbour *neigh)
+    __releases(neigh->lock)
+    __acquires(neigh->lock)
+{
+    struct sk_buff *skb;
+
+    /* Again: avoid deadlock if something went wrong. */
+    while (neigh->nud_state & NUD_VALID && (skb = __skb_dequeue(&neigh->arp_queue)) != NULL) {
+        struct dst_entry *dst = skb_dst(skb);
+        struct neighbour *n2, *n1 = neigh;
+
+        write_unlock_bh(&neigh->lock);
+
+        rcu_read_lock();
+
+        /* Why not just use 'neigh' as-is?  The problem is that
+         * things such as shaper, eql, and sch_teql can end up
+         * using alternative, different, neigh objects to output
+         * the packet in the output path.  So what we need to do
+         * here is re-lookup the top-level neigh in the path so
+         * we can reinject the packet there. */
+        n2 = NULL;
+        if (dst && READ_ONCE(dst->obsolete) != DST_OBSOLETE_DEAD) {
+            n2 = dst_neigh_lookup_skb(dst, skb);
+            if (n2)
+                n1 = n2;
+        }
+        READ_ONCE(n1->output)(n1, skb) {
+            neigh_connected_output()
+        }
+        if (n2)
+            neigh_release(n2);
+        rcu_read_unlock();
+
+        write_lock_bh(&neigh->lock);
+    }
+    __skb_queue_purge(&neigh->arp_queue);
+    neigh->arp_queue_len_bytes = 0;
 }
 ```
 
@@ -9547,23 +10649,15 @@ struct pci_driver {
     struct pci_dynids                 dynids;
 };
 
-struct pci_driver ixgbe_driver = {
-    .name         = ixgbe_driver_name,
-    .id_table     = ixgbe_pci_tbl,
-    .probe        = ixgbe_probe,
-    .remove       = ixgbe_remove,
-    .err_handler  = &ixgbe_err_handler
-};
-
 static struct pci_driver ixgbe_driver = {
-    .name      = ixgbe_driver_name,
-    .id_table  = ixgbe_pci_tbl,
-    .probe     = ixgbe_probe,
-    .remove    = ixgbe_remove,
-    .driver.pm = pm_sleep_ptr(&ixgbe_pm_ops),
-    .shutdown  = ixgbe_shutdown,
-    .sriov_configure = ixgbe_pci_sriov_configure,
-    .err_handler = &ixgbe_err_handler
+    .name               = ixgbe_driver_name,
+    .id_table           = ixgbe_pci_tbl,
+    .probe              = ixgbe_probe,
+    .remove             = ixgbe_remove,
+    .driver.pm          = pm_sleep_ptr(&ixgbe_pm_ops),
+    .shutdown           = ixgbe_shutdown,
+    .sriov_configure    = ixgbe_pci_sriov_configure,
+    .err_handler        = &ixgbe_err_handler
 };
 
 static const struct pci_device_id ixgbe_pci_tbl[] = {
@@ -9585,9 +10679,11 @@ enum ixgbe_boards {
     board_x550em_a_fw,
     board_e610,
 };
+```
 
-module_init(ixgbe_init_module);
+### ixgbe_probe
 
+```c
 /* Device Initialization Routine */
 int ixgbe_probe(
   struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -9624,21 +10720,57 @@ int ixgbe_probe(
 void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
         int (*poll)(struct napi_struct *, int), int weight)
 {
+    netif_napi_add_weight(dev, napi, poll, NAPI_POLL_WEIGHT) {
+        netdev_lock(dev);
+        netif_napi_add_weight_locked(dev, napi, poll, weight);
+        netdev_unlock(dev);
+    }
+}
+
+void netif_napi_add_weight_locked(struct net_device *dev,
+                  struct napi_struct *napi,
+                  int (*poll)(struct napi_struct *, int),
+                  int weight)
+{
+    netdev_assert_locked(dev);
+    if (WARN_ON(test_and_set_bit(NAPI_STATE_LISTED, &napi->state)))
+        return;
+
     INIT_LIST_HEAD(&napi->poll_list);
-    hrtimer_init(&napi->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
-    napi->timer.function = napi_watchdog;
-    init_gro_hash(napi);
+    INIT_HLIST_NODE(&napi->napi_hash_node);
+    hrtimer_setup(&napi->timer, napi_watchdog, CLOCK_MONOTONIC, HRTIMER_MODE_REL_PINNED);
+    gro_init(&napi->gro);
     napi->skb = NULL;
     napi->poll = poll;
+    if (weight > NAPI_POLL_WEIGHT)
+        netdev_err_once(dev, "%s() called with weight %d\n", __func__, weight);
     napi->weight = weight;
     napi->dev = dev;
+#ifdef CONFIG_NETPOLL
     napi->poll_owner = -1;
+#endif
+    napi->list_owner = -1;
     set_bit(NAPI_STATE_SCHED, &napi->state);
     set_bit(NAPI_STATE_NPSVC, &napi->state);
-    list_add_rcu(&napi->dev_list, &dev->napi_list);
-    napi_hash_add(napi);
+    netif_napi_dev_list_add(dev, napi);
+
+    /* default settings from sysfs are applied to all NAPIs. any per-NAPI
+     * configuration will be loaded in napi_enable */
+    napi_set_defer_hard_irqs(napi, READ_ONCE(dev->napi_defer_hard_irqs));
+    napi_set_gro_flush_timeout(napi, READ_ONCE(dev->gro_flush_timeout));
+
+    napi_get_frags_check(napi);
+    /* Create kthread for this napi if dev->threaded is set.
+     * Clear dev->threaded if kthread creation failed so that
+     * threaded mode will not be enabled in napi_enable(). */
+    if (napi_get_threaded_config(dev, napi))
+        if (napi_kthread_create(napi))
+            dev->threaded = NETDEV_NAPI_THREADED_DISABLED;
+    netif_napi_set_irq_locked(napi, -1);
 }
 ```
+
+### ixgbe_intr
 
 ```c
 /* internet trasaction gigabyte
@@ -9749,8 +10881,7 @@ static inline void napi_schedule_irqoff(struct napi_struct *n)
             * emits better code than :
             * if (val & NAPIF_STATE_SCHED)
             *     new |= NAPIF_STATE_MISSED; */
-            new |= (val & NAPIF_STATE_SCHED) / NAPIF_STATE_SCHED *
-                            NAPIF_STATE_MISSED;
+            new |= (val & NAPIF_STATE_SCHED) / NAPIF_STATE_SCHED * NAPIF_STATE_MISSED;
         } while (!try_cmpxchg(&n->state, &val, new));
 
         return !(val & NAPIF_STATE_SCHED);
@@ -9931,9 +11062,9 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
 #endif
 
     ixgbe_for_each_ring(ring, q_vector->tx) {
-        bool wd = ring->xsk_pool ?
-            ixgbe_clean_xdp_tx_irq(q_vector, ring, budget) :
-            ixgbe_clean_tx_irq(q_vector, ring, budget);
+        bool wd = ring->xsk_pool
+            ? ixgbe_clean_xdp_tx_irq(q_vector, ring, budget)
+            : ixgbe_clean_tx_irq(q_vector, ring, budget);
 
         if (!wd)
             clean_complete = false;
@@ -9951,9 +11082,9 @@ int ixgbe_poll(struct napi_struct *napi, int budget)
         per_ring_budget = budget;
 
     ixgbe_for_each_ring(ring, q_vector->rx) {
-        int cleaned = ring->xsk_pool ?
-            ixgbe_clean_rx_irq_zc(q_vector, ring, per_ring_budget) :
-            ixgbe_clean_rx_irq(q_vector, ring, per_ring_budget);
+        int cleaned = ring->xsk_pool
+            ? ixgbe_clean_rx_irq_zc(q_vector, ring, per_ring_budget)
+            : ixgbe_clean_rx_irq(q_vector, ring, per_ring_budget);
 
         work_done += cleaned;
         if (cleaned >= per_ring_budget)
@@ -9984,8 +11115,7 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
      *    just in case its running on a different cpu.
      * 2) If we are busy polling, do nothing here, we have
      *    the guarantee we will be called later. */
-    if (unlikely(n->state & (NAPIF_STATE_NPSVC |
-                 NAPIF_STATE_IN_BUSY_POLL)))
+    if (unlikely(n->state & (NAPIF_STATE_NPSVC | NAPIF_STATE_IN_BUSY_POLL)))
         return false;
 
     if (work_done) {
@@ -10034,8 +11164,7 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
     }
 
     if (timeout)
-        hrtimer_start(&n->timer, ns_to_ktime(timeout),
-                  HRTIMER_MODE_REL_PINNED);
+        hrtimer_start(&n->timer, ns_to_ktime(timeout), HRTIMER_MODE_REL_PINNED);
     return ret;
 }
 
@@ -10188,6 +11317,112 @@ int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 }
 ```
 
+### napi_build_skb
+
+```c
+ struct sk_buff *ixgbe_build_skb(struct ixgbe_ring *rx_ring,
+                       struct ixgbe_rx_buffer *rx_buffer,
+                       struct xdp_buff *xdp,
+                       union ixgbe_adv_rx_desc *rx_desc)
+{
+    unsigned int metasize = xdp->data - xdp->data_meta;
+#if (PAGE_SIZE < 8192)
+    unsigned int truesize = ixgbe_rx_pg_size(rx_ring) / 2;
+#else
+    unsigned int truesize = SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) +
+        SKB_DATA_ALIGN(xdp->data_end - xdp->data_hard_start);
+#endif
+    struct sk_buff *skb;
+
+    /* Prefetch first cache line of first page. If xdp->data_meta
+     * is unused, this points exactly as xdp->data, otherwise we
+     * likely have a consumer accessing first few bytes of meta
+     * data, and then actual data. */
+    net_prefetch(xdp->data_meta);
+
+    /* build an skb to around the page buffer */
+    skb = napi_build_skb(xdp->data_hard_start, truesize);
+    if (unlikely(!skb))
+        return NULL;
+
+    /* update pointers within the skb to store the data */
+    skb_reserve(skb, xdp->data - xdp->data_hard_start);
+    __skb_put(skb, xdp->data_end - xdp->data);
+    if (metasize)
+        skb_metadata_set(skb, metasize);
+
+    /* record DMA address if this is the start of a chain of buffers */
+    if (!ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_EOP))
+        IXGBE_CB(skb)->dma = rx_buffer->dma;
+
+    /* update buffer offset */
+#if (PAGE_SIZE < 8192)
+    rx_buffer->page_offset ^= truesize;
+#else
+    rx_buffer->page_offset += truesize;
+#endif
+
+    return skb;
+}
+
+struct sk_buff *napi_build_skb(void *data, unsigned int frag_size)
+{
+    struct sk_buff *skb = __napi_build_skb(data, frag_size) {
+        struct sk_buff *skb;
+
+        skb = napi_skb_cache_get(true);
+        if (unlikely(!skb))
+            return NULL;
+
+        skbuff_clear(skb);
+        __build_skb_around(skb, data, frag_size) {
+            if (WARN_ONCE(size == 0, "Use slab_build_skb() instead")) {
+                data = __slab_build_skb(data, &size) {
+                    void *resized;
+
+                    *size = ksize(data);
+                    resized = krealloc(data, *size, GFP_ATOMIC);
+                    WARN_ON_ONCE(resized != data);
+                    return resized;
+                }
+            }
+
+            __finalize_skb_around(skb, data, size) {
+                struct skb_shared_info *shinfo;
+
+                size -= SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+
+                /* Assumes caller memset cleared SKB */
+                skb->truesize = SKB_TRUESIZE(size);
+                refcount_set(&skb->users, 1);
+                skb->head = data;
+                skb->data = data;
+                skb_reset_tail_pointer(skb);
+                skb_set_end_offset(skb, size);
+                skb->mac_header = (typeof(skb->mac_header))~0U;
+                skb->transport_header = (typeof(skb->transport_header))~0U;
+                skb->alloc_cpu = raw_smp_processor_id();
+                /* make sure we initialize shinfo sequentially */
+                shinfo = skb_shinfo(skb);
+                memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+                atomic_set(&shinfo->dataref, 1);
+
+                skb_set_kcov_handle(skb, kcov_common_handle());
+            }
+        }
+
+        return skb;
+    }
+
+    if (likely(skb) && frag_size) {
+        skb->head_frag = 1;
+        skb_propagate_pfmemalloc(virt_to_head_page(data), skb);
+    }
+
+    return skb;
+}
+```
+
 ### gro_receive_skb
 
 ```c
@@ -10197,7 +11432,10 @@ static inline gro_result_t napi_gro_receive(struct napi_struct *napi,
     return gro_receive_skb(&napi->gro, skb) {
         gro_result_t ret;
 
-        __skb_mark_napi_id(skb, gro);
+        __skb_mark_napi_id(skb, gro) {
+            if (!napi_id_valid(skb->napi_id))
+                skb->napi_id = gro->cached_napi_id;
+        }
         trace_napi_gro_receive_entry(skb);
 
         skb_gro_reset_offset(skb, 0);
@@ -10437,7 +11675,36 @@ struct sk_buff *tcp4_gro_receive(struct list_head *head, struct sk_buff *skb)
     if (!th)
         goto flush;
 
-    tcp4_check_fraglist_gro(head, skb, th);
+    tcp4_check_fraglist_gro(head, skb, th) {
+        const struct iphdr *iph;
+        struct sk_buff *p;
+        struct sock *sk;
+        struct net *net;
+        int iif, sdif;
+
+        if (likely(!(skb->dev->features & NETIF_F_GRO_FRAGLIST)))
+            return;
+
+        p = tcp_gro_lookup(head, th);
+        if (p) {
+            /* is_flist.1 setup
+             * When set, it switches TCP GRO from the
+             * normal frag-splice coalescing mode to frag_list chain mode. */
+            NAPI_GRO_CB(skb)->is_flist = NAPI_GRO_CB(p)->is_flist;
+            return;
+        }
+
+        inet_get_iif_sdif(skb, &iif, &sdif);
+        iph = skb_gro_network_header(skb);
+        net = dev_net_rcu(skb->dev);
+        sk = __inet_lookup_established(net, iph->saddr, th->source,
+            iph->daddr, ntohs(th->dest), iif, sdif);
+        /* socket found → is_flist=0 (local delivery)
+         * no socket   → is_flist=1  (forwarding) */
+        NAPI_GRO_CB(skb)->is_flist = !sk;
+        if (sk)
+            sock_gen_put(sk);
+    }
 
     return tcp_gro_receive(head, skb, th);
 
@@ -10507,6 +11774,10 @@ struct sk_buff *tcp_gro_receive(struct list_head *head, struct sk_buff *skb,
     flush |= (ntohl(th2->seq) + skb_gro_len(p)) ^ ntohl(th->seq);
     flush |= skb_cmp_decrypted(p, skb);
 
+    /* is_flist.2 aggregation
+     * is_flist mode flushes if any TCP flag differs — including PSH
+     * — because the child skbs retain their original headers,
+     * so flags cannot be merged. */
     if (unlikely(NAPI_GRO_CB(p)->is_flist)) {
         flush |= (__force int)(flags ^ tcp_flag_word(th2));
         flush |= skb->ip_summed != p->ip_summed;
@@ -10545,14 +11816,20 @@ out_check_final:
 
     return pp;
 }
+```
 
+#### skb_gro_receive
+
+```c
 int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
 {
     struct skb_shared_info *pinfo, *skbinfo = skb_shinfo(skb);
     unsigned int offset = skb_gro_offset(skb) {
+        /* bytes consumed by protocol parsers from skb->data */
         return NAPI_GRO_CB(skb)->data_offset;
     }
     unsigned int headlen = skb_headlen(skb) {
+        /* total bytesin linear area */
         return skb->len - skb->data_len;
     }
     unsigned int len = skb_gro_len(skb) {
@@ -10586,7 +11863,25 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
     lp = NAPI_GRO_CB(p)->last;
     pinfo = skb_shinfo(lp);
 
-/* Strategy A — frag splice (headlen <= offset) */
+/* Strategy A — frag splice (headlen <= offset): payload in nonlinear area
+
+   skb->data                     skb->tail
+    |                                |
+    v                                v
+    [ Ethernet | IP | TCP | payload? ]   frags[0]   frags[1] ...
+    |<---------- headlen ----------->|   |<----- data_len ------>|
+    |<---------- offset ------------>|
+                                     ^
+                            GRO parse cursor stops here
+
+
+   skb->data           skb->tail
+    |                   |
+    [  IP hdr (20B)  ]  |  frags[0]: [ TCP hdr (20B) | payload (1400B) ]
+    |<-- headlen=20 --->|
+    |<-------------- offset=40 ----------------------------------------->|
+                        ^                            ^
+                        headlen          cursor after IP+TCP parsed */
     if (headlen <= offset) {
         skb_frag_t *frag;
         skb_frag_t *frag2;
@@ -10620,11 +11915,24 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
         NAPI_GRO_CB(skb)->free = NAPI_GRO_FREE;
         goto done;
 
-    /* Strategy B — head-frag promotion (skb->head_frag) */
+/* Strategy B — head-frag promotion (skb->head_frag): payload in linear area and head_frag
+                PAGE  (from napi_build_skb / page pool)
+    ┌──────────────────────────────────────────────────────────────────────────────────┐
+    │ hard_start │ ETH | IP | TCP hdr │ payload_head │  frags[0] payload │  shinfo...  │
+    └──────────────────────────────────────────────────────────────────────────────────┘
+    ^            ^                    ^              ^
+    page_address  skb->head           skb->data+off  skb->tail
+                  skb->data
+                 |<------- headlen ----------------->|
+                 |<-- offset -------->|
+                                      |<-first_size->|
+    |<---------first_offset --------->|*/
+
     } else if (skb->head_frag) {
         int nr_frags = pinfo->nr_frags;
         skb_frag_t *frag = pinfo->frags + nr_frags;
         struct page *page = virt_to_head_page(skb->head);
+        /* payload bytes stuck in linear area */
         unsigned int first_size = headlen - offset;
         unsigned int first_offset;
 
@@ -10637,7 +11945,13 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
 
         pinfo->nr_frags = nr_frags + 1 + skbinfo->nr_frags;
 
-        skb_frag_fill_page_desc(frag, page, first_offset, first_size);
+        skb_frag_fill_page_desc(frag, page, first_offset, first_size) {
+            skb_frag_fill_netmem_desc(frag, page_to_netmem(page), off, size) {
+                frag->netmem = netmem;
+                frag->offset = off;
+                skb_frag_size_set(frag, size);
+            }
+        }
 
         memcpy(frag + 1, skbinfo->frags, sizeof(*frag) * skbinfo->nr_frags);
         /* We dont need to clear skbinfo->nr_frags here */
@@ -10649,13 +11963,13 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
         goto done;
     }
 
-/* Strategy C — frag_list chain (fallback merge:) */
+/* Strategy C — frag_list chain: only payload in linear area no frag_head */
 merge:
     /* sk ownership - if any - completely transferred to the aggregated packet */
     skb->destructor = NULL;
     skb->sk = NULL;
     delta_truesize = skb->truesize;
-    if (offset > headlen) {
+    if (offset > headlen) { /* partial header in page_frag */
         unsigned int eat = offset - headlen;
 
         skb_frag_off_add(&skbinfo->frags[0], eat);
@@ -10665,7 +11979,10 @@ merge:
         offset = headlen;
     }
 
-    __skb_pull(skb, offset);
+    __skb_pull(skb, offset) {
+        skb->len -= len;
+        return skb->data += len;
+    }
 
     if (NAPI_GRO_CB(p)->last == p)
         skb_shinfo(p)->frag_list = skb;
@@ -10688,6 +12005,39 @@ done:
         skb_shinfo(lp)->flags |= skbinfo->flags & SKBFL_SHARED_FRAG;
     }
     NAPI_GRO_CB(skb)->same_flow = 1;
+    return 0;
+}
+```
+
+#### skb_gro_receive_list
+
+```c
+int skb_gro_receive_list(struct sk_buff *p, struct sk_buff *skb)
+{
+    if (unlikely(p->len + skb->len >= 65536))
+        return -E2BIG;
+
+    if (NAPI_GRO_CB(p)->last == p)
+        skb_shinfo(p)->frag_list = skb;
+    else
+        NAPI_GRO_CB(p)->last->next = skb;
+
+    skb_pull(skb, skb_gro_offset(skb));
+
+    NAPI_GRO_CB(p)->last = skb;
+    NAPI_GRO_CB(p)->count++;
+    p->data_len += skb->len;
+
+    /* sk ownership - if any - completely transferred to the aggregated packet */
+    skb->destructor = NULL;
+    skb->sk = NULL;
+    p->truesize += skb->truesize;
+    p->len += skb->len;
+
+    skb_shinfo(p)->flags |= skb_shinfo(skb)->flags & SKBFL_SHARED_FRAG;
+
+    NAPI_GRO_CB(skb)->same_flow = 1;
+
     return 0;
 }
 ```
@@ -10735,8 +12085,7 @@ static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
             LIST_HEAD(sublist);
 
             list_for_each_entry_safe(skb, next, head, list) {
-                net_timestamp_check(READ_ONCE(net_hotdata.tstamp_prequeue),
-                            skb);
+                net_timestamp_check(READ_ONCE(net_hotdata.tstamp_prequeue), skb);
                 skb_list_del_init(skb);
                 if (!skb_defer_rx_timestamp(skb))
                     list_add_tail(&skb->list, &sublist);
@@ -10930,6 +12279,8 @@ int tcp4_gro_complete(struct sk_buff *skb, int thoff)
     const struct iphdr *iph = (struct iphdr *)(skb->data + offset);
     struct tcphdr *th = tcp_hdr(skb);
 
+    /* is_flist.3 flush
+     * is_flist=0: recompute TCP csum, gso_type=TCPV4 */
     if (unlikely(NAPI_GRO_CB(skb)->is_flist)) {
         skb_shinfo(skb)->gso_type |= SKB_GSO_FRAGLIST | SKB_GSO_TCPV4;
         skb_shinfo(skb)->gso_segs = NAPI_GRO_CB(skb)->count;
@@ -10939,6 +12290,7 @@ int tcp4_gro_complete(struct sk_buff *skb, int thoff)
         return 0;
     }
 
+    /* is_flist=1: keep csum_unnecessary, gso_type=FRAGLIST|TCPV4 */
     th->check = ~tcp_v4_check(skb->len - thoff, iph->saddr,
                   iph->daddr, 0);
 
@@ -11914,17 +13266,39 @@ int tcp_child_process(struct sock *parent, struct sock *child,
 ```c
 int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 {
-    struct sock *rsk;
+    enum skb_drop_reason reason;
+
+    reason = psp_sk_rx_policy_check(sk, skb);
+    if (reason)
+        goto err_discard;
 
     if (sk->sk_state == TCP_ESTABLISHED) { /* Fast path */
-        struct dst_entry *dst = sk->sk_rx_dst;
+        struct dst_entry *dst;
+
+        dst = rcu_dereference_protected(sk->sk_rx_dst,
+                        lockdep_sock_is_held(sk));
 
         sock_rps_save_rxhash(sk, skb);
-        sk_mark_napi_id(sk, skb);
-        if (dst) {
-            if (inet_sk(sk)->rx_dst_ifindex != skb->skb_iif || !dst->ops->check(dst, 0)) {
+        sk_mark_napi_id(sk, skb) {
+            if (unlikely(READ_ONCE(sk->sk_napi_id) != skb->napi_id))
+                WRITE_ONCE(sk->sk_napi_id, skb->napi_id);
+
+            sk_rx_queue_update(sk, skb) {
+                if (skb_rx_queue_recorded(skb)) {
+                    u16 rx_queue = skb_get_rx_queue(skb);
+
+                    if (force_set ||
+                        unlikely(READ_ONCE(sk->sk_rx_queue_mapping) != rx_queue))
+                        WRITE_ONCE(sk->sk_rx_queue_mapping, rx_queue);
+                }
+            }
+        }
+        if (dst && unlikely(dst != skb_dst(skb))) {
+            if (sk->sk_rx_dst_ifindex != skb->skb_iif ||
+                !INDIRECT_CALL_1(dst->ops->check, ipv4_dst_check,
+                         dst, 0)) {
+                RCU_INIT_POINTER(sk->sk_rx_dst, NULL);
                 dst_release(dst);
-                sk->sk_rx_dst = NULL;
             }
         }
         tcp_rcv_established(sk, skb);
@@ -11935,38 +13309,40 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
         goto csum_err;
 
     if (sk->sk_state == TCP_LISTEN) {
-        struct sock *newsk = tcp_v4_cookie_check(sk, skb);
+        struct sock *nsk = tcp_v4_cookie_check(sk, skb);
 
-        if (!newsk)
-            goto discard;
-        if (newsk != sk) {
-            if (tcp_child_process(sk, newsk, skb)) {
-                rsk = newsk;
+        if (!nsk)
+            return 0;
+        if (nsk != sk) {
+            reason = tcp_child_process(sk, nsk, skb);
+            sock_put(nsk);
+            if (reason)
                 goto reset;
-            }
             return 0;
         }
     } else
         sock_rps_save_rxhash(sk, skb);
 
-    if (tcp_rcv_state_process(sk, skb)) {
-        rsk = sk;
+    reason = tcp_rcv_state_process(sk, skb);
+    if (reason)
         goto reset;
-    }
     return 0;
 
 reset:
-    tcp_v4_send_reset(rsk, skb);
+    tcp_v4_send_reset(sk, skb, sk_rst_convert_drop_reason(reason));
 discard:
-    kfree_skb(skb);
+    sk_skb_reason_drop(sk, skb, reason);
     /* Be careful here. If this function gets more complicated and
-    * gcc suffers from register pressure on the x86, sk (in %ebx)
-    * might be destroyed here. This current version compiles correctly,
-    * but you have been warned. */
+     * gcc suffers from register pressure on the x86, sk (in %ebx)
+     * might be destroyed here. This current version compiles correctly,
+     * but you have been warned. */
     return 0;
 
 csum_err:
+    reason = SKB_DROP_REASON_TCP_CSUM;
+    trace_tcp_bad_csum(skb);
     TCP_INC_STATS(sock_net(sk), TCP_MIB_CSUMERRORS);
+err_discard:
     TCP_INC_STATS(sock_net(sk), TCP_MIB_INERRS);
     goto discard;
 }
@@ -12886,7 +14262,14 @@ int tcp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 
     if (sk_can_busy_loop(sk) && skb_queue_empty_lockless(&sk->sk_receive_queue) &&
         (sk->sk_state == TCP_ESTABLISHED))
-        sk_busy_loop(sk, nonblock);
+        sk_busy_loop(sk, nonblock) {
+            unsigned int napi_id = READ_ONCE(sk->sk_napi_id);
+
+            if (napi_id_valid(napi_id))
+                napi_busy_loop(napi_id, nonblock ? NULL : sk_busy_loop_end, sk,
+                    READ_ONCE(sk->sk_prefer_busy_poll),
+                    READ_ONCE(sk->sk_busy_poll_budget) ?: BUSY_POLL_BUDGET);
+        }
 
     lock_sock(sk);
 
@@ -19057,7 +20440,7 @@ epoll_wait() {
                     }
                 }
 
-                eavail = ep_busy_loop(ep, timed_out) {
+                eavail = ep_busy_loop(ep) {
                     napi_busy_loop();
                 }
                 if (eavail)
@@ -19620,7 +21003,7 @@ int ep_poll(
         if (timed_out)
             return 0;
 
-        eavail = ep_busy_loop(ep, timed_out);
+        eavail = ep_busy_loop(ep);
             --->
         if (eavail)
             continue;
@@ -19664,7 +21047,7 @@ int ep_poll(
     }
 }
 
-void ep_busy_loop(struct eventpoll *ep, int nonblock)
+bool ep_busy_loop(struct eventpoll *ep)
 {
     unsigned int napi_id = READ_ONCE(ep->napi_id);
     u16 budget = READ_ONCE(ep->busy_poll_budget);
@@ -19673,83 +21056,8 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
     if (!budget)
         budget = BUSY_POLL_BUDGET;
 
-    if (napi_id >= MIN_NAPI_ID && ep_busy_loop_on(ep)) {
-        napi_busy_loop(napi_id, nonblock ? NULL : ep_busy_loop_end, ep, prefer_busy_poll, budget) {
-            unsigned long start_time = loop_end ? busy_loop_current_time() : 0;
-            int (*napi_poll)(struct napi_struct *napi, int budget);
-            struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
-            void *have_poll_lock = NULL;
-            struct napi_struct *napi;
-
-            WARN_ON_ONCE(!rcu_read_lock_held());
-
-        restart:
-            napi_poll = NULL;
-
-            napi = napi_by_id(napi_id);
-            if (!napi)
-                return;
-
-            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
-                preempt_disable();
-            for (;;) {
-                int work = 0;
-
-                local_bh_disable();
-                bpf_net_ctx = bpf_net_ctx_set(&__bpf_net_ctx);
-                if (!napi_poll) {
-                    unsigned long val = READ_ONCE(napi->state);
-
-                    /* If multiple threads are competing for this napi,
-                    * we avoid dirtying napi->state as much as we can. */
-                    if (val & (NAPIF_STATE_DISABLE | NAPIF_STATE_SCHED | NAPIF_STATE_IN_BUSY_POLL)) {
-                        if (flags & NAPI_F_PREFER_BUSY_POLL)
-                            set_bit(NAPI_STATE_PREFER_BUSY_POLL, &napi->state);
-                        goto count;
-                    }
-                    if (cmpxchg(&napi->state, val, val | NAPIF_STATE_IN_BUSY_POLL | NAPIF_STATE_SCHED) != val) {
-                        if (flags & NAPI_F_PREFER_BUSY_POLL)
-                            set_bit(NAPI_STATE_PREFER_BUSY_POLL, &napi->state);
-                        goto count;
-                    }
-                    have_poll_lock = netpoll_poll_lock(napi);
-                    napi_poll = napi->poll; /* ixgbe_poll, process_backlog */
-                }
-                work = napi_poll(napi, budget);
-                    --->
-                trace_napi_poll(napi, work, budget);
-                gro_normal_list(napi);
-        count:
-                if (work > 0)
-                    __NET_ADD_STATS(dev_net(napi->dev), LINUX_MIB_BUSYPOLLRXPACKETS, work);
-                skb_defer_free_flush(this_cpu_ptr(&softnet_data));
-                bpf_net_ctx_clear(bpf_net_ctx);
-                local_bh_enable();
-
-                if (!loop_end || loop_end(loop_end_arg, start_time))
-                    break;
-
-                if (unlikely(need_resched())) {
-                    if (flags & NAPI_F_END_ON_RESCHED)
-                        break;
-                    if (napi_poll)
-                        busy_poll_stop(napi, have_poll_lock, flags, budget);
-                    if (!IS_ENABLED(CONFIG_PREEMPT_RT))
-                        preempt_enable();
-                    rcu_read_unlock();
-                    cond_resched();
-                    rcu_read_lock();
-                    if (loop_end(loop_end_arg, start_time))
-                        return;
-                    goto restart;
-                }
-                cpu_relax();
-            }
-            if (napi_poll)
-                busy_poll_stop(napi, have_poll_lock, flags, budget);
-            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
-                preempt_enable();
-        }
+    if (napi_id_valid(napi_id) && ep_busy_loop_on(ep)) {
+        napi_busy_loop(napi_id, ep_busy_loop_end, ep, prefer_busy_poll, budget);
 
         if (ep_events_available(ep))
             return true;
@@ -19774,6 +21082,96 @@ void ep_busy_loop(struct eventpoll *ep, int nonblock)
         return false;
     }
     return false;
+}
+
+void napi_busy_loop(unsigned int napi_id,
+            bool (*loop_end)(void *, unsigned long),
+            void *loop_end_arg, bool prefer_busy_poll, u16 budget)
+{
+    unsigned flags = prefer_busy_poll ? NAPI_F_PREFER_BUSY_POLL : 0;
+
+    rcu_read_lock();
+    __napi_busy_loop(napi_id, loop_end, loop_end_arg, flags, budget);
+    rcu_read_unlock();
+}
+
+void __napi_busy_loop(unsigned int napi_id,
+              bool (*loop_end)(void *, unsigned long),
+              void *loop_end_arg, unsigned flags, u16 budget)
+{
+    unsigned long start_time = loop_end ? busy_loop_current_time() : 0;
+    int (*napi_poll)(struct napi_struct *napi, int budget);
+    struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
+    void *have_poll_lock = NULL;
+    struct napi_struct *napi;
+
+    WARN_ON_ONCE(!rcu_read_lock_held());
+
+restart:
+    napi_poll = NULL;
+
+    napi = napi_by_id(napi_id);
+    if (!napi)
+        return;
+
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+        preempt_disable();
+    for (;;) {
+        int work = 0;
+
+        local_bh_disable();
+        bpf_net_ctx = bpf_net_ctx_set(&__bpf_net_ctx);
+        if (!napi_poll) {
+            unsigned long val = READ_ONCE(napi->state);
+
+            /* If multiple threads are competing for this napi,
+             * we avoid dirtying napi->state as much as we can. */
+            if (val & (NAPIF_STATE_DISABLE | NAPIF_STATE_SCHED | NAPIF_STATE_IN_BUSY_POLL)) {
+                if (flags & NAPI_F_PREFER_BUSY_POLL)
+                    set_bit(NAPI_STATE_PREFER_BUSY_POLL, &napi->state);
+                goto count;
+            }
+            if (cmpxchg(&napi->state, val, val | NAPIF_STATE_IN_BUSY_POLL | NAPIF_STATE_SCHED) != val) {
+                if (flags & NAPI_F_PREFER_BUSY_POLL)
+                    set_bit(NAPI_STATE_PREFER_BUSY_POLL, &napi->state);
+                goto count;
+            }
+            have_poll_lock = netpoll_poll_lock(napi);
+            napi_poll = napi->poll;
+        }
+        work = napi_poll(napi, budget);
+        trace_napi_poll(napi, work, budget);
+        gro_normal_list(&napi->gro);
+count:
+        if (work > 0)
+            __NET_ADD_STATS(dev_net(napi->dev), LINUX_MIB_BUSYPOLLRXPACKETS, work);
+        skb_defer_free_flush();
+        bpf_net_ctx_clear(bpf_net_ctx);
+        local_bh_enable();
+
+        if (!loop_end || loop_end(loop_end_arg, start_time))
+            break;
+
+        if (unlikely(need_resched())) {
+            if (flags & NAPI_F_END_ON_RESCHED)
+                break;
+            if (napi_poll)
+                busy_poll_stop(napi, have_poll_lock, flags, budget);
+            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+                preempt_enable();
+            rcu_read_unlock();
+            cond_resched();
+            rcu_read_lock();
+            if (loop_end(loop_end_arg, start_time))
+                return;
+            goto restart;
+        }
+        cpu_relax();
+    }
+    if (napi_poll)
+        busy_poll_stop(napi, have_poll_lock, flags, budget);
+    if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+        preempt_enable();
 }
 ```
 
@@ -19903,21 +21301,22 @@ __poll_t vfs_poll(struct file *file, struct poll_table_struct *pt)
 __poll_t sock_poll(struct file *file, poll_table *wait)
 {
     struct socket *sock = file->private_data;
+    const struct proto_ops *ops = READ_ONCE(sock->ops);
     __poll_t events = poll_requested_events(wait), flag = 0;
 
-    if (!sock->ops->poll)
+    if (!ops->poll)
         return 0;
 
     if (sk_can_busy_loop(sock->sk)) {
         /* poll once if requested by the syscall */
         if (events & POLL_BUSY_LOOP)
-        sk_busy_loop(sock->sk, 1);
+            sk_busy_loop(sock->sk, 1);
 
         /* if this socket can poll_ll, tell the system call */
         flag = POLL_BUSY_LOOP;
     }
 
-    return sock->ops->poll(file, sock, wait) | flag;
+    return ops->poll(file, sock, wait) | flag;
 }
 
 /* inet_stream_ops.poll */
