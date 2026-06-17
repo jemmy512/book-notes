@@ -7929,7 +7929,14 @@ int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
         do {
             __skb_pull(skb, skb_network_offset(skb));
             seq = read_seqbegin(&neigh->ha_lock);
-            err = dev_hard_header(skb, dev, ntohs(skb->protocol), neigh->ha, NULL, skb->len);
+            err = dev_hard_header(skb, dev, ntohs(skb->protocol), neigh->ha, NULL, skb->len) {
+                if (!dev->header_ops || !dev->header_ops->create)
+                    return 0;
+
+                return dev->header_ops->create(skb, dev, type, daddr, saddr, len) {
+                    eth_header();
+                }
+            }
         } while (read_seqretry(&neigh->ha_lock, seq));
 
         if (err >= 0)
@@ -8033,6 +8040,54 @@ out_dead:
     kfree_skb_reason(skb, SKB_DROP_REASON_NEIGH_DEAD);
     trace_neigh_event_send_dead(neigh, 1);
     return 1;
+}
+```
+
+#### eth_header_ops
+
+```c
+const struct header_ops eth_header_ops ____cacheline_aligned = {
+    .create             = eth_header,
+    .parse              = eth_header_parse,
+    .cache              = eth_header_cache,
+    .cache_update       = eth_header_cache_update,
+    .parse_protocol     = eth_header_parse_protocol,
+};
+
+int eth_header(struct sk_buff *skb, struct net_device *dev,
+	       unsigned short type,
+	       const void *daddr, const void *saddr, unsigned int len)
+{
+	struct ethhdr *eth = skb_push(skb, ETH_HLEN);
+
+	if (type != ETH_P_802_3 && type != ETH_P_802_2)
+		eth->h_proto = htons(type);
+	else
+		eth->h_proto = htons(len);
+
+	/*
+	 *      Set the source hardware address.
+	 */
+
+	if (!saddr)
+		saddr = dev->dev_addr;
+	memcpy(eth->h_source, saddr, ETH_ALEN);
+
+	if (daddr) {
+		memcpy(eth->h_dest, daddr, ETH_ALEN);
+		return ETH_HLEN;
+	}
+
+	/*
+	 *      Anyway, the loopback-device should never use this function...
+	 */
+
+	if (dev->flags & (IFF_LOOPBACK | IFF_NOARP)) {
+		eth_zero_addr(eth->h_dest);
+		return ETH_HLEN;
+	}
+
+	return -ETH_HLEN;
 }
 ```
 
@@ -9209,7 +9264,11 @@ egress_verdict:
 
     return skb;
 }
+```
 
+#### tc_run
+
+```c
 static int tc_run(struct tcx_entry *entry, struct sk_buff *skb,
           enum skb_drop_reason *drop_reason)
 {
@@ -11317,7 +11376,7 @@ int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
 }
 ```
 
-### napi_build_skb
+#### napi_build_skb
 
 ```c
  struct sk_buff *ixgbe_build_skb(struct ixgbe_ring *rx_ring,
@@ -11346,8 +11405,17 @@ int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
         return NULL;
 
     /* update pointers within the skb to store the data */
-    skb_reserve(skb, xdp->data - xdp->data_hard_start);
-    __skb_put(skb, xdp->data_end - xdp->data);
+    skb_reserve(skb, xdp->data - xdp->data_hard_start) {
+        skb->data += len;
+        skb->tail += len;
+    }
+    __skb_put(skb, xdp->data_end - xdp->data) {
+        void *tmp = skb_tail_pointer(skb);
+        SKB_LINEAR_ASSERT(skb);
+        skb->tail += len;
+        skb->len  += len;
+        return tmp;
+    }
     if (metasize)
         skb_metadata_set(skb, metasize);
 
@@ -11397,8 +11465,13 @@ struct sk_buff *napi_build_skb(void *data, unsigned int frag_size)
                 refcount_set(&skb->users, 1);
                 skb->head = data;
                 skb->data = data;
-                skb_reset_tail_pointer(skb);
-                skb_set_end_offset(skb, size);
+                skb_reset_tail_pointer(skb) {
+                    /* 64bit os stores data/tail/end as offset to head */
+                    skb->tail = skb->data - skb->head;
+                }
+                skb_set_end_offset(skb, size) {
+                    skb->end = offset;
+                }
                 skb->mac_header = (typeof(skb->mac_header))~0U;
                 skb->transport_header = (typeof(skb->transport_header))~0U;
                 skb->alloc_cpu = raw_smp_processor_id();
@@ -11416,10 +11489,53 @@ struct sk_buff *napi_build_skb(void *data, unsigned int frag_size)
 
     if (likely(skb) && frag_size) {
         skb->head_frag = 1;
-        skb_propagate_pfmemalloc(virt_to_head_page(data), skb);
+        skb_propagate_pfmemalloc(virt_to_head_page(data), skb) {
+            /* set_page_pfmemalloc */
+            if (page_is_pfmemalloc(page))
+                skb->pfmemalloc = true;
+        }
     }
 
     return skb;
+}
+```
+
+#### ixgbe_process_skb_fields
+
+```c
+/* populate checksum, timestamp, VLAN, and protocol */
+void ixgbe_process_skb_fields(struct ixgbe_ring *rx_ring,
+                  union ixgbe_adv_rx_desc *rx_desc,
+                  struct sk_buff *skb)
+{
+    struct net_device *dev = rx_ring->netdev;
+    u32 flags = rx_ring->q_vector->adapter->flags;
+
+    ixgbe_update_rsc_stats(rx_ring, skb);
+
+    ixgbe_rx_hash(rx_ring, rx_desc, skb);
+
+    ixgbe_rx_checksum(rx_ring, rx_desc, skb);
+
+    if (unlikely(flags & IXGBE_FLAG_RX_HWTSTAMP_ENABLED))
+        ixgbe_ptp_rx_hwtstamp(rx_ring, rx_desc, skb);
+
+    if ((dev->features & NETIF_F_HW_VLAN_CTAG_RX) &&
+        ixgbe_test_staterr(rx_desc, IXGBE_RXD_STAT_VP)) {
+        u16 vid = le16_to_cpu(rx_desc->wb.upper.vlan);
+        __vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q), vid);
+    }
+
+    if (ixgbe_test_staterr(rx_desc, IXGBE_RXDADV_STAT_SECP))
+        ixgbe_ipsec_rx(rx_ring, rx_desc, skb);
+
+    /* record Rx queue, or update MACVLAN statistics */
+    if (netif_is_ixgbe(dev))
+        skb_record_rx_queue(skb, rx_ring->queue_index);
+    else
+        macvlan_count_rx(netdev_priv(dev), skb->len + ETH_HLEN, true, false);
+
+    skb->protocol = eth_type_trans(skb, dev);
 }
 ```
 
@@ -12320,7 +12436,7 @@ int tcp4_gro_complete(struct sk_buff *skb, int thoff)
 }
 ```
 
-## mac layer rx
+## dev layer rx
 
 RPS config:
 ```sh
@@ -12328,12 +12444,32 @@ ethtool -n <interface> # Check RSS indirection table
 echo "0xf" > /sys/class/net/<interface>/queues/rx-<N>/rps_cpus # RPS to CPU0-3
 echo "2048" > /sys/class/net/<interface>/queues/rx-<N>/rps_flow_cnt # RFS flows
 echo "4096" > /proc/sys/net/<interface>/rps_sock_flow_entries # Global RFS table
+
+static struct rx_queue_attribute rps_cpus_attribute __ro_after_init
+    = __ATTR(rps_cpus, 0644, show_rps_map, store_rps_map);
+
+static struct rx_queue_attribute rps_dev_flow_table_cnt_attribute __ro_after_init
+    = __ATTR(rps_flow_cnt, 0644,
+        show_rps_dev_flow_table_cnt, store_rps_dev_flow_table_cnt);
 ```
 
+### netif_receive_skb
+
 ```c
-/* netif_receive_skb -> netif_receive_skb_internal ->
- * __netif_receive_skb -> __netif_receive_skb_core */
+
 int netif_receive_skb(struct sk_buff *skb)
+{
+    int ret;
+
+    trace_netif_receive_skb_entry(skb);
+
+    ret = netif_receive_skb_internal(skb);
+    trace_netif_receive_skb_exit(ret);
+
+    return ret;
+}
+
+int netif_receive_skb_internal(struct sk_buff *skb)
 {
     int ret;
 
@@ -12403,14 +12539,23 @@ int netif_receive_skb(struct sk_buff *skb)
         if (sk_memalloc_socks() && skb_pfmemalloc(skb)) {
             unsigned int noreclaim_flag;
 
-            /* PFMEMALLOC skbs are special, they should
-            * - be delivered to SOCK_MEMALLOC sockets only
-            * - stay away from userspace
-            * - have bounded memory usage
-            *
-            * Use PF_MEMALLOC as this saves us from propagating the allocation
-            * context down to all allocation sites. */
-            noreclaim_flag = memalloc_noreclaim_save();
+            /* PFMEMALLOC skbs are special, its memory was
+             * taken from emergency reserves during pressure;
+             * only trusted kernel/MEMALLOC paths should use it
+             *
+             * they should
+             * - be delivered to SOCK_MEMALLOC sockets only
+             * - stay away from userspace
+             * - have bounded memory usage
+             *
+             * Use PF_MEMALLOC as this saves us from propagating the allocation
+             * context down to all allocation sites. */
+            noreclaim_flag = memalloc_noreclaim_save() {
+                return memalloc_flags_save(PF_MEMALLOC) {
+                    unsigned oldflags = ~current->flags & flags;
+           F          return oldflags;
+                }
+            }
             ret = __netif_receive_skb_one_core(skb, true);
             memalloc_noreclaim_restore(noreclaim_flag);
         } else {
@@ -12444,16 +12589,36 @@ int __netif_receive_skb_core(struct sk_buff **pskb, bool pfmemalloc,
     int ret = NET_RX_DROP;
     __be16 type;
 
-    net_timestamp_check(!netdev_tstamp_prequeue, skb);
+    net_timestamp_check(!READ_ONCE(net_hotdata.tstamp_prequeue), skb);
 
     trace_netif_receive_skb(skb);
 
     orig_dev = skb->dev;
 
-    skb_reset_network_header(skb);
-    if (!skb_transport_header_was_set(skb))
-        skb_reset_transport_header(skb);
-    skb_reset_mac_len(skb);
+    skb_reset_network_header(skb) {
+        long offset = skb->data - skb->head;
+
+        DEBUG_NET_WARN_ON_ONCE(offset != (typeof(skb->network_header))offset);
+        skb->network_header = offset;
+    }
+
+    if (!skb_transport_header_was_set(skb)) {
+        skb_reset_transport_header(skb) {
+            long offset = skb->data - skb->head;
+
+            DEBUG_NET_WARN_ON_ONCE(offset != (typeof(skb->transport_header))offset);
+            skb->transport_header = offset;
+        }
+    }
+
+    skb_reset_mac_len(skb) {
+        if (!skb_mac_header_was_set(skb)) {
+            DEBUG_NET_WARN_ON_ONCE(1);
+            skb->mac_len = 0;
+        } else {
+            skb->mac_len = skb->network_header - skb->mac_header;
+        }
+    }
 
     pt_prev = NULL;
 
@@ -12476,8 +12641,15 @@ another_round:
         skb_reset_mac_len(skb);
     }
 
-    if (skb->protocol == cpu_to_be16(ETH_P_8021Q) ||
-        skb->protocol == cpu_to_be16(ETH_P_8021AD)) {
+    if (eth_type_vlan(skb->protocol) {
+        switch (ethertype) {
+        case htons(ETH_P_8021Q):
+        case htons(ETH_P_8021AD):
+            return true;
+        default:
+            return false;
+        }
+    }) {
         skb = skb_vlan_untag(skb);
         if (unlikely(!skb))
             goto out;
@@ -12523,8 +12695,21 @@ skip_taps:
     skb_reset_redirect(skb);
 
 skip_classify:
-    if (pfmemalloc && !skb_pfmemalloc_protocol(skb))
+    if (pfmemalloc && !skb_pfmemalloc_protocol(skb) {
+        switch (skb->protocol) {
+        case htons(ETH_P_ARP):
+        case htons(ETH_P_IP):
+        case htons(ETH_P_IPV6):
+        case htons(ETH_P_8021Q):
+        case htons(ETH_P_8021AD):
+            return true;
+        default:
+            return false;
+        }
+    }) {
+        drop_reason = SKB_DROP_REASON_PFMEMALLOC;
         goto drop;
+    }
 
 /* 4. Vlan handle */
     if (skb_vlan_tag_present(skb)) {
@@ -12678,6 +12863,107 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
+### do_xdp_generic
+
+```c
+```
+
+### deliver_skb.ptype_all
+
+```c
+list_for_each_entry_rcu(ptype, &dev_net_rcu(skb->dev)->ptype_all, list) {
+    if (unlikely(pt_prev))
+        ret = deliver_skb(skb, pt_prev, orig_dev);
+    pt_prev = ptype;
+}
+
+list_for_each_entry_rcu(ptype, &skb->dev->ptype_all, list) {
+    if (unlikely(pt_prev))
+        ret = deliver_skb(skb, pt_prev, orig_dev);
+    pt_prev = ptype;
+}
+
+static int deliver_skb(struct sk_buff *skb,
+               struct packet_type *pt_prev,
+               struct net_device *orig_dev)
+{
+    if (unlikely(skb_orphan_frags_rx(skb, GFP_ATOMIC)))
+        return -ENOMEM;
+    refcount_inc(&skb->users);
+    return pt_prev->func(skb, skb->dev, pt_prev, orig_dev);
+}
+```
+
+### sch_handle_ingress
+
+```c
+struct sk_buff *
+sch_handle_ingress(struct sk_buff *skb, struct packet_type **pt_prev, int *ret,
+           struct net_device *orig_dev, bool *another)
+{
+    struct bpf_mprog_entry *entry = rcu_dereference_bh(skb->dev->tcx_ingress);
+    enum skb_drop_reason drop_reason = SKB_DROP_REASON_TC_INGRESS;
+    struct bpf_net_context __bpf_net_ctx, *bpf_net_ctx;
+    int sch_ret;
+
+    if (!entry)
+        return skb;
+
+    bpf_net_ctx = bpf_net_ctx_set(&__bpf_net_ctx);
+    if (unlikely(*pt_prev)) {
+        *ret = deliver_skb(skb, *pt_prev, orig_dev);
+        *pt_prev = NULL;
+    }
+
+    qdisc_pkt_len_segs_init(skb);
+    tcx_set_ingress(skb, true);
+
+    if (static_branch_unlikely(&tcx_needed_key)) {
+        sch_ret = tcx_run(entry, skb, true);
+        if (sch_ret != TC_ACT_UNSPEC)
+            goto ingress_verdict;
+    }
+    sch_ret = tc_run(tcx_entry(entry), skb, &drop_reason);
+ingress_verdict:
+    switch (sch_ret) {
+    case TC_ACT_REDIRECT:
+        /* skb_mac_header check was done by BPF, so we can safely
+         * push the L2 header back before redirecting to another
+         * netdev. */
+        __skb_push(skb, skb->mac_len);
+        if (skb_do_redirect(skb) == -EAGAIN) {
+            __skb_pull(skb, skb->mac_len);
+            *another = true;
+            break;
+        }
+        *ret = NET_RX_SUCCESS;
+        bpf_net_ctx_clear(bpf_net_ctx);
+        return NULL;
+    case TC_ACT_SHOT:
+        kfree_skb_reason(skb, drop_reason);
+        *ret = NET_RX_DROP;
+        bpf_net_ctx_clear(bpf_net_ctx);
+        return NULL;
+    /* used by tc_run */
+    case TC_ACT_STOLEN:
+    case TC_ACT_QUEUED:
+    case TC_ACT_TRAP:
+        consume_skb(skb);
+        fallthrough;
+    case TC_ACT_CONSUMED:
+        *ret = NET_RX_SUCCESS;
+        bpf_net_ctx_clear(bpf_net_ctx);
+        return NULL;
+    }
+    bpf_net_ctx_clear(bpf_net_ctx);
+
+    return skb;
+}
+```
+
+### nf_ingress
+
+
 ### vlan_do_receive
 
 ```c
@@ -12783,9 +13069,99 @@ int __vlan_insert_inner_tag(struct sk_buff *skb,
 }
 ```
 
-### ref_br_handle_frame
+### rx_handler
 
 [:link: br_handle_frame](#br_handle_frame)
+
+### deliver_skb.ptype_specific
+
+```c
+static inline void deliver_ptype_list_skb(struct sk_buff *skb,
+                      struct packet_type **pt,
+                      struct net_device *orig_dev,
+                      __be16 type,
+                      struct list_head *ptype_list)
+{
+    struct packet_type *ptype, *pt_prev = *pt;
+
+    list_for_each_entry_rcu(ptype, ptype_list, list) {
+        if (ptype->type != type)
+            continue;
+        if (unlikely(pt_prev))
+            deliver_skb(skb, pt_prev, orig_dev);
+        pt_prev = ptype;
+    }
+    *pt = pt_prev;
+}
+```
+
+## mac layer rx
+
+```c
+__be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
+{
+    const unsigned short *sap;
+    const struct ethhdr *eth;
+    __be16 res;
+
+    skb->dev = dev;
+    skb_reset_mac_header(skb) {
+        long offset = skb->data - skb->head;
+
+        DEBUG_NET_WARN_ON_ONCE(offset != (typeof(skb->mac_header))offset);
+        skb->mac_header = offset;
+    }
+
+    eth = eth_skb_pull_mac(skb) {
+        struct ethhdr *eth = (struct ethhdr *)skb->data;
+
+        skb_pull_inline(skb, ETH_HLEN) {
+            return unlikely(len > skb->len) ? NULL : __skb_pull(skb, len) {
+                skb->len -= len;
+                return skb->data += len;
+            }
+        }
+        return eth;
+    }
+    eth_skb_pkt_type(skb, dev) {
+        const struct ethhdr *eth = eth_hdr(skb);
+
+        if (unlikely(!ether_addr_equal_64bits(eth->h_dest, dev->dev_addr))) {
+            if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
+                if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
+                    skb->pkt_type = PACKET_BROADCAST;
+                else
+                    skb->pkt_type = PACKET_MULTICAST;
+            } else {
+                skb->pkt_type = PACKET_OTHERHOST;
+            }
+        }
+    }
+
+    /* Some variants of DSA tagging don't have an ethertype field
+     * at all, so we check here whether one of those tagging
+     * variants has been configured on the receiving interface,
+     * and if so, set skb->protocol without looking at the packet. */
+    if (unlikely(netdev_uses_dsa(dev)))
+        return htons(ETH_P_XDSA);
+
+    if (likely(eth_proto_is_802_3(eth->h_proto)))
+        return eth->h_proto;
+
+    /*      This is a magic hack to spot IPX packets. Older Novell breaks
+     *      the protocol design and runs IPX over 802.3 without an 802.2 LLC
+     *      layer. We look for FFFF which isn't a used 802.2 SSAP/DSAP. This
+     *      won't work for fault tolerant netware but does for the rest.
+     *    We use skb->dev as temporary storage to not hit
+     *    CONFIG_STACKPROTECTOR_STRONG=y costs on some platforms. */
+    sap = skb_header_pointer(skb, 0, sizeof(*sap), &skb->dev);
+    res = (sap && *sap == 0xFFFF) ? htons(ETH_P_802_3) : htons(ETH_P_802_2);
+
+    /* restore skb->dev in case it was mangled by skb_header_pointer(). */
+    skb->dev = dev;
+    return res;
+}
+```
 
 ## ip layer rx
 
