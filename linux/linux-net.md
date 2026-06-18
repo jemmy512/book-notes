@@ -4491,42 +4491,7 @@ int inet_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 
 int inet_send_prepare(struct sock *sk)
 {
-    sock_rps_record_flow(sk) {
-        if (!rfs_is_needed())
-            return;
-
-        _sock_rps_record_flow(sk) {
-            if (sk->sk_state == TCP_ESTABLISHED) {
-                /* This READ_ONCE() is paired with the WRITE_ONCE()
-                * from sock_rps_save_rxhash() and sock_rps_reset_rxhash(). */
-                _sock_rps_record_flow_hash(READ_ONCE(sk->sk_rxhash)) {
-                    rps_tag_ptr tag_ptr;
-
-                    if (!hash)
-                        return;
-                    rcu_read_lock();
-                    tag_ptr = READ_ONCE(net_hotdata.rps_sock_flow_table);
-                    if (tag_ptr) {
-                        rps_record_sock_flow(tag_ptr, hash) {
-                            unsigned int index = hash & rps_tag_to_mask(tag_ptr);
-                            u32 val = hash & ~net_hotdata.rps_cpu_mask;
-                            struct rps_sock_flow_table *table;
-
-                            /* We only give a hint, preemption can change CPU under us */
-                            val |= raw_smp_processor_id();
-
-                            table = rps_tag_to_table(tag_ptr);
-                            /* The following WRITE_ONCE() is paired with the READ_ONCE()
-                            * here, and another one in get_rps_cpu(). */
-                            if (READ_ONCE(table[index].ent) != val)
-                                WRITE_ONCE(table[index].ent, val);
-                        }
-                    }
-                    rcu_read_unlock();
-                }
-            }
-        }
-    }
+    sock_rps_record_flow(sk);
 
     /* We may need to bind the socket. */
     if (data_race(!inet_sk(sk)->inet_num) && !sk->sk_prot->no_autobind && inet_autobind(sk))
@@ -4550,6 +4515,64 @@ static int inet_autobind(struct sock *sk)
     }
     release_sock(sk);
     return 0;
+}
+```
+
+### sock_rps_record_flow
+
+```c
+static inline void sock_rps_record_flow(const struct sock *sk)
+{
+#ifdef CONFIG_RPS
+    if (!rfs_is_needed())
+        return;
+
+    _sock_rps_record_flow(sk);
+#endif
+}
+
+void _sock_rps_record_flow(const struct sock *sk)
+{
+    /* Reading sk->sk_rxhash might incur an expensive cache line
+     * miss.
+     *
+     * TCP_ESTABLISHED does cover almost all states where RFS
+     * might be useful, and is cheaper [1] than testing :
+     *    IPv4: inet_sk(sk)->inet_daddr
+     *    IPv6: ipv6_addr_any(&sk->sk_v6_daddr)
+     * OR    an additional socket flag
+     * [1] : sk_state and sk_prot are in the same cache line. */
+    if (sk->sk_state == TCP_ESTABLISHED) {
+        /* This READ_ONCE() is paired with the WRITE_ONCE()
+         * from sock_rps_save_rxhash() and sock_rps_reset_rxhash(). */
+        _sock_rps_record_flow_hash(READ_ONCE(sk->sk_rxhash)) {
+            rps_tag_ptr tag_ptr;
+
+            if (!hash)
+                return;
+            rcu_read_lock();
+            tag_ptr = READ_ONCE(net_hotdata.rps_sock_flow_table);
+            if (tag_ptr)
+                rps_record_sock_flow(tag_ptr, hash);
+            rcu_read_unlock();
+        }
+    }
+}
+
+static inline void rps_record_sock_flow(rps_tag_ptr tag_ptr, u32 hash)
+{
+    unsigned int index = hash & rps_tag_to_mask(tag_ptr);
+    u32 val = hash & ~net_hotdata.rps_cpu_mask;
+    struct rps_sock_flow_table *table;
+
+    /* We only give a hint, preemption can change CPU under us */
+    val |= raw_smp_processor_id();
+
+    table = rps_tag_to_table(tag_ptr);
+    /* The following WRITE_ONCE() is paired with the READ_ONCE()
+     * here, and another one in get_rps_cpu(). */
+    if (READ_ONCE(table[index].ent) != val)
+        WRITE_ONCE(table[index].ent, val);
 }
 ```
 
@@ -8055,39 +8078,35 @@ const struct header_ops eth_header_ops ____cacheline_aligned = {
 };
 
 int eth_header(struct sk_buff *skb, struct net_device *dev,
-	       unsigned short type,
-	       const void *daddr, const void *saddr, unsigned int len)
+           unsigned short type,
+           const void *daddr, const void *saddr, unsigned int len)
 {
-	struct ethhdr *eth = skb_push(skb, ETH_HLEN);
+    struct ethhdr *eth = skb_push(skb, ETH_HLEN);
 
-	if (type != ETH_P_802_3 && type != ETH_P_802_2)
-		eth->h_proto = htons(type);
-	else
-		eth->h_proto = htons(len);
+    if (type != ETH_P_802_3 && type != ETH_P_802_2)
+        eth->h_proto = htons(type);
+    else
+        eth->h_proto = htons(len);
 
-	/*
-	 *      Set the source hardware address.
-	 */
+    /* Set the source hardware address. */
 
-	if (!saddr)
-		saddr = dev->dev_addr;
-	memcpy(eth->h_source, saddr, ETH_ALEN);
+    if (!saddr)
+        saddr = dev->dev_addr;
+    memcpy(eth->h_source, saddr, ETH_ALEN);
 
-	if (daddr) {
-		memcpy(eth->h_dest, daddr, ETH_ALEN);
-		return ETH_HLEN;
-	}
+    if (daddr) {
+        memcpy(eth->h_dest, daddr, ETH_ALEN);
+        return ETH_HLEN;
+    }
 
-	/*
-	 *      Anyway, the loopback-device should never use this function...
-	 */
+    /* Anyway, the loopback-device should never use this function... */
 
-	if (dev->flags & (IFF_LOOPBACK | IFF_NOARP)) {
-		eth_zero_addr(eth->h_dest);
-		return ETH_HLEN;
-	}
+    if (dev->flags & (IFF_LOOPBACK | IFF_NOARP)) {
+        eth_zero_addr(eth->h_dest);
+        return ETH_HLEN;
+    }
 
-	return -ETH_HLEN;
+    return -ETH_HLEN;
 }
 ```
 
@@ -11108,8 +11127,7 @@ struct softnet_data {
 /* napi_poll -> ixgbe_poll -> */
 int ixgbe_poll(struct napi_struct *napi, int budget)
 {
-    struct ixgbe_q_vector *q_vector =
-                container_of(napi, struct ixgbe_q_vector, napi);
+    struct ixgbe_q_vector *q_vector = container_of(napi, struct ixgbe_q_vector, napi);
     struct ixgbe_adapter *adapter = q_vector->adapter;
     struct ixgbe_ring *ring;
     int per_ring_budget, work_done = 0;
@@ -12487,47 +12505,7 @@ int netif_receive_skb_internal(struct sk_buff *skb)
         int cpu = get_rps_cpu(skb->dev, skb, &rflow);
 
         if (cpu >= 0) {
-            ret = enqueue_to_backlog(skb, cpu, &rflow->last_qtail) {
-                struct softnet_data *sd;
-                unsigned long flags;
-                unsigned int qlen;
-
-                sd = &per_cpu(softnet_data, cpu);
-
-                local_irq_save(flags);
-
-                rps_lock(sd);
-                if (!netif_running(skb->dev))
-                    goto drop;
-
-                qlen = skb_queue_len_lockless(&sd->input_pkt_queue);
-                max_backlog = READ_ONCE(net_hotdata.max_backlog); /* sysctl netdev_max_backlog */
-                if (unlikely(qlen > max_backlog))
-                    goto cpu_backlog_drop;
-
-                backlog_lock_irq_save(sd, &flags);
-                qlen = skb_queue_len(&sd->input_pkt_queue);
-                if (qlen <= max_backlog && !skb_flow_limit(skb, qlen)) {
-                    if (!qlen) {
-                        if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state))
-                            napi_schedule_rps(sd);
-                    }
-                    __skb_queue_tail(&sd->input_pkt_queue, skb);
-                    tail = rps_input_queue_tail_incr(sd);
-                    backlog_unlock_irq_restore(sd, &flags);
-
-                    /* save the tail outside of the critical section */
-                    rps_input_queue_tail_save(qtail, tail);
-                    return NET_RX_SUCCESS;
-                }
-
-            cpu_backlog_drop:
-                atomic_inc(&sd->dropped);
-            bad_dev:
-                dev_core_stats_rx_dropped_inc(skb->dev);
-                kfree_skb_reason(skb, reason);
-                return NET_RX_DROP;
-            }
+            ret = enqueue_to_backlog(skb, cpu, &rflow->last_qtail);
             rcu_read_unlock();
             return ret;
         }
@@ -12863,6 +12841,284 @@ struct list_head *ptype_head(const struct packet_type *pt)
 }
 ```
 
+#### enqueue_to_backlog
+
+```c
+int enqueue_to_backlog(struct sk_buff *skb, int cpu, unsigned int *qtail)
+{
+    enum skb_drop_reason reason;
+    struct softnet_data *sd;
+    unsigned long flags;
+    unsigned int qlen;
+    int max_backlog;
+    u32 tail;
+
+    reason = SKB_DROP_REASON_DEV_READY;
+    if (unlikely(!netif_running(skb->dev)))
+        goto bad_dev;
+
+    sd = &per_cpu(softnet_data, cpu);
+
+    qlen = skb_queue_len_lockless(&sd->input_pkt_queue);
+    max_backlog = READ_ONCE(net_hotdata.max_backlog);
+    if (unlikely(qlen > max_backlog) || skb_flow_limit(skb, qlen, max_backlog))
+        goto cpu_backlog_drop;
+
+    backlog_lock_irq_save(sd, &flags);
+    qlen = skb_queue_len(&sd->input_pkt_queue);
+    if (likely(qlen <= max_backlog)) {
+        if (!qlen) {
+            /* Schedule NAPI for backlog device. We can use
+             * non atomic operation as we own the queue lock. */
+            if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state))
+                napi_schedule_rps(sd);
+        }
+        __skb_queue_tail(&sd->input_pkt_queue, skb);
+        tail = rps_input_queue_tail_incr(sd) {
+            return ++sd->input_queue_tail;
+        }
+        backlog_unlock_irq_restore(sd, flags);
+
+        /* save the tail outside of the critical section */
+        rps_input_queue_tail_save(qtail, tail) {
+            WRITE_ONCE(*dest, tail);
+        }
+        return NET_RX_SUCCESS;
+    }
+
+    backlog_unlock_irq_restore(sd, flags);
+
+cpu_backlog_drop:
+    reason = SKB_DROP_REASON_CPU_BACKLOG;
+    numa_drop_add(&sd->drop_counters, 1);
+bad_dev:
+    dev_core_stats_rx_dropped_inc(skb->dev);
+    kfree_skb_reason(skb, reason);
+    return NET_RX_DROP;
+}
+
+bool skb_flow_limit(struct sk_buff *skb, unsigned int qlen,
+               int max_backlog)
+{
+    unsigned int old_flow, new_flow;
+    const struct softnet_data *sd;
+    struct sd_flow_limit *fl;
+
+    if (likely(qlen < (max_backlog >> 1)))
+        return false;
+
+    sd = this_cpu_ptr(&softnet_data);
+
+    rcu_read_lock();
+    fl = rcu_dereference(sd->flow_limit);
+    if (fl) {
+        new_flow = hash_32(skb_get_hash(skb), fl->log_buckets);
+        old_flow = fl->history[fl->history_head];
+        fl->history[fl->history_head] = new_flow;
+
+        fl->history_head++;
+        fl->history_head &= FLOW_LIMIT_HISTORY - 1;
+
+        if (likely(fl->buckets[old_flow]))
+            fl->buckets[old_flow]--;
+
+        if (++fl->buckets[new_flow] > (FLOW_LIMIT_HISTORY >> 1)) {
+            /* Pairs with READ_ONCE() in softnet_seq_show() */
+            WRITE_ONCE(fl->count, fl->count + 1);
+            rcu_read_unlock();
+            return true;
+        }
+    }
+    rcu_read_unlock();
+
+    return false;
+}
+```
+
+### get_rps_cpu
+
+```c
+   Application (recvmsg)                  NIC RX path (softirq)
+         |                                       |
+         |                                       |
+  rps_sock_flow_table              rps_flow_table[per rx-queue]
+  (global, 1 system-wide)          (local, 1 per NIC hw queue)
+  |-------------------|            |--------------------------|
+  | flow → desired    |            | flow → current steering  |
+  | CPU (where app    |            | CPU + last_qtail for     |
+  | last did recvmsg) |            | in-order safety          |
+  |-------------------|            |--------------------------|
+            |                                 |
+            |---------- get_rps_cpu() --------|
+                       reconciles both
+```
+
+```c
+int get_rps_cpu(struct net_device *dev, struct sk_buff *skb,
+               struct rps_dev_flow **rflowp)
+{
+    struct netdev_rx_queue *rxqueue = dev->_rx;
+    rps_tag_ptr global_tag_ptr, q_tag_ptr;
+    struct rps_map *map;
+    int cpu = -1;
+    u32 tcpu;
+    u32 hash;
+
+    if (skb_rx_queue_recorded(skb)) { /* skb->queue_mapping != 0; */
+        u16 index = skb_get_rx_queue(skb);
+
+        if (unlikely(index >= dev->real_num_rx_queues)) {
+            WARN_ONCE(dev->real_num_rx_queues > 1,
+                  "%s received packet on queue %u, but number "
+                  "of RX queues is %u\n",
+                  dev->name, index, dev->real_num_rx_queues);
+            goto done;
+        }
+        rxqueue += index;
+    }
+
+    /* Avoid computing hash if RFS/RPS is not active for this rxqueue */
+
+    q_tag_ptr = READ_ONCE(rxqueue->rps_flow_table);
+    map = rcu_dereference(rxqueue->rps_map);
+    if (!q_tag_ptr && !map)
+        goto done;
+
+    skb_reset_network_header(skb);
+    hash = skb_get_hash(skb);
+    if (!hash)
+        goto done;
+
+    global_tag_ptr = READ_ONCE(net_hotdata.rps_sock_flow_table);
+    if (q_tag_ptr && global_tag_ptr) {
+        struct rps_sock_flow_table *sock_flow_table;
+        struct rps_dev_flow *flow_table;
+        struct rps_dev_flow *rflow;
+        u32 next_cpu;
+        u32 flow_id;
+        u32 ident;
+
+        /* First check into global flow table if there is a match.
+         * This READ_ONCE() pairs with WRITE_ONCE() from rps_record_sock_flow(). */
+        flow_id = hash & rps_tag_to_mask(global_tag_ptr);
+        sock_flow_table = rps_tag_to_table(global_tag_ptr);
+        ident = READ_ONCE(sock_flow_table[flow_id].ent);
+        if ((ident ^ hash) & ~net_hotdata.rps_cpu_mask)
+            goto try_rps;
+
+        next_cpu = ident & net_hotdata.rps_cpu_mask;
+
+        /* OK, now we know there is a match,
+         * we can look at the local (per receive queue) flow table */
+        flow_id = rfs_slot(hash, q_tag_ptr);
+        flow_table = rps_tag_to_table(q_tag_ptr);
+        rflow = flow_table + flow_id;
+        tcpu = rflow->cpu;
+
+        /* If the desired CPU (where last recvmsg was done) is
+         * different from current CPU (one in the rx-queue flow
+         * table entry), switch if one of the following holds:
+         *   - Current CPU is unset (>= nr_cpu_ids).
+         *   - Current CPU is offline.
+         *   - The current CPU's queue tail has advanced beyond the
+         *     last packet that was enqueued using this table entry.
+         *     This guarantees that all previous packets for the flow
+         *     have been dequeued, thus preserving in order delivery. */
+        if (unlikely(tcpu != next_cpu) &&
+            (tcpu >= nr_cpu_ids || !cpu_online(tcpu) ||
+             ((int)(READ_ONCE(per_cpu(softnet_data, tcpu).input_queue_head) -
+              rflow->last_qtail)) >= 0)) {
+            tcpu = next_cpu;
+            rflow = set_rps_cpu(dev, skb, rflow, next_cpu, hash);
+        }
+
+        if (tcpu < nr_cpu_ids && cpu_online(tcpu)) {
+            *rflowp = rflow;
+            cpu = tcpu;
+            goto done;
+        }
+    }
+
+try_rps:
+
+    if (map) {
+        tcpu = map->cpus[reciprocal_scale(hash, map->len)];
+        if (cpu_online(tcpu)) {
+            cpu = tcpu;
+            goto done;
+        }
+    }
+
+done:
+    return cpu;
+}
+
+static struct rps_dev_flow *
+set_rps_cpu(struct net_device *dev, struct sk_buff *skb,
+        struct rps_dev_flow *rflow, u16 next_cpu, u32 hash)
+{
+    if (next_cpu < nr_cpu_ids) {
+        u32 head;
+        struct netdev_rx_queue *rxqueue;
+        struct rps_dev_flow *flow_table;
+        struct rps_dev_flow *old_rflow;
+        struct rps_dev_flow *tmp_rflow;
+        rps_tag_ptr q_tag_ptr;
+        unsigned int tmp_cpu;
+        u16 rxq_index;
+        u32 flow_id;
+        int rc;
+
+        /* Should we steer this flow to a different hardware queue? */
+        if (!skb_rx_queue_recorded(skb) || !dev->rx_cpu_rmap || !(dev->features & NETIF_F_NTUPLE))
+            goto out;
+        rxq_index = cpu_rmap_lookup_index(dev->rx_cpu_rmap, next_cpu);
+        if (rxq_index == skb_get_rx_queue(skb))
+            goto out;
+
+        rxqueue = dev->_rx + rxq_index;
+        q_tag_ptr = READ_ONCE(rxqueue->rps_flow_table);
+        if (!q_tag_ptr)
+            goto out;
+
+        flow_id = rfs_slot(hash, q_tag_ptr);
+        flow_table = rps_tag_to_table(q_tag_ptr);
+        tmp_rflow = flow_table + flow_id;
+        tmp_cpu = READ_ONCE(tmp_rflow->cpu);
+
+        if (READ_ONCE(tmp_rflow->filter) != RPS_NO_FILTER) {
+            if (rps_flow_is_active(tmp_rflow, rps_tag_to_log(q_tag_ptr), tmp_cpu)) {
+                if (hash != READ_ONCE(tmp_rflow->hash) ||
+                    next_cpu == tmp_cpu)
+                    goto out;
+            }
+        }
+
+        rc = dev->netdev_ops->ndo_rx_flow_steer(dev, skb, rxq_index, flow_id);
+        if (rc < 0)
+            goto out;
+
+        old_rflow = rflow;
+        rflow = tmp_rflow;
+        WRITE_ONCE(rflow->filter, rc);
+        WRITE_ONCE(rflow->hash, hash);
+
+        if (old_rflow->filter == rc)
+            WRITE_ONCE(old_rflow->filter, RPS_NO_FILTER);
+    out:
+        head = READ_ONCE(per_cpu(softnet_data, next_cpu).input_queue_head);
+        rps_input_queue_tail_save(&rflow->last_qtail, head) {
+            #ifdef CONFIG_RPS
+                WRITE_ONCE(*dest, tail);
+            #endif
+        }
+    }
+
+    WRITE_ONCE(rflow->cpu, next_cpu);
+    return rflow;
+}
+```
+
 ### do_xdp_generic
 
 ```c
@@ -13170,20 +13426,18 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
   2. route
   2. defragment
   3. in nf */
-int ip_rcv(struct sk_buff *skb, struct net_device *dev,
-  struct packet_type *pt, struct net_device *orig_dev)
+int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt,
+       struct net_device *orig_dev)
 {
-    const struct iphdr *iph;
-    struct net *net;
-    u32 len;
+    struct net *net = dev_net(dev);
 
-    net = dev_net(dev);
-    iph = ip_hdr(skb);
-    len = ntohs(iph->tot_len);
-    skb->transport_header = skb->network_header + iph->ihl*4;
+    skb = ip_rcv_core(skb, net);
+    if (skb == NULL)
+        return NET_RX_DROP;
 
     return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
-        net, NULL, skb, dev, NULL, ip_rcv_finish);
+               net, NULL, skb, dev, NULL,
+               ip_rcv_finish);
 }
 
 int ip_rcv_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
@@ -14585,31 +14839,7 @@ int inet_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
     int err;
 
     if (likely(!(flags & MSG_ERRQUEUE))) {
-        sock_rps_record_flow(sk) {
-            if (static_branch_unlikely(&rfs_needed)) {
-                if (sk->sk_state == TCP_ESTABLISHED) {
-                    sock_rps_record_flow_hash(READ_ONCE(sk->sk_rxhash)) { /* Used at get_rps_cpu */
-                        struct rps_sock_flow_table *sock_flow_table;
-
-                        if (!hash)
-                            return;
-                        rcu_read_lock();
-                        sock_flow_table = rcu_dereference(net_hotdata.rps_sock_flow_table);
-                        if (sock_flow_table) {
-                            rps_record_sock_flow(sock_flow_table, hash) {
-                                unsigned int index = hash & table->mask;
-                                u32 val = hash & ~net_hotdata.rps_cpu_mask;
-
-                                val |= raw_smp_processor_id();
-                                if (READ_ONCE(table->ents[index]) != val)
-                                    WRITE_ONCE(table->ents[index], val);
-                            }
-                        }
-                        rcu_read_unlock();
-                    }
-                }
-            }
-        }
+        sock_rps_record_flow(sk);
     }
 
     err = sk->sk_prot->recvmsg(sk, msg, size, flags & MSG_DONTWAIT,
