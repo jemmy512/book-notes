@@ -84,68 +84,68 @@
 
 ```c
 struct socket_alloc {
-  struct socket socket;
-  struct inode  vfs_inode;
+    struct socket socket;
+    struct inode  vfs_inode;
 };
 
 struct socket {
-  socket_state            state;
-  short                   type;
-  unsigned long           flags;
+    socket_state            state;
+    short                   type;
+    unsigned long           flags;
 
-  struct file             *file;
-  struct sock             *sk;
-  struct socket_wq        wq;
-  const struct proto_ops  *ops;
+    struct file             *file;
+    struct sock             *sk;
+    struct socket_wq        wq;
+    const struct proto_ops  *ops;
 };
 
 struct sock {
-  struct sock_common    __sk_common;
-  struct sk_buff        *sk_rx_skb_cache;
+    struct sock_common    __sk_common;
+    struct sk_buff        *sk_rx_skb_cache;
 
-  struct page_frag      sk_frag; /* copy user space data to this page */
-  int                   sk_sndbuf; /* size of send buffer in bytes */
-  int                   sk_rcvbuf; /* size of receive buffer in bytes*/
-  struct sk_buff_head   sk_receive_queue;  /* incoming packets */
-  struct sk_buff_head   sk_write_queue;    /* outgoing Packets */
+    struct page_frag      sk_frag; /* copy user space data to this page */
+    int                   sk_sndbuf; /* size of send buffer in bytes */
+    int                   sk_rcvbuf; /* size of receive buffer in bytes*/
+    struct sk_buff_head   sk_receive_queue;  /* incoming packets */
+    struct sk_buff_head   sk_write_queue;    /* outgoing Packets */
 
-  u32                   sk_ack_backlog;   /* current listen backlog */
-  u32                   sk_max_ack_backlog; /* listen backlog set in listen() */
+    u32                   sk_ack_backlog;   /* current listen backlog */
+    u32                   sk_max_ack_backlog; /* listen backlog set in listen() */
 
 #define sk_nulls_node   __sk_common.skc_nulls_node; /* main hash linkage for TCP/UDP/UDP-Lite protocol */
 
-  union {
-    struct sk_buff    *sk_send_head;
-    struct rb_root    tcp_rtx_queue; /* re-transmit queue */
-  };
+    union {
+        struct sk_buff    *sk_send_head;
+        struct rb_root    tcp_rtx_queue; /* re-transmit queue */
+    };
 
-  struct {
-    atomic_t          rmem_alloc;
-    int               len;
-    struct sk_buff    *head;
-    struct sk_buff    *tail;
-  } sk_backlog;
+    struct {
+        atomic_t          rmem_alloc;
+        int               len;
+        struct sk_buff    *head;
+        struct sk_buff    *tail;
+    } sk_backlog;
 
-  struct sk_filter    *sk_filter;
+    struct sk_filter    *sk_filter;
 
-  union {
-    struct socket_wq  *sk_wq;     /* private: */
-    struct socket_wq  *sk_wq_raw; /* public: */
-  };
+    union {
+        struct socket_wq  *sk_wq;     /* private: */
+        struct socket_wq  *sk_wq_raw; /* public: */
+    };
 
-  struct dst_entry    *sk_rx_dst;
-  struct dst_entry    *sk_dst_cache;
+    struct dst_entry    *sk_rx_dst;
+    struct dst_entry    *sk_dst_cache;
 
-  unsigned int        sk_ll_usec;
-  /* ===== mostly read cache line ===== */
-  unsigned int        sk_napi_id; /* set by sk_mark_napi_id */
+    unsigned int        sk_ll_usec;
+    /* ===== mostly read cache line ===== */
+    unsigned int        sk_napi_id; /* set by sk_mark_napi_id */
 };
 
 struct socket_wq {
-  wait_queue_head_t      wait;
-  struct fasync_struct   *fasync_list;
-  unsigned long          flags;
-  struct rcu_head        rcu;
+    wait_queue_head_t      wait;
+    struct fasync_struct   *fasync_list;
+    unsigned long          flags;
+    struct rcu_head        rcu;
 };
 
 typedef struct wait_queue_head {
@@ -280,6 +280,32 @@ struct inet_sock {
 
 # socket
 
+```c
+struct sock_common          ← shared header (hash, ports, state, family)
+    |
+    ▼
+struct sock                 ← generic: rx/tx queues, sk_prot, callbacks
+    |
+    ▼
+struct inet_sock            ← IPv4/IPv6: src/dst addr, ports, TTL, TOS, multicast, corking
+    |
+    |--► struct udp_sock         (UDP: embeds inet_sock directly)
+    |
+    |--► struct inet_connection_sock   (connection-oriented:  accept queue, retransmit/delack/keepalive timers, congestion ops)
+        |
+        |--► struct tcp_sock  (TCP: cwnd, seq numbers, retransmit, etc.)
+
+struct sock_common
+    |
+    ▼
+struct inet_timewait_sock
+
+
+struct sock_common
+    |
+    ▼
+struct request_sock         ← mini sock to represent a connection request
+```
 
 ```c
 socket() {
@@ -6471,6 +6497,9 @@ int __ip_queue_xmit(struct sock *sk, struct sk_buff *skb, struct flowi *fl, __u8
 
 /* 2. build IP header */
 packet_routed:
+    if (inet_opt && inet_opt->opt.is_strictroute && rt->rt_uses_gateway)
+        goto no_route;
+
     /* OK, we know where to send it, allocate and build IP header.
      * skb_push decrements the 'skb->data' pointer */
     skb_push(skb, sizeof(struct iphdr) + (inet_opt ? inet_opt->opt.optlen : 0)) {
@@ -6592,7 +6621,7 @@ int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 }
 ```
 
-### skb_gso_segment
+### ip_finish_output_gso
 
 ```c
 int ip_finish_output_gso(struct net *net, struct sock *sk,
@@ -7624,7 +7653,6 @@ fail:
 ### ip_finish_output2
 
 ```c
-/* ip_finish_output -> */
 int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
     struct dst_entry *dst = skb_dst(skb);
@@ -7761,33 +7789,72 @@ struct neighbour *neigh_create(struct neigh_table *tbl,
     return __neigh_create(tbl, pkey, dev, true);
 }
 
-struct neighbour *__neigh_create(struct neigh_table *tbl,
-  const void *pkey, struct net_device *dev, bool want_ref)
+struct neighbour *__neigh_create(struct neigh_table *tbl, const void *pkey,
+                 struct net_device *dev, bool want_ref)
 {
-    u32 hash_val;
-    int key_len = tbl->key_len;
-    int error;
-    struct neighbour *n1, *rc, *n = neigh_alloc(tbl, dev);
+    bool exempt_from_gc = !!(dev->flags & IFF_LOOPBACK);
+
+    return ___neigh_create(tbl, pkey, dev, 0, exempt_from_gc, want_ref);
+}
+
+static struct neighbour *
+___neigh_create(struct neigh_table *tbl, const void *pkey,
+        struct net_device *dev, u32 flags,
+        bool exempt_from_gc, bool want_ref)
+{
+    u32 hash_val, key_len = tbl->key_len;
+    struct neighbour *n1, *rc, *n;
     struct neigh_hash_table *nht;
+    int error;
+
+    n = neigh_alloc(tbl, dev, flags, exempt_from_gc);
+    trace_neigh_create(tbl, dev, pkey, n, exempt_from_gc);
+    if (!n) {
+        rc = ERR_PTR(-ENOBUFS);
+        goto out;
+    }
 
     memcpy(n->primary_key, pkey, key_len);
     n->dev = dev;
-    dev_hold(dev);
+    netdev_hold(dev, &n->dev_tracker, GFP_ATOMIC);
 
     /* Protocol specific setup. */
     if (tbl->constructor && (error = tbl->constructor(n)) < 0) {
-
+        rc = ERR_PTR(error);
+        goto out_neigh_release;
     }
+
+    if (dev->netdev_ops->ndo_neigh_construct) {
+        error = dev->netdev_ops->ndo_neigh_construct(dev, n);
+        if (error < 0) {
+            rc = ERR_PTR(error);
+            goto out_neigh_release;
+        }
+    }
+
+    /* Device specific setup. */
+    if (n->parms->neigh_setup && (error = n->parms->neigh_setup(n)) < 0) {
+        rc = ERR_PTR(error);
+        goto out_neigh_release;
+    }
+
+    n->confirmed = jiffies - (NEIGH_VAR(n->parms, BASE_REACHABLE_TIME) << 1);
+
+    spin_lock_bh(&tbl->lock);
+    nht = rcu_dereference_protected(tbl->nht, lockdep_is_held(&tbl->lock));
 
     if (atomic_read(&tbl->entries) > (1 << nht->hash_shift))
         nht = neigh_hash_grow(tbl, nht->hash_shift + 1);
 
-    hash_val = tbl->hash(pkey, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
+    hash_val = tbl->hash(n->primary_key, dev, nht->hash_rnd) >> (32 - nht->hash_shift);
 
-    for (n1 = rcu_dereference_protected(nht->hash_buckets[hash_val], lockdep_is_held(&tbl->lock));
-         n1 != NULL;
-         n1 = rcu_dereference_protected(n1->next, lockdep_is_held(&tbl->lock))) {
-        if (dev == n1->dev && !memcmp(n1->primary_key, pkey, key_len)) {
+    if (n->parms->dead) {
+        rc = ERR_PTR(-EINVAL);
+        goto out_tbl_unlock;
+    }
+
+    neigh_for_each_in_bucket(n1, &nht->hash_heads[hash_val]) {
+        if (dev == n1->dev && !memcmp(n1->primary_key, n->primary_key, key_len)) {
             if (want_ref)
                 neigh_hold(n1);
             rc = n1;
@@ -7795,10 +7862,29 @@ struct neighbour *__neigh_create(struct neigh_table *tbl,
         }
     }
 
-    rcu_assign_pointer(n->next,
-      rcu_dereference_protected(nht->hash_buckets[hash_val],
-        lockdep_is_held(&tbl->lock)));
-    rcu_assign_pointer(nht->hash_buckets[hash_val], n);
+    n->dead = 0;
+    if (!exempt_from_gc)
+        list_add_tail(&n->gc_list, &n->tbl->gc_list);
+    if (n->flags & NTF_MANAGED)
+        list_add_tail(&n->managed_list, &n->tbl->managed_list);
+    if (want_ref)
+        neigh_hold(n);
+    hlist_add_head_rcu(&n->hash, &nht->hash_heads[hash_val]);
+
+    hlist_add_head_rcu(&n->dev_list, neigh_get_dev_table(dev, tbl->family));
+
+    spin_unlock_bh(&tbl->lock);
+    neigh_dbg(2, "neigh %p is created\n", n);
+    rc = n;
+out:
+    return rc;
+out_tbl_unlock:
+    spin_unlock_bh(&tbl->lock);
+out_neigh_release:
+    if (!exempt_from_gc)
+        atomic_dec(&tbl->gc_entries);
+    neigh_release(n);
+    goto out;
 }
 
 struct neighbour *neigh_alloc(struct neigh_table *tbl, struct net_device *dev)
@@ -7814,11 +7900,11 @@ struct neighbour *neigh_alloc(struct neigh_table *tbl, struct net_device *dev)
     __skb_queue_head_init(&n->arp_queue);
     rwlock_init(&n->lock);
     seqlock_init(&n->ha_lock);
-    n->updated    = n->used = now;
+    n->updated      = n->used = now;
     n->nud_state    = NUD_NONE;
-    n->output    = neigh_blackhole;
+    n->output       = neigh_blackhole;
     seqlock_init(&n->hh.hh_lock);
-    n->parms    = neigh_parms_clone(&tbl->parms);
+    n->parms        = neigh_parms_clone(&tbl->parms);
     setup_timer(&n->timer, neigh_timer_handler, (unsigned long)n);
 
     NEIGH_CACHE_STAT_INC(tbl, allocs);
@@ -16494,11 +16580,13 @@ struct net_bridge_port {
 };
 
 const struct net_device_ops br_netdev_ops = {
-    .ndo_open     = br_dev_open,
-    .ndo_stop     = br_dev_stop,
-    .ndo_init     = br_dev_init,
-    .ndo_do_ioctl = br_dev_ioctl,
-    .ndo_start_xmit   = br_dev_xmit,
+    .ndo_open           = br_dev_open,
+    .ndo_stop           = br_dev_stop,
+    .ndo_init           = br_dev_init,
+    .ndo_do_ioctl       = br_dev_ioctl,
+    .ndo_start_xmit     = br_dev_xmit,
+    .ndo_add_slave      = br_add_slave,
+    .ndo_fdb_add        = br_fdb_add,
 };
 ```
 
@@ -16527,20 +16615,79 @@ int br_add_bridge(struct net *net, const char *name)
 ## br_add_if
 
 ```c
-int br_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+int br_ioctl_stub(struct net *net, unsigned int cmd, void __user *uarg)
 {
-    struct net_bridge *br = netdev_priv(dev);
+    int ret = -EOPNOTSUPP;
+    struct ifreq ifr;
 
-    switch (cmd) {
-    case SIOCDEVPRIVATE:
-        return old_dev_ioctl(dev, rq, cmd);
+    if (cmd == SIOCBRADDIF || cmd == SIOCBRDELIF) {
+        void __user *data;
+        char *colon;
 
-    case SIOCBRADDIF:
-    case SIOCBRDELIF:
-        return add_del_if(br, rq->ifr_ifindex, cmd == SIOCBRADDIF);
+        if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
+            return -EPERM;
+
+        if (get_user_ifreq(&ifr, &data, uarg))
+            return -EFAULT;
+
+        ifr.ifr_name[IFNAMSIZ - 1] = 0;
+        colon = strchr(ifr.ifr_name, ':');
+        if (colon)
+            *colon = 0;
     }
 
-    return -EOPNOTSUPP;
+    rtnl_lock();
+
+    switch (cmd) {
+    case SIOCGIFBR:
+    case SIOCSIFBR:
+        ret = old_deviceless(net, uarg);
+        break;
+    case SIOCBRADDBR:
+    case SIOCBRDELBR:
+    {
+        char buf[IFNAMSIZ];
+
+        if (!ns_capable(net->user_ns, CAP_NET_ADMIN)) {
+            ret = -EPERM;
+            break;
+        }
+
+        if (copy_from_user(buf, uarg, IFNAMSIZ)) {
+            ret = -EFAULT;
+            break;
+        }
+
+        buf[IFNAMSIZ-1] = 0;
+        if (cmd == SIOCBRADDBR)
+            ret = br_add_bridge(net, buf);
+        else
+            ret = br_del_bridge(net, buf);
+    }
+        break;
+    case SIOCBRADDIF:
+    case SIOCBRDELIF:
+    {
+        struct net_device *dev;
+
+        dev = __dev_get_by_name(net, ifr.ifr_name);
+        if (!dev || !netif_device_present(dev)) {
+            ret = -ENODEV;
+            break;
+        }
+        if (!netif_is_bridge_master(dev)) {
+            ret = -EOPNOTSUPP;
+            break;
+        }
+
+        ret = add_del_if(netdev_priv(dev), ifr.ifr_ifindex, cmd == SIOCBRADDIF);
+    }
+        break;
+    }
+
+    rtnl_unlock();
+
+    return ret;
 }
 
 int add_del_if(struct net_bridge *br, int ifindex, int isadd)
@@ -16565,132 +16712,178 @@ int add_del_if(struct net_bridge *br, int ifindex, int isadd)
 }
 
 int br_add_if(struct net_bridge *br, struct net_device *dev,
-        struct netlink_ext_ack *extack)
+          struct netlink_ext_ack *extack)
 {
-  struct net_bridge_port *p;
-  int err = 0;
-  unsigned br_hr, dev_hr;
-  bool changed_addr, fdb_synced = false;
+    struct net_bridge_port *p;
+    int err = 0;
+    unsigned br_hr, dev_hr;
+    bool changed_addr, fdb_synced = false;
 
-  /* No bridging of bridges */
-  if (dev->netdev_ops->ndo_start_xmit == br_dev_xmit) {
-    NL_SET_ERR_MSG(extack, "Can not enslave a bridge to a bridge");
-    return -ELOOP;
-  }
+    /* Don't allow bridging non-ethernet like devices. */
+    if ((dev->flags & IFF_LOOPBACK) ||
+        dev->type != ARPHRD_ETHER || dev->addr_len != ETH_ALEN ||
+        !is_valid_ether_addr(dev->dev_addr))
+        return -EINVAL;
 
-  /* Device has master upper dev */
-  if (netdev_master_upper_dev_get(dev))
-    return -EBUSY;
+    /* No bridging of bridges */
+    if (dev->netdev_ops->ndo_start_xmit == br_dev_xmit) {
+        NL_SET_ERR_MSG(extack,
+                   "Can not enslave a bridge to a bridge");
+        return -ELOOP;
+    }
 
-  /* No bridging devices that dislike that (e.g. wireless) */
-  if (dev->priv_flags & IFF_DONT_BRIDGE) {
-    NL_SET_ERR_MSG(extack, "Device does not allow enslaving to a bridge");
-    return -EOPNOTSUPP;
-  }
+    /* Device has master upper dev */
+    if (netdev_master_upper_dev_get(dev))
+        return -EBUSY;
 
-  p = new_nbp(br, dev);
+    /* No bridging devices that dislike that (e.g. wireless) */
+    if (dev->priv_flags & IFF_DONT_BRIDGE) {
+        NL_SET_ERR_MSG(extack,
+                   "Device does not allow enslaving to a bridge");
+        return -EOPNOTSUPP;
+    }
 
-  call_netdevice_notifiers(NETDEV_JOIN, dev);
+    /* Creates a net_bridge_port struct linking dev to br */
+    p = new_nbp(br, dev);
+    if (IS_ERR(p))
+        return PTR_ERR(p);
 
-  err = dev_set_allmulti(dev, 1);
+    call_netdevice_notifiers(NETDEV_JOIN, dev);
 
-  err = kobject_init_and_add(&p->kobj, &brport_ktype, &(dev->dev.kobj),
-           SYSFS_BRIDGE_PORT_ATTR);
-  if (err)
-    goto err2;
+    err = dev_set_allmulti(dev, 1);
+    if (err) {
+        br_multicast_del_port(p);
+        netdev_put(dev, &p->dev_tracker);
+        kfree(p);    /* kobject not yet init'd, manually free */
+        goto err1;
+    }
 
-  err = br_sysfs_addif(p);
-  if (err)
-    goto err2;
+    err = kobject_init_and_add(&p->kobj, &brport_ktype, &(dev->dev.kobj),
+                   SYSFS_BRIDGE_PORT_ATTR);
+    if (err)
+        goto err2;
 
-  err = br_netpoll_enable(p);
-  if (err)
-    goto err3;
+    err = br_sysfs_addif(p);
+    if (err)
+        goto err2;
 
-  err = netdev_rx_handler_register(dev, br_handle_frame, p);
-  if (err)
-    goto err4;
+    err = br_netpoll_enable(p);
+    if (err)
+        goto err3;
 
-  dev->priv_flags |= IFF_BRIDGE_PORT;
+    ret = br_get_rx_handler(dev) {
+        if (netdev_uses_dsa(dev))
+            return br_handle_frame_dummy;
 
-  err = netdev_master_upper_dev_link(dev, br->dev, NULL, NULL, extack);
-  if (err)
-    goto err5;
+        return br_handle_frame;
+    }
+    err = netdev_rx_handler_register(dev, ret, p) {
+        if (netdev_is_rx_handler_busy(dev))
+            return -EBUSY;
 
-  err = nbp_switchdev_mark_set(p);
-  if (err)
-    goto err6;
+        if (dev->priv_flags & IFF_NO_RX_HANDLER)
+            return -EINVAL;
 
-  dev_disable_lro(dev);
+        /* Note: rx_handler_data must be set before rx_handler */
+        rcu_assign_pointer(dev->rx_handler_data, rx_handler_data);
+        rcu_assign_pointer(dev->rx_handler, rx_handler);
 
-  list_add_rcu(&p->list, &br->port_list);
+        return 0;
+    }
+    if (err)
+        goto err4;
 
-  nbp_update_port_count(br);
-  if (!br_promisc_port(p) && (p->dev->priv_flags & IFF_UNICAST_FLT)) {
-    fdb_synced = br_fdb_sync_static(br, p) == 0;
-    if (!fdb_synced)
-      netdev_err(dev, "failed to sync bridge static fdb addresses to this port\n");
-  }
+    dev->priv_flags |= IFF_BRIDGE_PORT;
 
-  netdev_update_features(br->dev);
+    err = netdev_master_upper_dev_link(dev, br->dev, NULL, NULL, extack);
+    if (err)
+        goto err5;
 
-  br_hr = br->dev->needed_headroom;
-  dev_hr = netdev_get_fwd_headroom(dev);
-  if (br_hr < dev_hr)
-    update_headroom(br, dev_hr);
-  else
-    netdev_set_rx_headroom(dev, br_hr);
+    dev_disable_lro(dev);
 
-  if (br_fdb_insert(br, p, dev->dev_addr, 0))
-    netdev_err(dev, "failed insert local address bridge forwarding table\n");
+    list_add_rcu(&p->list, &br->port_list);
 
-  err = nbp_vlan_init(p);
-  if (err) {
-    netdev_err(dev, "failed to initialize vlan filtering on this port\n");
-    goto err7;
-  }
+    nbp_update_port_count(br);
+    if (!br_promisc_port(p) && (p->dev->priv_flags & IFF_UNICAST_FLT)) {
+        /* When updating the port count we also update all ports'
+         * promiscuous mode.
+         * A port leaving promiscuous mode normally gets the bridge's
+         * fdb synced to the unicast filter (if supported), however,
+         * `br_port_clear_promisc` does not distinguish between
+         * non-promiscuous ports and *new* ports, so we need to
+         * sync explicitly here. */
+        fdb_synced = br_fdb_sync_static(br, p) == 0;
+        if (!fdb_synced)
+            netdev_err(dev, "failed to sync bridge static fdb addresses to this port\n");
+    }
 
-  spin_lock_bh(&br->lock);
-  changed_addr = br_stp_recalculate_bridge_id(br);
+    br_hr = br->dev->needed_headroom;
+    dev_hr = netdev_get_fwd_headroom(dev);
+    if (br_hr < dev_hr)
+        update_headroom(br, dev_hr);
+    else
+        netdev_set_rx_headroom(dev, br_hr);
 
-  if (netif_running(dev) && netif_oper_up(dev) && (br->dev->flags & IFF_UP))
-    br_stp_enable_port(p);
-  spin_unlock_bh(&br->lock);
+    if (br_fdb_add_local(br, p, dev->dev_addr, 0))
+        netdev_err(dev, "failed insert local address bridge forwarding table\n");
 
-  br_ifinfo_notify(RTM_NEWLINK, NULL, p);
+    if (br->dev->addr_assign_type != NET_ADDR_SET) {
+        /* Ask for permission to use this MAC address now, even if we
+         * don't end up choosing it below. */
+        err = netif_pre_changeaddr_notify(br->dev, dev->dev_addr,
+                          extack);
+        if (err)
+            goto err6;
+    }
 
-  if (changed_addr)
-    call_netdevice_notifiers(NETDEV_CHANGEADDR, br->dev);
+    err = nbp_vlan_init(p, extack);
+    if (err) {
+        netdev_err(dev, "failed to initialize vlan filtering on this port\n");
+        goto err6;
+    }
 
-  br_mtu_auto_adjust(br);
-  br_set_gso_limits(br);
+    spin_lock_bh(&br->lock);
+    changed_addr = br_stp_recalculate_bridge_id(br);
 
-  kobject_uevent(&p->kobj, KOBJ_ADD);
+    if (netif_running(dev) && netif_oper_up(dev) &&
+        (br->dev->flags & IFF_UP))
+        br_stp_enable_port(p);
+    spin_unlock_bh(&br->lock);
 
-  return 0;
+    br_ifinfo_notify(RTM_NEWLINK, NULL, p);
 
-err7:
-  if (fdb_synced)
-    br_fdb_unsync_static(br, p);
-  list_del_rcu(&p->list);
-  br_fdb_delete_by_port(br, p, 0, 1);
-  nbp_update_port_count(br);
+    if (changed_addr)
+        call_netdevice_notifiers(NETDEV_CHANGEADDR, br->dev);
+
+    br_mtu_auto_adjust(br);
+
+    netdev_compute_master_upper_features(br->dev, false);
+
+    kobject_uevent(&p->kobj, KOBJ_ADD);
+
+    return 0;
+
 err6:
-  netdev_upper_dev_unlink(dev, br->dev);
+    if (fdb_synced)
+        br_fdb_unsync_static(br, p);
+    list_del_rcu(&p->list);
+    br_fdb_delete_by_port(br, p, 0, 1);
+    nbp_update_port_count(br);
+    netdev_upper_dev_unlink(dev, br->dev);
 err5:
-  dev->priv_flags &= ~IFF_BRIDGE_PORT;
-  netdev_rx_handler_unregister(dev);
+    dev->priv_flags &= ~IFF_BRIDGE_PORT;
+    netdev_rx_handler_unregister(dev);
 err4:
-  br_netpoll_disable(p);
+    br_netpoll_disable(p);
 err3:
-  sysfs_remove_link(br->ifobj, p->dev->name);
+    sysfs_remove_link(br->ifobj, p->dev->name);
 err2:
-  br_multicast_del_port(p);
-  kobject_put(&p->kobj);
-  dev_set_allmulti(dev, -1);
+    br_multicast_del_port(p);
+    netdev_put(dev, &p->dev_tracker);
+    kobject_put(&p->kobj);
+    dev_set_allmulti(dev, -1);
 err1:
-  dev_put(dev);
-  return err;
+    return err;
 }
 
 int netdev_rx_handler_register(struct net_device *dev,
@@ -16716,367 +16909,498 @@ int netdev_rx_handler_register(struct net_device *dev,
 ```c
 rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 {
-  struct net_bridge_port *p;
-  struct sk_buff *skb = *pskb;
-  const unsigned char *dest = eth_hdr(skb)->h_dest;
-  br_should_route_hook_t *rhook;
+    enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
+    struct net_bridge_port *p;
+    struct sk_buff *skb = *pskb;
+    const unsigned char *dest = eth_hdr(skb)->h_dest;
 
-  if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
-    return RX_HANDLER_PASS;
+    if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
+        return RX_HANDLER_PASS;
 
-  if (!is_valid_ether_addr(eth_hdr(skb)->h_source))
-    goto drop;
-
-  skb = skb_share_check(skb, GFP_ATOMIC);
-  if (!skb)
-    return RX_HANDLER_CONSUMED;
-
-  p = br_port_get_rcu(skb->dev);
-  if (p->flags & BR_VLAN_TUNNEL) {
-    if (br_handle_ingress_vlan_tunnel(skb, p, nbp_vlan_group_rcu(p)))
-      goto drop;
-  }
-
-  if (unlikely(is_link_local_ether_addr(dest))) {
-    u16 fwd_mask = p->br->group_fwd_mask_required;
-    /* See IEEE 802.1D Table 7-10 Reserved addresses
-     *
-     *    Assignment                Value
-     * Bridge Group Address     01-80-C2-00-00-00
-     * (MAC Control) 802.3      01-80-C2-00-00-01
-     * (Link Aggregation)802.3  01-80-C2-00-00-02
-     * 802.1X PAE address       01-80-C2-00-00-03
-     *
-     * 802.1AB LLDP             01-80-C2-00-00-0E
-     *
-     * Others reserved for future standardization */
-
-    fwd_mask |= p->group_fwd_mask;
-    switch (dest[5]) {
-    case 0x00:  /* Bridge Group Address */
-      /* If STP is turned off, then must forward to keep loop detection */
-      if (p->br->stp_enabled == BR_NO_STP || fwd_mask & (1u << dest[5]))
-        goto forward;
-      *pskb = skb;
-      __br_handle_local_finish(skb);
-      return RX_HANDLER_PASS;
-
-    case 0x01:  /* IEEE MAC (Pause) */
-      goto drop;
-
-    case 0x0E:  /* 802.1AB LLDP */
-      fwd_mask |= p->br->group_fwd_mask;
-      if (fwd_mask & (1u << dest[5]))
-        goto forward;
-      *pskb = skb;
-      __br_handle_local_finish(skb);
-      return RX_HANDLER_PASS;
-
-    default:
-      /* Allow selective forwarding for most other protocols */
-      fwd_mask |= p->br->group_fwd_mask;
-      if (fwd_mask & (1u << dest[5]))
-        goto forward;
+    if (!is_valid_ether_addr(eth_hdr(skb)->h_source)) {
+        reason = SKB_DROP_REASON_MAC_INVALID_SOURCE;
+        goto drop;
     }
 
-    /* The else clause should be hit when nf_hook():
-     *   - returns < 0 (drop/error)
-     *   - returns = 0 (stolen/nf_queue)
-     * Thus return 1 from the okfn() to signal the skb is ok to pass */
-    if (NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN, dev_net(skb->dev),
-      NULL, skb, skb->dev, NULL, br_handle_local_finish) == 1)
-    {
-      return RX_HANDLER_PASS;
-    } else {
-      return RX_HANDLER_CONSUMED;
+    skb = skb_share_check(skb, GFP_ATOMIC);
+    if (!skb)
+        return RX_HANDLER_CONSUMED;
+
+    memset(skb->cb, 0, sizeof(struct br_input_skb_cb));
+    br_tc_skb_miss_set(skb, false);
+
+    p = br_port_get_rcu(skb->dev);
+    if (test_bit(BR_VLAN_TUNNEL_BIT, &p->flags))
+        br_handle_ingress_vlan_tunnel(skb, p, nbp_vlan_group_rcu(p));
+
+    if (unlikely(is_link_local_ether_addr(dest))) {
+        u16 fwd_mask = p->br->group_fwd_mask_required;
+
+        /* See IEEE 802.1D Table 7-10 Reserved addresses
+         *
+         * Assignment                 Value
+         * Bridge Group Address        01-80-C2-00-00-00
+         * (MAC Control) 802.3        01-80-C2-00-00-01
+         * (Link Aggregation) 802.3    01-80-C2-00-00-02
+         * 802.1X PAE address        01-80-C2-00-00-03
+         *
+         * 802.1AB LLDP         01-80-C2-00-00-0E
+         *
+         * Others reserved for future standardization */
+        fwd_mask |= p->group_fwd_mask;
+        switch (dest[5]) {
+        case 0x00:    /* Bridge Group Address */
+            /* If STP is turned off,
+               then must forward to keep loop detection */
+            if (p->br->stp_enabled == BR_NO_STP ||
+                fwd_mask & (1u << dest[5]))
+                goto forward;
+            *pskb = skb;
+            __br_handle_local_finish(skb);
+            return RX_HANDLER_PASS;
+
+        case 0x01:    /* IEEE MAC (Pause) */
+            reason = SKB_DROP_REASON_MAC_IEEE_MAC_CONTROL;
+            goto drop;
+
+        case 0x0E:    /* 802.1AB LLDP */
+            fwd_mask |= p->br->group_fwd_mask;
+            if (fwd_mask & (1u << dest[5]))
+                goto forward;
+            *pskb = skb;
+            __br_handle_local_finish(skb);
+            return RX_HANDLER_PASS;
+
+        default:
+            /* Allow selective forwarding for most other protocols */
+            fwd_mask |= p->br->group_fwd_mask;
+            if (fwd_mask & (1u << dest[5]))
+                goto forward;
+        }
+
+        BR_INPUT_SKB_CB(skb)->promisc = false;
+
+        /* The else clause should be hit when nf_hook():
+         *   - returns < 0 (drop/error)
+         *   - returns = 0 (stolen/nf_queue)
+         * Thus return 1 from the okfn() to signal the skb is ok to pass */
+        if (NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN,
+                dev_net(skb->dev), NULL, skb, skb->dev, NULL,
+                br_handle_local_finish) == 1) {
+            return RX_HANDLER_PASS;
+        } else {
+            return RX_HANDLER_CONSUMED;
+        }
     }
-  }
+
+    if (unlikely(br_process_frame_type(p, skb)))
+        return RX_HANDLER_PASS;
 
 forward:
-  switch (p->state) {
-  case BR_STATE_FORWARDING:
-    rhook = rcu_dereference(br_should_route_hook);
-    if (rhook) {
-      if ((*rhook)(skb)) {
-        *pskb = skb;
-        return RX_HANDLER_PASS;
-      }
-      dest = eth_hdr(skb)->h_dest;
-    }
-    /* fall through */
-  case BR_STATE_LEARNING:
-    if (ether_addr_equal(p->br->dev->dev_addr, dest))
-      skb->pkt_type = PACKET_HOST;
+    if (br_mst_is_enabled(p))
+        goto defer_stp_filtering;
 
-    NF_HOOK(NFPROTO_BRIDGE, NF_BR_PRE_ROUTING, dev_net(skb->dev),
-      NULL, skb, skb->dev, NULL, br_handle_frame_finish
-    );
-    break;
-  default:
+    switch (p->state) {
+    case BR_STATE_FORWARDING:
+    case BR_STATE_LEARNING:
+defer_stp_filtering:
+        if (ether_addr_equal(p->br->dev->dev_addr, dest))
+            skb->pkt_type = PACKET_HOST;
+
+        return nf_hook_bridge_pre(skb, pskb);
+    default:
+        reason = SKB_DROP_REASON_BRIDGE_INGRESS_STP_STATE;
 drop:
-    kfree_skb(skb);
-  }
-  return RX_HANDLER_CONSUMED;
+        kfree_skb_reason(skb, reason);
+    }
+    return RX_HANDLER_CONSUMED;
+}
+
+int nf_hook_bridge_pre(struct sk_buff *skb, struct sk_buff **pskb)
+{
+#ifdef CONFIG_NETFILTER_FAMILY_BRIDGE
+    struct nf_hook_entries *e = NULL;
+    struct nf_hook_state state;
+    unsigned int verdict, i;
+    struct net *net;
+    int ret;
+
+    net = dev_net(skb->dev);
+#ifdef CONFIG_JUMP_LABEL
+    if (!static_key_false(&nf_hooks_needed[NFPROTO_BRIDGE][NF_BR_PRE_ROUTING]))
+        goto frame_finish;
+#endif
+
+    e = rcu_dereference(net->nf.hooks_bridge[NF_BR_PRE_ROUTING]);
+    if (!e)
+        goto frame_finish;
+
+    nf_hook_state_init(&state, NF_BR_PRE_ROUTING,
+               NFPROTO_BRIDGE, skb->dev, NULL, NULL,
+               net, br_handle_frame_finish);
+
+    for (i = 0; i < e->num_hook_entries; i++) {
+        verdict = nf_hook_entry_hookfn(&e->hooks[i], skb, &state);
+        switch (verdict & NF_VERDICT_MASK) {
+        case NF_ACCEPT:
+            if (BR_INPUT_SKB_CB(skb)->br_netfilter_broute) {
+                *pskb = skb;
+                return RX_HANDLER_PASS;
+            }
+            break;
+        case NF_DROP:
+            kfree_skb(skb);
+            return RX_HANDLER_CONSUMED;
+        case NF_QUEUE:
+            ret = nf_queue(skb, &state, i, verdict);
+            if (ret == 1)
+                continue;
+            return RX_HANDLER_CONSUMED;
+        default: /* STOLEN */
+            return RX_HANDLER_CONSUMED;
+        }
+    }
+frame_finish:
+    net = dev_net(skb->dev);
+    br_handle_frame_finish(net, NULL, skb);
+#else
+    br_handle_frame_finish(dev_net(skb->dev), NULL, skb);
+#endif
+    return RX_HANDLER_CONSUMED;
 }
 
 int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-  struct net_bridge_port *p = br_port_get_rcu(skb->dev);
-  enum br_pkt_type pkt_type = BR_PKT_UNICAST;
-  struct net_bridge_fdb_entry *dst = NULL;
-  struct net_bridge_mdb_entry *mdst;
-  bool local_rcv, mcast_hit = false;
-  struct net_bridge *br;
-  u16 vid = 0;
+    enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
+    struct net_bridge_port *p = br_port_get_rcu(skb->dev);
+    enum br_pkt_type pkt_type = BR_PKT_UNICAST;
+    struct net_bridge_fdb_entry *dst = NULL;
+    struct net_bridge_mcast_port *pmctx;
+    struct net_bridge_mdb_entry *mdst;
+    bool local_rcv, mcast_hit = false;
+    struct net_bridge_mcast *brmctx;
+    struct net_bridge_vlan *vlan;
+    struct net_bridge *br;
+    bool promisc;
+    u16 vid = 0;
+    u8 state;
 
-  if (!p || p->state == BR_STATE_DISABLED)
-    goto drop;
+    if (!p)
+        goto drop;
 
-  if (!br_allowed_ingress(p->br, nbp_vlan_group_rcu(p), skb, &vid))
-    goto out;
+    br = p->br;
 
-  nbp_switchdev_frame_mark(p, skb);
-
-  /* insert into forwarding database after filtering to avoid spoofing */
-  br = p->br;
-  if (p->flags & BR_LEARNING)
-    br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, false);
-
-  local_rcv = !!(br->dev->flags & IFF_PROMISC);
-  if (is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
-    /* by definition the broadcast is also a multicast address */
-    if (is_broadcast_ether_addr(eth_hdr(skb)->h_dest)) {
-      pkt_type = BR_PKT_BROADCAST;
-      local_rcv = true;
+    if (br_mst_is_enabled(p)) {
+        state = BR_STATE_FORWARDING;
     } else {
-      pkt_type = BR_PKT_MULTICAST;
-      if (br_multicast_rcv(br, p, skb, vid))
+        if (p->state == BR_STATE_DISABLED) {
+            reason = SKB_DROP_REASON_BRIDGE_INGRESS_STP_STATE;
+            goto drop;
+        }
+
+        state = p->state;
+    }
+
+    brmctx = &p->br->multicast_ctx;
+    pmctx = &p->multicast_ctx;
+    if (!br_allowed_ingress(p->br, nbp_vlan_group_rcu(p), skb, &vid, &state, &vlan))
+        goto out;
+
+    if (test_bit(BR_PORT_LOCKED_BIT, &p->flags)) {
+        struct net_bridge_fdb_entry *fdb_src =
+            br_fdb_find_rcu(br, eth_hdr(skb)->h_source, vid);
+
+        if (!fdb_src) {
+            /* FDB miss. Create locked FDB entry if MAB is enabled
+             * and drop the packet. */
+            if (test_bit(BR_PORT_MAB_BIT, &p->flags))
+                br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, BIT(BR_FDB_LOCKED));
+            goto drop;
+        } else if (READ_ONCE(fdb_src->dst) != p ||
+               test_bit(BR_FDB_LOCAL, &fdb_src->flags)) {
+            /* FDB mismatch. Drop the packet without roaming. */
+            goto drop;
+        } else if (test_bit(BR_FDB_LOCKED, &fdb_src->flags)) {
+            /* FDB match, but entry is locked. Refresh it and drop
+             * the packet. */
+            br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, BIT(BR_FDB_LOCKED));
+            goto drop;
+        }
+    }
+
+    nbp_switchdev_frame_mark(p, skb);
+
+    /* insert into forwarding database after filtering to avoid spoofing */
+    if (test_bit(BR_LEARNING_BIT, &p->flags))
+        br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, 0);
+
+    promisc = !!(br->dev->flags & IFF_PROMISC);
+    local_rcv = promisc;
+
+    if (is_multicast_ether_addr(eth_hdr(skb)->h_dest)) {
+        /* by definition the broadcast is also a multicast address */
+        if (is_broadcast_ether_addr(eth_hdr(skb)->h_dest)) {
+            pkt_type = BR_PKT_BROADCAST;
+            local_rcv = true;
+        } else {
+            pkt_type = BR_PKT_MULTICAST;
+            if (br_multicast_rcv(&brmctx, &pmctx, vlan, skb, vid))
+                goto drop;
+        }
+    }
+
+    if (state == BR_STATE_LEARNING) {
+        reason = SKB_DROP_REASON_BRIDGE_INGRESS_STP_STATE;
         goto drop;
     }
-  }
 
-  if (p->state == BR_STATE_LEARNING)
-    goto drop;
+    BR_INPUT_SKB_CB(skb)->brdev = br->dev;
+    BR_INPUT_SKB_CB(skb)->src_port_isolated = test_bit(BR_ISOLATED_BIT, &p->flags);
 
-  BR_INPUT_SKB_CB(skb)->brdev = br->dev;
-  BR_INPUT_SKB_CB(skb)->src_port_isolated = !!(p->flags & BR_ISOLATED);
+    if (IS_ENABLED(CONFIG_INET) &&
+        (skb->protocol == htons(ETH_P_ARP) || skb->protocol == htons(ETH_P_RARP))) {
+        br_do_proxy_suppress_arp(skb, br, vid, p);
+    } else if (ipv6_mod_enabled() &&
+           skb->protocol == htons(ETH_P_IPV6) &&
+           br_opt_get(br, BROPT_NEIGH_SUPPRESS_ENABLED) &&
+           pskb_may_pull(skb, sizeof(struct ipv6hdr) + sizeof(struct nd_msg)) &&
+           ipv6_hdr(skb)->nexthdr == IPPROTO_ICMPV6) {
+            struct nd_msg *msg, _msg;
 
-  if (IS_ENABLED(CONFIG_INET) &&
-    (skb->protocol == htons(ETH_P_ARP) || skb->protocol == htons(ETH_P_RARP)))
-  {
-    br_do_proxy_suppress_arp(skb, br, vid, p);
-  } else if (IS_ENABLED(CONFIG_IPV6) &&
-    skb->protocol == htons(ETH_P_IPV6) &&
-    br->neigh_suppress_enabled &&
-    pskb_may_pull(skb, sizeof(struct ipv6hdr) +
-    sizeof(struct nd_msg)) &&
-    ipv6_hdr(skb)->nexthdr == IPPROTO_ICMPV6)
-  {
-      struct nd_msg *msg, _msg;
-
-      msg = br_is_nd_neigh_msg(skb, &_msg);
-      if (msg)
-        br_do_suppress_nd(skb, br, vid, p, msg);
-  }
-
-  switch (pkt_type) {
-  case BR_PKT_MULTICAST:
-    mdst = br_mdb_get(br, skb, vid);
-    if ((mdst || BR_INPUT_SKB_CB_MROUTERS_ONLY(skb)) && br_multicast_querier_exists(br, eth_hdr(skb)))
-    {
-      if ((mdst && mdst->host_joined) || br_multicast_is_router(br)) {
-        local_rcv = true;
-        br->dev->stats.multicast++;
-      }
-      mcast_hit = true;
-    } else {
-      local_rcv = true;
-      br->dev->stats.multicast++;
+            msg = br_is_nd_neigh_msg(skb, &_msg);
+            if (msg)
+                br_do_suppress_nd(skb, br, vid, p, msg);
     }
-    break;
-  case BR_PKT_UNICAST:
-    dst = br_fdb_find_rcu(br, eth_hdr(skb)->h_dest, vid);
-  default:
-    break;
-  }
 
-  if (dst) {
-    unsigned long now = jiffies;
+    switch (pkt_type) {
+    case BR_PKT_MULTICAST:
+        mdst = br_mdb_entry_skb_get(brmctx, skb, vid);
+        if ((mdst || BR_INPUT_SKB_CB_MROUTERS_ONLY(skb)) &&
+            br_multicast_querier_exists(brmctx, eth_hdr(skb), mdst)) {
+            if ((mdst && mdst->host_joined) ||
+                br_multicast_is_router(brmctx, skb) ||
+                br->dev->flags & IFF_ALLMULTI) {
+                local_rcv = true;
+                DEV_STATS_INC(br->dev, multicast);
+            }
+            mcast_hit = true;
+        } else {
+            local_rcv = true;
+            DEV_STATS_INC(br->dev, multicast);
+        }
+        break;
+    case BR_PKT_UNICAST:
+        dst = br_fdb_find_rcu(br, eth_hdr(skb)->h_dest, vid);
+        if (unlikely(!dst && vid && br_opt_get(br, BROPT_FDB_LOCAL_VLAN_0))) {
+            dst = br_fdb_find_rcu(br, eth_hdr(skb)->h_dest, 0);
+            if (dst && (!test_bit(BR_FDB_LOCAL, &dst->flags) || test_bit(BR_FDB_ADDED_BY_USER, &dst->flags)))
+                dst = NULL;
+        }
+        break;
+    default:
+        break;
+    }
 
-    if (dst->is_local)
-      return br_pass_frame_up(skb);
+    if (dst) {
+        unsigned long now = jiffies;
 
-    if (now != dst->used)
-      dst->used = now;
-    br_forward(dst->dst, skb, local_rcv, false);
-  } else {
-    if (!mcast_hit)
-      br_flood(br, skb, pkt_type, local_rcv, false);
-    else
-      br_multicast_flood(mdst, skb, local_rcv, false);
-  }
+        if (test_bit(BR_FDB_LOCAL, &dst->flags))
+            return br_pass_frame_up(skb, false);
 
-  if (local_rcv)
-    return br_pass_frame_up(skb);
+        if (now != READ_ONCE(dst->used))
+            WRITE_ONCE(dst->used, now);
+        br_forward(READ_ONCE(dst->dst), skb, local_rcv, false);
+    } else {
+        if (!mcast_hit)
+            br_flood(br, skb, pkt_type, local_rcv, false, vid);
+        else
+            br_multicast_flood(mdst, skb, brmctx, local_rcv, false);
+    }
+
+    if (local_rcv)
+        return br_pass_frame_up(skb, promisc);
 
 out:
-  return 0;
+    return 0;
 drop:
-  kfree_skb(skb);
-  goto out;
+    kfree_skb_reason(skb, reason);
+    goto out;
+}
+```
+
+### br_pass_frame_up
+
+```c
+int br_pass_frame_up(struct sk_buff *skb, bool promisc)
+{
+    struct net_device *indev, *brdev = BR_INPUT_SKB_CB(skb)->brdev;
+    struct net_bridge *br = netdev_priv(brdev);
+    struct net_bridge_vlan_group *vg;
+
+    dev_sw_netstats_rx_add(brdev, skb->len);
+
+    vg = br_vlan_group_rcu(br);
+
+    /* Reset the offload_fwd_mark because there could be a stacked
+     * bridge above, and it should not think this bridge it doing
+     * that bridge's work forwarding out its ports. */
+    br_switchdev_frame_unmark(skb);
+
+    /* Bridge is just like any other port.  Make sure the
+     * packet is allowed except in promisc mode when someone
+     * may be running packet capture. */
+    if (!(brdev->flags & IFF_PROMISC) && !br_allowed_egress(vg, skb)) {
+        kfree_skb(skb);
+        return NET_RX_DROP;
+    }
+
+    indev = skb->dev;
+    skb->dev = brdev;
+    skb = br_handle_vlan(br, NULL, vg, skb);
+    if (!skb)
+        return NET_RX_DROP;
+    /* update the multicast stats if the packet is IGMP/MLD */
+    br_multicast_count(br, NULL, skb, br_multicast_igmp_type(skb), BR_MCAST_DIR_TX);
+
+    BR_INPUT_SKB_CB(skb)->promisc = promisc;
+
+    return NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN,
+               dev_net(indev), NULL, skb, indev, NULL,
+               br_netif_receive_skb);
+}
+
+static int
+br_netif_receive_skb(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+    br_drop_fake_rtable(skb);
+    return netif_receive_skb(skb);
 }
 ```
 
 ### br_forward
+
 ```c
 void br_forward(const struct net_bridge_port *to,
-    struct sk_buff *skb, bool local_rcv, bool local_orig)
+        struct sk_buff *skb, bool local_rcv, bool local_orig)
 {
-  if (unlikely(!to))
-    goto out;
+    if (unlikely(!to))
+        goto out;
 
-  /* redirect to backup link if the destination port is down */
-  if (rcu_access_pointer(to->backup_port) && !netif_carrier_ok(to->dev)) {
-    struct net_bridge_port *backup_port;
+    /* redirect to backup link if the destination port is down */
+    if (rcu_access_pointer(to->backup_port) &&
+        (!netif_carrier_ok(to->dev) || !netif_running(to->dev))) {
+        struct net_bridge_port *backup_port;
 
-    backup_port = rcu_dereference(to->backup_port);
-    if (unlikely(!backup_port))
-      goto out;
-    to = backup_port;
-  }
+        backup_port = rcu_dereference(to->backup_port);
+        if (unlikely(!backup_port))
+            goto out;
+        BR_INPUT_SKB_CB(skb)->backup_nhid = READ_ONCE(to->backup_nhid);
+        to = backup_port;
+    }
 
-  if (should_deliver(to, skb)) {
-    if (local_rcv)
-      deliver_clone(to, skb, local_orig);
-    else
-      __br_forward(to, skb, local_orig);
-    return;
-  }
+    if (should_deliver(to, skb)) {
+        if (local_rcv)
+            deliver_clone(to, skb, local_orig);
+        else
+            __br_forward(to, skb, local_orig);
+        return;
+    }
 
 out:
-  if (!local_rcv)
-    kfree_skb(skb);
+    if (!local_rcv)
+        kfree_skb(skb);
 }
 
 void __br_forward(const struct net_bridge_port *to,
-       struct sk_buff *skb, bool local_orig)
+             struct sk_buff *skb, bool local_orig)
 {
-  struct net_bridge_vlan_group *vg;
-  struct net_device *indev;
-  struct net *net;
-  int br_hook;
+    struct net_bridge_vlan_group *vg;
+    struct net_device *indev;
+    struct net *net;
+    int br_hook;
 
-  vg = nbp_vlan_group_rcu(to);
-  skb = br_handle_vlan(to->br, to, vg, skb);
-  if (!skb)
-    return;
+    /* Mark the skb for forwarding offload early so that br_handle_vlan()
+     * can know whether to pop the VLAN header on egress or keep it. */
+    nbp_switchdev_frame_mark_tx_fwd_offload(to, skb);
 
-  indev = skb->dev;
-  skb->dev = to->dev;
-  if (!local_orig) {
-    if (skb_warn_if_lro(skb)) {
-      kfree_skb(skb);
-      return;
+    vg = nbp_vlan_group_rcu(to);
+    skb = br_handle_vlan(to->br, to, vg, skb);
+    if (!skb)
+        return;
+
+    indev = skb->dev;
+    skb->dev = to->dev;
+    if (!local_orig) {
+        if (skb_warn_if_lro(skb)) {
+            kfree_skb(skb);
+            return;
+        }
+        br_hook = NF_BR_FORWARD;
+        skb_forward_csum(skb);
+        net = dev_net(indev);
+    } else {
+        if (unlikely(netpoll_tx_running(to->br->dev))) {
+            skb_push(skb, ETH_HLEN);
+            if (!is_skb_forwardable(skb->dev, skb))
+                kfree_skb(skb);
+            else
+                br_netpoll_send_skb(to, skb);
+            return;
+        }
+        br_hook = NF_BR_LOCAL_OUT;
+        net = dev_net(skb->dev);
+        indev = NULL;
     }
-    br_hook = NF_BR_FORWARD;
-    skb_forward_csum(skb);
-    net = dev_net(indev);
-  } else {
-    if (unlikely(netpoll_tx_running(to->br->dev))) {
-      skb_push(skb, ETH_HLEN);
-      if (!is_skb_forwardable(skb->dev, skb))
-        kfree_skb(skb);
-      else
-        br_netpoll_send_skb(to, skb);
-      return;
-    }
-    br_hook = NF_BR_LOCAL_OUT;
-    net = dev_net(skb->dev);
-    indev = NULL;
-  }
 
-  NF_HOOK(NFPROTO_BRIDGE, br_hook,
-    net, NULL, skb, indev, skb->dev,
-    br_forward_finish);
+    NF_HOOK(NFPROTO_BRIDGE, br_hook,
+        net, NULL, skb, indev, skb->dev,
+        br_forward_finish);
 }
 
 int br_forward_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-  skb->tstamp = 0;
-  return NF_HOOK(NFPROTO_BRIDGE, NF_BR_POST_ROUTING,
-    net, sk, skb, NULL, skb->dev,
-    br_dev_queue_push_xmit);
+    skb_clear_tstamp(skb);
+    return NF_HOOK(NFPROTO_BRIDGE, NF_BR_POST_ROUTING,
+        net, sk, skb, NULL, skb->dev,
+        br_dev_queue_push_xmit);
 
 }
 
 int br_dev_queue_push_xmit(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-  skb_push(skb, ETH_HLEN);
-  if (!is_skb_forwardable(skb->dev, skb))
-    goto drop;
+    skb_push(skb, ETH_HLEN);
+    if (!is_skb_forwardable(skb->dev, skb))
+        goto drop;
 
-  br_drop_fake_rtable(skb);
+    br_drop_fake_rtable(skb);
 
-  if (skb->ip_summed == CHECKSUM_PARTIAL &&
-    (skb->protocol == htons(ETH_P_8021Q) ||
-    skb->protocol == htons(ETH_P_8021AD)))
-  {
-    int depth;
+    if (skb->ip_summed == CHECKSUM_PARTIAL &&
+        eth_type_vlan(skb->protocol)) {
+        int depth;
 
-    if (!__vlan_get_protocol(skb, skb->protocol, &depth))
-      goto drop;
+        if (!vlan_get_protocol_and_depth(skb, skb->protocol, &depth))
+            goto drop;
 
-    skb_set_network_header(skb, depth);
-  }
+        skb_set_network_header(skb, depth);
+    }
 
-  dev_queue_xmit(skb);
+    br_switchdev_frame_set_offload_fwd_mark(skb);
 
-  return 0;
+    dev_queue_xmit(skb);
+
+    return 0;
 
 drop:
-  kfree_skb(skb);
-  return 0;
-}
-```
-
-### br_pass_frame_up
-```c
-
-int br_pass_frame_up(struct sk_buff *skb)
-{
-  struct net_device *indev, *brdev = BR_INPUT_SKB_CB(skb)->brdev;
-  struct net_bridge *br = netdev_priv(brdev);
-  struct net_bridge_vlan_group *vg;
-  struct pcpu_sw_netstats *brstats = this_cpu_ptr(br->stats);
-
-  vg = br_vlan_group_rcu(br);
-  /* Bridge is just like any other port.  Make sure the
-   * packet is allowed except in promisc modue when someone
-   * may be running packet capture. */
-  if (!(brdev->flags & IFF_PROMISC) && !br_allowed_egress(vg, skb)) {
     kfree_skb(skb);
-    return NET_RX_DROP;
-  }
-
-  indev = skb->dev;
-  skb->dev = brdev;
-  skb = br_handle_vlan(br, NULL, vg, skb);
-  if (!skb)
-    return NET_RX_DROP;
-  /* update the multicast stats if the packet is IGMP/MLD */
-  br_multicast_count(br, NULL, skb, br_multicast_igmp_type(skb), BR_MCAST_DIR_TX);
-
-  return NF_HOOK(NFPROTO_BRIDGE, NF_BR_LOCAL_IN,
-    dev_net(indev), NULL, skb, indev, NULL,
-    br_netif_receive_skb);
-}
-
-int br_netif_receive_skb(struct net *net, struct sock *sk, struct sk_buff *skb)
-{
-  br_drop_fake_rtable(skb);
-  return netif_receive_skb(skb);
+    return 0;
 }
 ```
+
+### br_flood
+
+### br_multicast_flood
+
+---
 
 ```c
 br_add_bridge()
@@ -17200,261 +17524,281 @@ ip netns exec ns-br-server ping -c 4 172.30.0.1
 
 ```c
 static const struct net_device_ops veth_netdev_ops = {
-  .ndo_init            = veth_dev_init,
-  .ndo_open            = veth_open,
-  .ndo_stop            = veth_close,
-  .ndo_start_xmit      = veth_xmit,
-  .ndo_get_stats64     = veth_get_stats64,
-  .ndo_set_rx_mode     = veth_set_multicast_list,
-  .ndo_set_mac_address = eth_mac_addr,
-  .ndo_set_rx_headroom  = veth_set_rx_headroom,
-  .ndo_bpf              = veth_xdp,
-  .ndo_xdp_xmit         = veth_xdp_xmit,
+    .ndo_init            = veth_dev_init,
+    .ndo_open            = veth_open,
+    .ndo_stop            = veth_close,
+    .ndo_start_xmit      = veth_xmit,
+    .ndo_get_stats64     = veth_get_stats64,
+    .ndo_set_rx_mode     = veth_set_multicast_list,
+    .ndo_set_mac_address = eth_mac_addr,
+    .ndo_set_rx_headroom  = veth_set_rx_headroom,
+    .ndo_bpf              = veth_xdp,
+    .ndo_xdp_xmit         = veth_xdp_xmit,
 };
 
 static struct rtnl_link_ops veth_link_ops = {
-  .kind       = DRV_NAME,
-  .priv_size  = sizeof(struct veth_priv),
-  .setup      = veth_setup,
-  .validate   = veth_validate,
-  .newlink    = veth_newlink,
-  .dellink    = veth_dellink,
-  .policy     = veth_policy,
-  .maxtype    = VETH_INFO_MAX,
-  .get_link_net  = veth_get_link_net,
+    .kind               = DRV_NAME, /* "veth" */
+    .priv_size          = sizeof(struct veth_priv),
+    .setup              = veth_setup,
+    .validate           = veth_validate,
+    .newlink            = veth_newlink,
+    .dellink            = veth_dellink,
+    .policy             = veth_policy,
+    .maxtype            = VETH_INFO_MAX,
+    .get_link_net       = veth_get_link_net,
 };
 
 static __init int veth_init(void)
 {
-  return rtnl_link_register(&veth_link_ops);
+    return rtnl_link_register(&veth_link_ops);
 }
 
 static LIST_HEAD(link_ops);
 ```
 
 ## veth_newlink
+
 ```c
 /* ip link add veth0 type veth peer name veth1 */
-int veth_newlink(struct net *src_net, struct net_device *dev,
-      struct nlattr *tb[], struct nlattr *data[],
-      struct netlink_ext_ack *extack)
+int veth_newlink(struct net_device *dev,
+    struct rtnl_newlink_params *params,
+    struct netlink_ext_ack *extack)
 {
-  int err;
-  struct net_device *peer;
-  struct veth_priv *priv;
-  char ifname[IFNAMSIZ];
-  struct nlattr *peer_tb[IFLA_MAX + 1], **tbp;
-  unsigned char name_assign_type;
-  struct ifinfomsg *ifmp;
-  struct net *net;
+    struct net *peer_net = rtnl_newlink_peer_net(params);
+    struct nlattr **data = params->data;
+    struct nlattr **tb = params->tb;
+    int err;
+    struct net_device *peer;
+    struct veth_priv *priv;
+    char ifname[IFNAMSIZ];
+    struct nlattr *peer_tb[IFLA_MAX + 1], **tbp;
+    unsigned char name_assign_type;
+    struct ifinfomsg *ifmp;
 
-  /* create and register peer first */
-  if (data != NULL && data[VETH_INFO_PEER] != NULL) {
-    struct nlattr *nla_peer;
+    /* create and register peer first */
+    if (data && data[VETH_INFO_PEER]) {
+        struct nlattr *nla_peer = data[VETH_INFO_PEER];
 
-    nla_peer = data[VETH_INFO_PEER];
-    ifmp = nla_data(nla_peer);
-    err = rtnl_nla_parse_ifla(peer_tb,
-            nla_data(nla_peer) + sizeof(struct ifinfomsg),
-            nla_len(nla_peer) - sizeof(struct ifinfomsg),
-            NULL);
+        ifmp = nla_data(nla_peer);
+        rtnl_nla_parse_ifinfomsg(peer_tb, nla_peer, extack);
+        tbp = peer_tb;
+    } else {
+        ifmp = NULL;
+        tbp = tb;
+    }
+
+    if (ifmp && tbp[IFLA_IFNAME]) {
+        nla_strscpy(ifname, tbp[IFLA_IFNAME], IFNAMSIZ);
+        name_assign_type = NET_NAME_USER;
+    } else {
+        snprintf(ifname, IFNAMSIZ, DRV_NAME "%%d");
+        name_assign_type = NET_NAME_ENUM;
+    }
+
+    peer = rtnl_create_link(peer_net, ifname, name_assign_type, &veth_link_ops, tbp, extack);
+    if (IS_ERR(peer))
+        return PTR_ERR(peer);
+
+    if (!ifmp || !tbp[IFLA_ADDRESS])
+        eth_hw_addr_random(peer);
+
+    if (ifmp && (dev->ifindex != 0))
+        peer->ifindex = ifmp->ifi_index;
+
+    netif_inherit_tso_max(peer, dev);
+
+    err = register_netdevice(peer);
     if (err < 0)
-      return err;
+        goto err_register_peer;
 
-    err = veth_validate(peer_tb, NULL, extack);
+    /* keep GRO disabled by default to be consistent with the established
+     * veth behavior */
+    veth_disable_gro(peer);
+    netif_carrier_off(peer);
+
+    err = rtnl_configure_link(peer, ifmp, 0, NULL);
     if (err < 0)
-      return err;
+        goto err_configure_peer;
 
-    tbp = peer_tb;
-  } else {
-    ifmp = NULL;
-    tbp = tb;
-  }
+    /* register dev last
+     *
+     * note, that since we've registered new device the dev's name
+     * should be re-allocated */
 
-  if (ifmp && tbp[IFLA_IFNAME]) {
-    nla_strlcpy(ifname, tbp[IFLA_IFNAME], IFNAMSIZ);
-    name_assign_type = NET_NAME_USER;
-  } else {
-    snprintf(ifname, IFNAMSIZ, DRV_NAME "%%d");
-    name_assign_type = NET_NAME_ENUM;
-  }
+    if (tb[IFLA_ADDRESS] == NULL)
+        eth_hw_addr_random(dev);
 
-  net = rtnl_link_get_net(src_net, tbp);
+    if (tb[IFLA_IFNAME])
+        nla_strscpy(dev->name, tb[IFLA_IFNAME], IFNAMSIZ);
+    else
+        snprintf(dev->name, IFNAMSIZ, DRV_NAME "%%d");
 
-  peer = rtnl_create_link(net, ifname, name_assign_type, &veth_link_ops, tbp);
+    err = register_netdevice(dev);
+    if (err < 0)
+        goto err_register_dev;
 
-  if (!ifmp || !tbp[IFLA_ADDRESS])
-    eth_hw_addr_random(peer);
+    netif_carrier_off(dev);
 
-  if (ifmp && (dev->ifindex != 0))
-    peer->ifindex = ifmp->ifi_index;
+    /* tie the deviced together */
+    priv = netdev_priv(dev);
+    rcu_assign_pointer(priv->peer, peer);
+    err = veth_init_queues(dev, tb);
+    if (err)
+        goto err_queues;
 
-  peer->gso_max_size = dev->gso_max_size;
-  peer->gso_max_segs = dev->gso_max_segs;
+    priv = netdev_priv(peer);
+    rcu_assign_pointer(priv->peer, dev);
+    err = veth_init_queues(peer, tb);
+    if (err)
+        goto err_queues;
 
-  err = register_netdevice(peer);
-  put_net(net);
-  net = NULL;
-  if (err < 0)
-    goto err_register_peer;
+    veth_disable_gro(dev);
+    /* update XDP supported features */
+    veth_set_xdp_features(dev);
+    veth_set_xdp_features(peer);
 
-  netif_carrier_off(peer);
+    return 0;
 
-  err = rtnl_configure_link(peer, ifmp);
-  if (err < 0)
-    goto err_configure_peer;
-
-  /* register dev last */
-
-  if (tb[IFLA_ADDRESS] == NULL)
-    eth_hw_addr_random(dev);
-
-  if (tb[IFLA_IFNAME])
-    nla_strlcpy(dev->name, tb[IFLA_IFNAME], IFNAMSIZ);
-  else
-    snprintf(dev->name, IFNAMSIZ, DRV_NAME "%%d");
-
-  err = register_netdevice(dev);
-  if (err < 0)
-    goto err_register_dev;
-
-  netif_carrier_off(dev);
-
-  /* tie the deviced together */
-  priv = netdev_priv(dev);
-  rcu_assign_pointer(priv->peer, peer);
-
-  priv = netdev_priv(peer);
-  rcu_assign_pointer(priv->peer, dev);
-
-  return 0;
-
+err_queues:
+    unregister_netdevice(dev);
 err_register_dev:
-  /* nothing to do */
+    /* nothing to do */
 err_configure_peer:
-  unregister_netdevice(peer);
-  return err;
+    unregister_netdevice(peer);
+    return err;
 
 err_register_peer:
-  free_netdev(peer);
-  return err;
-}
-```
-
-## veth_setup
-```c
-void veth_setup(struct net_device *dev)
-{
-  ether_setup(dev);
-
-  dev->priv_flags &= ~IFF_TX_SKB_SHARING;
-  dev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
-  dev->priv_flags |= IFF_NO_QUEUE;
-  dev->priv_flags |= IFF_PHONY_HEADROOM;
-
-  dev->netdev_ops = &veth_netdev_ops;
-  dev->ethtool_ops = &veth_ethtool_ops;
-
-  dev->features |= NETIF_F_LLTX;
-  dev->features |= VETH_FEATURES;
-  dev->vlan_features = dev->features &
-           ~(NETIF_F_HW_VLAN_CTAG_TX |
-             NETIF_F_HW_VLAN_STAG_TX |
-             NETIF_F_HW_VLAN_CTAG_RX |
-             NETIF_F_HW_VLAN_STAG_RX);
-  dev->needs_free_netdev = true;
-  dev->priv_destructor = veth_dev_free;
-  dev->max_mtu = ETH_MAX_MTU;
-
-  dev->hw_features = VETH_FEATURES;
-  dev->hw_enc_features = VETH_FEATURES;
-  dev->mpls_features = NETIF_F_HW_CSUM | NETIF_F_GSO_SOFTWARE;
+    free_netdev(peer);
+    return err;
 }
 ```
 
 ## veth_xmit
-```c
-int dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
-   struct netdev_queue *txq)
-{
-  const struct net_device_ops *ops = dev->netdev_ops;
-  ops->ndo_start_xmit(skb, dev);
-}
 
+```c
 netdev_tx_t veth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
-  struct veth_priv *rcv_priv, *priv = netdev_priv(dev);
-  struct veth_rq *rq = NULL;
-  struct net_device *rcv;
-  int length = skb->len;
-  bool rcv_xdp = false;
-  int rxq;
+    struct veth_priv *rcv_priv, *priv = netdev_priv(dev);
+    struct veth_rq *rq = NULL;
+    struct netdev_queue *txq;
+    struct net_device *rcv;
+    int length = skb->len;
+    bool use_napi = false;
+    int ret, rxq;
 
-  rcu_read_lock();
-  rcv = rcu_dereference(priv->peer);
-  if (unlikely(!rcv)) {
-    kfree_skb(skb);
-    goto drop;
-  }
+    rcu_read_lock();
+    rcv = rcu_dereference(priv->peer);
+    if (unlikely(!rcv) || !pskb_may_pull(skb, ETH_HLEN)) {
+        kfree_skb(skb);
+        goto drop;
+    }
 
-  rcv_priv = netdev_priv(rcv);
-  rxq = skb_get_queue_mapping(skb);
-  if (rxq < rcv->real_num_rx_queues) {
-    rq = &rcv_priv->rq[rxq];
-    rcv_xdp = rcu_access_pointer(rq->xdp_prog);
-    skb_record_rx_queue(skb, rxq);
-  }
+    rcv_priv = netdev_priv(rcv);
+    rxq = skb_get_queue_mapping(skb);
+    if (rxq < rcv->real_num_rx_queues) {
+        rq = &rcv_priv->rq[rxq];
 
-  if (likely(veth_forward_skb(rcv, skb, rq, rcv_xdp) == NET_RX_SUCCESS)) {
-    struct pcpu_vstats *stats = this_cpu_ptr(dev->vstats);
+        /* The napi pointer is available when an XDP program is
+         * attached or when GRO is enabled
+         * Don't bother with napi/GRO if the skb can't be aggregated */
+        use_napi = rcu_access_pointer(rq->napi) &&
+               veth_skb_is_eligible_for_gro(dev, rcv, skb);
+    }
 
-    u64_stats_update_begin(&stats->syncp);
-    stats->bytes += length;
-    stats->packets++;
-    u64_stats_update_end(&stats->syncp);
-  } else {
+    skb_tx_timestamp(skb);
+
+    ret = veth_forward_skb(rcv, skb, rq, use_napi);
+    switch (ret) {
+    case NET_RX_SUCCESS: /* same as NETDEV_TX_OK */
+        if (!use_napi)
+            dev_sw_netstats_tx_add(dev, 1, length);
+        else
+            __veth_xdp_flush(rq);
+        break;
+    case NETDEV_TX_BUSY:
+        /* If a qdisc is attached to our virtual device, returning
+         * NETDEV_TX_BUSY is allowed. */
+        txq = netdev_get_tx_queue(dev, rxq);
+
+        if (qdisc_txq_has_no_queue(txq)) {
+            dev_kfree_skb_any(skb);
+            goto drop;
+        }
+        /* Restore Eth hdr pulled by dev_forward_skb/eth_type_trans */
+        __skb_push(skb, ETH_HLEN);
+        netif_tx_stop_queue(txq);
+        /* Makes sure NAPI peer consumer runs. Consumer is responsible
+         * for starting txq again, until then ndo_start_xmit (this
+         * function) will not be invoked by the netstack again. */
+        __veth_xdp_flush(rq);
+        break;
+    case NET_RX_DROP: /* same as NET_XMIT_DROP */
 drop:
-    atomic64_inc(&priv->dropped);
-  }
+        atomic64_inc(&priv->dropped);
+        ret = NET_XMIT_DROP;
+        break;
+    default:
+        net_crit_ratelimited("%s(%s): Invalid return code(%d)",
+                     __func__, dev->name, ret);
+    }
+    rcu_read_unlock();
 
-  if (rcv_xdp)
-    __veth_xdp_flush(rq);
-
-  rcu_read_unlock();
-
-  return NETDEV_TX_OK;
+    return ret;
 }
 
-int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
-          struct veth_rq *rq, bool xdp)
+static int veth_forward_skb(struct net_device *dev, struct sk_buff *skb,
+                struct veth_rq *rq, bool xdp)
 {
-  return __dev_forward_skb(dev, skb)
-    ?
-    : xdp
-      ? veth_xdp_rx(rq, skb)
-      : netif_rx(skb);
+    return __dev_forward_skb(dev, skb) ?:
+        xdp ? veth_xdp_rx(rq, skb) : __netif_rx(skb);
 }
 
 int netif_rx(struct sk_buff *skb)
 {
-  return netif_rx_internal(skb);
+    return netif_rx_internal(skb);
 }
 
+int __netif_rx(struct sk_buff *skb)
+{
+    int ret;
+
+    lockdep_assert_once(hardirq_count() | softirq_count());
+
+    trace_netif_rx_entry(skb);
+    ret = netif_rx_internal(skb);
+    trace_netif_rx_exit(ret);
+    return ret;
+}
 
 static int netif_rx_internal(struct sk_buff *skb)
 {
-  int ret;
+    int ret;
 
-  net_timestamp_check(netdev_tstamp_prequeue, skb);
+    net_timestamp_check(READ_ONCE(net_hotdata.tstamp_prequeue), skb);
 
-  trace_netif_rx(skb);
-  {
-    unsigned int qtail;
+    trace_netif_rx(skb);
 
-    ret = enqueue_to_backlog(skb, get_cpu(), &qtail);
-    put_cpu();
-  }
-  return ret;
+    if (static_branch_unlikely(&rps_needed)) {
+        struct rps_dev_flow voidflow, *rflow = &voidflow;
+        int cpu;
+
+        rcu_read_lock();
+
+        cpu = get_rps_cpu(skb->dev, skb, &rflow);
+        if (cpu < 0)
+            cpu = smp_processor_id();
+
+        ret = enqueue_to_backlog(skb, cpu, &rflow->last_qtail);
+
+        rcu_read_unlock();
+    }
+    else
+    {
+        unsigned int qtail;
+
+        ret = enqueue_to_backlog(skb, smp_processor_id(), &qtail);
+    }
+    return ret;
 }
 ```
 
@@ -17542,6 +17886,2171 @@ ip netns exec server ping -c 4 10.0.0.11
 +----------------|-----------------------------------------------+
                  ↓
          Physical Network
+```
+
+# rtnl_link
+
+```c
+static const struct proto_ops netlink_ops = {
+    .family              = PF_NETLINK,
+    .owner               = THIS_MODULE,
+    .release             = netlink_release,
+    .bind                = netlink_bind,
+    .connect             = netlink_connect,
+    .socketpair          = sock_no_socketpair,
+    .accept              = sock_no_accept,
+    .getname             = netlink_getname,
+    .poll                = datagram_poll,
+    .ioctl               = netlink_ioctl,
+    .listen              = sock_no_listen,
+    .shutdown            = sock_no_shutdown,
+    .setsockopt          = netlink_setsockopt,
+    .getsockopt_iter     = netlink_getsockopt,
+    .sendmsg             = netlink_sendmsg,
+    .recvmsg             = netlink_recvmsg,
+    .mmap                = sock_no_mmap,
+};
+
+struct rtnl_link {
+    rtnl_doit_func          doit;
+    rtnl_dumpit_func        dumpit;
+    struct module           *owner;
+    unsigned int            flags;
+    struct rcu_head         rcu;
+};
+```
+
+## rtnetlink_net_init
+
+```c
+void __init rtnetlink_init(void)
+{
+    if (register_pernet_subsys(&rtnetlink_net_ops))
+        panic("rtnetlink_init: cannot initialize rtnetlink\n");
+
+    register_netdevice_notifier(&rtnetlink_dev_notifier);
+
+    rtnl_register_many(rtnetlink_rtnl_msg_handlers);
+}
+
+static struct pernet_operations rtnetlink_net_ops = {
+    .init = rtnetlink_net_init,
+    .exit = rtnetlink_net_exit,
+};
+
+static int __net_init rtnetlink_net_init(struct net *net)
+{
+    struct sock *sk;
+    struct netlink_kernel_cfg cfg = {
+        .groups         = RTNLGRP_MAX,
+        .input          = rtnetlink_rcv,
+        .flags          = NL_CFG_F_NONROOT_RECV,
+        .bind           = rtnetlink_bind,
+    };
+
+    sk = netlink_kernel_create(net, NETLINK_ROUTE, &cfg) {
+        return __netlink_kernel_create(net, unit, THIS_MODULE, cfg);
+    }
+    if (!sk)
+        return -ENOMEM;
+    net->rtnl = sk;
+    return 0;
+}
+
+struct sock *
+__netlink_kernel_create(struct net *net, int unit, struct module *module,
+            struct netlink_kernel_cfg *cfg)
+{
+    struct socket *sock;
+    struct sock *sk;
+    struct netlink_sock *nlk;
+    struct listeners *listeners = NULL;
+    unsigned int groups;
+
+    BUG_ON(!nl_table);
+
+    if (unit < 0 || unit >= MAX_LINKS)
+        return NULL;
+
+    if (sock_create_lite(PF_NETLINK, SOCK_DGRAM, unit, &sock))
+        return NULL;
+
+    if (__netlink_create(net, sock, unit, 1) < 0)
+        goto out_sock_release_nosk;
+
+    sk = sock->sk;
+
+    if (!cfg || cfg->groups < 32)
+        groups = 32;
+    else
+        groups = cfg->groups;
+
+    listeners = kzalloc(sizeof(*listeners) + NLGRPSZ(groups), GFP_KERNEL);
+    if (!listeners)
+        goto out_sock_release;
+
+    sk->sk_data_ready = netlink_data_ready;
+    if (cfg && cfg->input)
+        nlk_sk(sk)->netlink_rcv = cfg->input;
+
+    if (netlink_insert(sk, 0))
+        goto out_sock_release;
+
+    nlk = nlk_sk(sk);
+    set_bit(NETLINK_F_KERNEL_SOCKET, &nlk->flags);
+
+    netlink_table_grab();
+    if (!nl_table[unit].registered) {
+        nl_table[unit].groups = groups;
+        rcu_assign_pointer(nl_table[unit].listeners, listeners);
+        nl_table[unit].module = module;
+        if (cfg) {
+            nl_table[unit].bind = cfg->bind;
+            nl_table[unit].unbind = cfg->unbind;
+            nl_table[unit].release = cfg->release;
+            nl_table[unit].flags = cfg->flags;
+        }
+        nl_table[unit].registered = 1;
+    } else {
+        kfree(listeners);
+        nl_table[unit].registered++;
+    }
+    netlink_table_ungrab();
+    return sk;
+
+out_sock_release:
+    kfree(listeners);
+    netlink_kernel_release(sk);
+    return NULL;
+
+out_sock_release_nosk:
+    sock_release(sock);
+    return NULL;
+}
+```
+
+## rtnetlink_rcv
+
+```c
+userspace: sendmsg(fd, msg, ...)          [syscall]
+    │
+    ▼
+netlink_sendmsg(sock, msg, len)           [af_netlink.c:1818]
+    │  copies user data into skb
+    │  dst_portid = 0 (kernel socket)
+    │
+    ▼
+netlink_unicast(ssk, skb, dst_portid=0)   [af_netlink.c:1328]
+    │  netlink_is_kernel(sk) == true
+    │
+    ▼
+netlink_unicast_kernel(sk, skb, ssk)      [af_netlink.c:1306]
+    │  nlk->netlink_rcv != NULL
+    │  calls nlk->netlink_rcv(skb)
+    │    └─ set at socket creation time via cfg->input = rtnetlink_rcv
+    │
+    ▼
+rtnetlink_rcv(skb)                        [rtnetlink.c:7093]
+    │  thin wrapper
+    │
+    ▼
+netlink_rcv_skb(skb, &rtnetlink_rcv_msg)  [af_netlink.c:2530]
+    │  loops over all nlmsghdr in skb
+    │  skips non-NLM_F_REQUEST messages
+    │  skips control types < NLMSG_MIN_TYPE
+    │  calls cb(skb, nlh, &extack)
+    │  sends netlink_ack() on NLM_F_ACK or error
+    │
+    ▼
+rtnetlink_rcv_msg(skb, nlh, extack)       [rtnetlink.c:~6969]
+    │  → dispatch to doit/dumpit handler
+
+static void rtnetlink_rcv(struct sk_buff *skb)
+{
+    netlink_rcv_skb(skb, &rtnetlink_rcv_msg/*cb*/) {
+        struct netlink_ext_ack extack;
+        struct nlmsghdr *nlh;
+        int err;
+
+        while (skb->len >= nlmsg_total_size(0)) {
+            int msglen;
+
+            memset(&extack, 0, sizeof(extack));
+            nlh = nlmsg_hdr(skb);
+            err = 0;
+
+            if (nlh->nlmsg_len < NLMSG_HDRLEN || skb->len < nlh->nlmsg_len)
+                return 0;
+
+            /* Only requests are handled by the kernel */
+            if (!(nlh->nlmsg_flags & NLM_F_REQUEST))
+                goto ack;
+
+            /* Skip control messages */
+            if (nlh->nlmsg_type < NLMSG_MIN_TYPE)
+                goto ack;
+
+            err = cb(skb, nlh, &extack);
+            if (err == -EINTR)
+                goto skip;
+
+    ack:
+            if (nlh->nlmsg_flags & NLM_F_ACK || err)
+                netlink_ack(skb, nlh, err, &extack);
+
+    skip:
+            msglen = NLMSG_ALIGN(nlh->nlmsg_len);
+            if (msglen > skb->len)
+                msglen = skb->len;
+            skb_pull(skb, msglen);
+        }
+
+        return 0;
+    }
+}
+
+int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
+                 struct netlink_ext_ack *extack)
+{
+    struct net *net = sock_net(skb->sk);
+    struct rtnl_link *link;
+    enum rtnl_kinds kind;
+    struct module *owner;
+    int err = -EOPNOTSUPP;
+    rtnl_doit_func doit;
+    unsigned int flags;
+    int family;
+    int type;
+
+    type = nlh->nlmsg_type;
+    if (type > RTM_MAX)
+        return -EOPNOTSUPP;
+
+    type -= RTM_BASE;
+
+    /* All the messages must have at least 1 byte length */
+    if (nlmsg_len(nlh) < sizeof(struct rtgenmsg))
+        return 0;
+
+    family = ((struct rtgenmsg *)nlmsg_data(nlh))->rtgen_family;
+    kind = rtnl_msgtype_kind(type) {
+        return msgtype & RTNL_KIND_MASK;
+    }
+
+    if (kind != RTNL_KIND_GET && !netlink_net_capable(skb, CAP_NET_ADMIN))
+        return -EPERM;
+
+    rcu_read_lock();
+    if (kind == RTNL_KIND_GET && (nlh->nlmsg_flags & NLM_F_DUMP)) {
+        struct sock *rtnl;
+        rtnl_dumpit_func dumpit;
+        u32 min_dump_alloc = 0;
+
+        link = rtnl_get_link(family, type);
+        if (!link || !link->dumpit) {
+            family = PF_UNSPEC;
+            link = rtnl_get_link(family, type);
+            if (!link || !link->dumpit)
+                goto err_unlock;
+        }
+        owner = link->owner;
+        dumpit = link->dumpit;
+        flags = link->flags;
+
+        if (type == RTM_GETLINK - RTM_BASE)
+            min_dump_alloc = rtnl_calcit(skb, nlh);
+
+        err = 0;
+        /* need to do this before rcu_read_unlock() */
+        if (!try_module_get(owner))
+            err = -EPROTONOSUPPORT;
+
+        rcu_read_unlock();
+
+        rtnl = net->rtnl;
+        if (err == 0) {
+            struct netlink_dump_control c = {
+                .dump               = dumpit,
+                .min_dump_alloc     = min_dump_alloc,
+                .module             = owner,
+                .flags              = flags,
+            };
+            err = rtnetlink_dump_start(rtnl, skb, nlh, &c);
+            /* netlink_dump_start() will keep a reference on
+             * module if dump is still in progress. */
+            module_put(owner);
+        }
+        return err;
+    }
+
+    link = rtnl_get_link(family, type);
+    if (!link || !link->doit) {
+        family = PF_UNSPEC;
+        link = rtnl_get_link(PF_UNSPEC, type);
+        if (!link || !link->doit)
+            goto out_unlock;
+    }
+
+    owner = link->owner;
+    if (!try_module_get(owner)) {
+        err = -EPROTONOSUPPORT;
+        goto out_unlock;
+    }
+
+    flags = link->flags;
+    if (kind == RTNL_KIND_DEL && (nlh->nlmsg_flags & NLM_F_BULK) &&
+        !(flags & RTNL_FLAG_BULK_DEL_SUPPORTED)) {
+        NL_SET_ERR_MSG(extack, "Bulk delete is not supported");
+        module_put(owner);
+        goto err_unlock;
+    }
+
+    if (flags & RTNL_FLAG_DOIT_UNLOCKED) {
+        doit = link->doit;
+        rcu_read_unlock();
+        if (doit)
+            err = doit(skb, nlh, extack);
+        module_put(owner);
+        return err;
+    }
+    rcu_read_unlock();
+
+    rtnl_lock();
+    link = rtnl_get_link(family, type);
+    if (link && link->doit)
+        err = link->doit(skb, nlh, extack) {
+            rtnl_newlink();
+        }
+    rtnl_unlock();
+
+    module_put(owner);
+
+    return err;
+
+out_unlock:
+    rcu_read_unlock();
+    return err;
+
+err_unlock:
+    rcu_read_unlock();
+    return -EOPNOTSUPP;
+}
+```
+
+## rtnl_msg_handler
+
+```c
+struct rtnl_msg_handler {
+    struct module       *owner;
+    int                 protocol;
+    int                 msgtype;
+    rtnl_doit_func      doit;
+    rtnl_dumpit_func    dumpit;
+    int                 flags;
+};
+
+#define rtnl_register_many(handlers)                \
+    __rtnl_register_many(handlers, ARRAY_SIZE(handlers))
+
+int __rtnl_register_many(const struct rtnl_msg_handler *handlers, int n)
+{
+    const struct rtnl_msg_handler *handler;
+    int i, err;
+
+    for (i = 0, handler = handlers; i < n; i++, handler++) {
+        err = rtnl_register_internal(handler->owner, handler->protocol,
+                         handler->msgtype, handler->doit,
+                         handler->dumpit, handler->flags);
+        if (err) {
+            if (!handler->owner)
+                panic("Unable to register rtnetlink message "
+                      "handlers, %pS\n", handlers);
+
+            __rtnl_unregister_many(handlers, i);
+            break;
+        }
+    }
+
+    return err;
+}
+
+static struct rtnl_link __rcu *__rcu *rtnl_msg_handlers[RTNL_FAMILY_MAX + 1];
+// rtnl_msg_handlers[protocol][msgtype - RTM_BASE]
+
+int rtnl_register_internal(struct module *owner,
+                  int protocol, int msgtype,
+                  rtnl_doit_func doit, rtnl_dumpit_func dumpit,
+                  unsigned int flags)
+{
+    struct rtnl_link *link, *old;
+    struct rtnl_link __rcu **tab;
+    int msgindex;
+    int ret = -ENOBUFS;
+
+    BUG_ON(protocol < 0 || protocol > RTNL_FAMILY_MAX);
+    msgindex = rtm_msgindex(msgtype) {
+        return msgtype - RTM_BASE;
+    }
+
+    rtnl_lock();
+    tab = rtnl_dereference(rtnl_msg_handlers[protocol]);
+    if (tab == NULL) {
+        tab = kcalloc(RTM_NR_MSGTYPES, sizeof(void *), GFP_KERNEL);
+        if (!tab)
+            goto unlock;
+
+        /* ensures we see the 0 stores */
+        rcu_assign_pointer(rtnl_msg_handlers[protocol], tab);
+    }
+
+    old = rtnl_dereference(tab[msgindex]);
+    if (old) {
+        link = kmemdup(old, sizeof(*old), GFP_KERNEL);
+        if (!link)
+            goto unlock;
+    } else {
+        link = kzalloc_obj(*link);
+        if (!link)
+            goto unlock;
+    }
+
+    WARN_ON(link->owner && link->owner != owner);
+    link->owner = owner;
+
+    WARN_ON(doit && link->doit && link->doit != doit);
+    if (doit)
+        link->doit = doit;
+    WARN_ON(dumpit && link->dumpit && link->dumpit != dumpit);
+    if (dumpit)
+        link->dumpit = dumpit;
+
+    WARN_ON(rtnl_msgtype_kind(msgtype) != RTNL_KIND_DEL &&
+        (flags & RTNL_FLAG_BULK_DEL_SUPPORTED));
+    link->flags |= flags;
+
+    /* publish protocol:msgtype */
+    rcu_assign_pointer(tab[msgindex], link);
+    ret = 0;
+    if (old)
+        kfree_rcu(old, rcu);
+unlock:
+    rtnl_unlock();
+    return ret;
+}
+```
+
+### rtnetlink_rtnl_msg_handlers
+
+```c
+static const struct rtnl_msg_handler rtnetlink_rtnl_msg_handlers[] __initconst = {
+    {
+        .msgtype    = RTM_NEWLINK,
+        .doit       = rtnl_newlink,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .msgtype    = RTM_DELLINK,
+        .doit       = rtnl_dellink,
+        .flags      = RTNL_FLAG_DOIT_PERNET_WIP
+    }, {
+        .msgtype    = RTM_GETLINK,
+        .doit       = rtnl_getlink,
+        .dumpit     = rtnl_dump_ifinfo,
+        .flags      = RTNL_FLAG_DUMP_SPLIT_NLM_DONE |
+            RTNL_FLAG_DOIT_UNLOCKED |
+            RTNL_FLAG_DUMP_UNLOCKED
+    },
+};
+```
+
+#### rtnl_newlink
+
+```c
+int rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+            struct netlink_ext_ack *extack)
+{
+    struct net *tgt_net, *link_net = NULL, *peer_net = NULL;
+    struct nlattr **tb, **linkinfo, **data = NULL;
+    struct rtnl_link_ops *ops = NULL;
+    struct rtnl_newlink_tbs *tbs;
+    struct rtnl_nets rtnl_nets;
+    int ops_srcu_index;
+    int ret;
+
+    tbs = kmalloc_obj(*tbs);
+    if (!tbs)
+        return -ENOMEM;
+
+    tb = tbs->tb;
+    ret = nlmsg_parse_deprecated(nlh, sizeof(struct ifinfomsg), tb, IFLA_MAX, ifla_policy, extack);
+    if (ret < 0)
+        goto free;
+
+    ret = rtnl_ensure_unique_netns(tb, extack, false);
+    if (ret < 0)
+        goto free;
+
+    linkinfo = tbs->linkinfo;
+    if (tb[IFLA_LINKINFO]) {
+        ret = nla_parse_nested_deprecated(linkinfo, IFLA_INFO_MAX,
+                          tb[IFLA_LINKINFO],
+                          ifla_info_policy, NULL);
+        if (ret < 0)
+            goto free;
+    } else {
+        memset(linkinfo, 0, sizeof(tbs->linkinfo));
+    }
+
+    if (linkinfo[IFLA_INFO_KIND]) {
+        char kind[MODULE_NAME_LEN]; /* "vxlan", "veth" */
+
+        nla_strscpy(kind, linkinfo[IFLA_INFO_KIND], sizeof(kind));
+        ops = rtnl_link_ops_get(kind, &ops_srcu_index) {
+            struct rtnl_link_ops *ops;
+
+            rcu_read_lock();
+
+            list_for_each_entry_rcu(ops, &link_ops, list) {
+                if (!strcmp(ops->kind, kind)) {
+                    *srcu_index = srcu_read_lock(&ops->srcu);
+                    goto unlock;
+                }
+            }
+
+            ops = NULL;
+        unlock:
+            rcu_read_unlock();
+
+            return ops;
+        }
+#ifdef CONFIG_MODULES
+        if (!ops) {
+            request_module("rtnl-link-%s", kind);
+            ops = rtnl_link_ops_get(kind, &ops_srcu_index);
+        }
+#endif
+    }
+
+    rtnl_nets_init(&rtnl_nets);
+
+    if (ops) {
+        if (ops->maxtype > RTNL_MAX_TYPE) {
+            ret = -EINVAL;
+            goto put_ops;
+        }
+
+        if (ops->maxtype && linkinfo[IFLA_INFO_DATA]) {
+            ret = nla_parse_nested_deprecated(tbs->attr, ops->maxtype,
+                              linkinfo[IFLA_INFO_DATA],
+                              ops->policy, extack);
+            if (ret < 0)
+                goto put_ops;
+
+            data = tbs->attr;
+        }
+
+        if (ops->validate) {
+            ret = ops->validate(tb, data, extack);
+            if (ret < 0)
+                goto put_ops;
+        }
+
+        if (ops->peer_type) {
+            peer_net = rtnl_get_peer_net(skb, ops, tb, data, extack);
+            if (IS_ERR(peer_net)) {
+                ret = PTR_ERR(peer_net);
+                goto put_ops;
+            }
+            if (peer_net)
+                rtnl_nets_add(&rtnl_nets, peer_net);
+        }
+    }
+
+    tgt_net = rtnl_link_get_net_capable(skb, sock_net(skb->sk), tb, CAP_NET_ADMIN);
+    if (IS_ERR(tgt_net)) {
+        ret = PTR_ERR(tgt_net);
+        goto put_net;
+    }
+
+    rtnl_nets_add(&rtnl_nets, tgt_net);
+
+    if (tb[IFLA_LINK_NETNSID]) {
+        int id = nla_get_s32(tb[IFLA_LINK_NETNSID]);
+
+        link_net = get_net_ns_by_id(tgt_net, id);
+        if (!link_net) {
+            NL_SET_ERR_MSG(extack, "Unknown network namespace id");
+            ret =  -EINVAL;
+            goto put_net;
+        }
+
+        rtnl_nets_add(&rtnl_nets, link_net);
+
+        if (!netlink_ns_capable(skb, link_net->user_ns, CAP_NET_ADMIN)) {
+            ret = -EPERM;
+            goto put_net;
+        }
+    }
+
+    rtnl_nets_lock(&rtnl_nets);
+    ret = __rtnl_newlink(skb, nlh, ops, tgt_net, link_net, peer_net, tbs, data, extack);
+    rtnl_nets_unlock(&rtnl_nets);
+
+put_net:
+    rtnl_nets_destroy(&rtnl_nets);
+put_ops:
+    if (ops)
+        rtnl_link_ops_put(ops, ops_srcu_index);
+free:
+    kfree(tbs);
+    return ret;
+}
+
+ int __rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+              const struct rtnl_link_ops *ops,
+              struct net *tgt_net, struct net *link_net,
+              struct net *peer_net,
+              struct rtnl_newlink_tbs *tbs,
+              struct nlattr **data,
+              struct netlink_ext_ack *extack)
+{
+    struct nlattr ** const tb = tbs->tb;
+    struct net *net = sock_net(skb->sk);
+    struct net *device_net;
+    struct net_device *dev;
+    struct ifinfomsg *ifm;
+    bool link_specified;
+
+    /* When creating, lookup for existing device in target net namespace */
+    device_net = (nlh->nlmsg_flags & NLM_F_CREATE) &&
+             (nlh->nlmsg_flags & NLM_F_EXCL) ?
+             tgt_net : net;
+
+    ifm = nlmsg_data(nlh);
+    if (ifm->ifi_index > 0) {
+        link_specified = true;
+        dev = __dev_get_by_index(device_net, ifm->ifi_index);
+    } else if (ifm->ifi_index < 0) {
+        NL_SET_ERR_MSG(extack, "ifindex can't be negative");
+        return -EINVAL;
+    } else if (tb[IFLA_IFNAME] || tb[IFLA_ALT_IFNAME]) {
+        link_specified = true;
+        dev = rtnl_dev_get(device_net, tb);
+    } else {
+        link_specified = false;
+        dev = NULL;
+    }
+
+    if (dev)
+        return rtnl_changelink(skb, nlh, ops, dev, tgt_net, tbs, data, extack);
+
+    if (!(nlh->nlmsg_flags & NLM_F_CREATE)) {
+        /* No dev found and NLM_F_CREATE not set. Requested dev does not exist,
+         * or it's for a group */
+        if (link_specified || !tb[IFLA_GROUP])
+            return -ENODEV;
+
+        return rtnl_group_changelink(skb, net, tgt_net,
+                         nla_get_u32(tb[IFLA_GROUP]),
+                         ifm, extack, tb);
+    }
+
+    if (tb[IFLA_MAP] || tb[IFLA_PROTINFO])
+        return -EOPNOTSUPP;
+
+    if (!ops) {
+        NL_SET_ERR_MSG(extack, "Unknown device type");
+        return -EOPNOTSUPP;
+    }
+
+    return rtnl_newlink_create(skb, ifm, ops, tgt_net, link_net, peer_net, nlh,
+                   tb, data, extack);
+}
+
+int rtnl_newlink_create(struct sk_buff *skb, struct ifinfomsg *ifm,
+                   const struct rtnl_link_ops *ops,
+                   struct net *tgt_net, struct net *link_net,
+                   struct net *peer_net,
+                   const struct nlmsghdr *nlh,
+                   struct nlattr **tb, struct nlattr **data,
+                   struct netlink_ext_ack *extack)
+{
+    unsigned char name_assign_type = NET_NAME_USER;
+    struct rtnl_newlink_params params = {
+        .src_net = sock_net(skb->sk),
+        .link_net = link_net,
+        .peer_net = peer_net,
+        .tb = tb,
+        .data = data,
+    };
+    u32 portid = NETLINK_CB(skb).portid;
+    struct net_device *dev;
+    char ifname[IFNAMSIZ];
+    int err;
+
+    if (!ops->alloc && !ops->setup)
+        return -EOPNOTSUPP;
+
+    if (tb[IFLA_IFNAME]) {
+        nla_strscpy(ifname, tb[IFLA_IFNAME], IFNAMSIZ);
+    } else {
+        snprintf(ifname, IFNAMSIZ, "%s%%d", ops->kind);
+        name_assign_type = NET_NAME_ENUM;
+    }
+
+    dev = rtnl_create_link(tgt_net, ifname, name_assign_type, ops, tb,
+                   extack);
+    if (IS_ERR(dev)) {
+        err = PTR_ERR(dev);
+        goto out;
+    }
+
+    dev->ifindex = ifm->ifi_index;
+
+    if (ops->newlink) {
+        err = ops->newlink(dev, &params, extack) {
+            veth_newlink();
+            vxlan_newlink();
+        }
+    }
+    else
+        err = register_netdevice(dev);
+    if (err < 0) {
+        free_netdev(dev);
+        goto out;
+    }
+
+    netdev_lock_ops(dev);
+
+    err = rtnl_configure_link(dev, ifm, portid, nlh);
+    if (err < 0)
+        goto out_unregister;
+    if (tb[IFLA_MASTER]) {
+        err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]), extack);
+        if (err)
+            goto out_unregister;
+    }
+
+    netdev_unlock_ops(dev);
+out:
+    return err;
+out_unregister:
+    netdev_unlock_ops(dev);
+    if (ops->newlink) {
+        LIST_HEAD(list_kill);
+
+        ops->dellink(dev, &list_kill);
+        unregister_netdevice_many(&list_kill);
+    } else {
+        unregister_netdevice(dev);
+    }
+    goto out;
+}
+```
+
+#### do_set_master
+
+```c
+int do_set_master(struct net_device *dev, int ifindex,
+             struct netlink_ext_ack *extack)
+{
+    struct net_device *upper_dev = netdev_master_upper_dev_get(dev);
+    const struct net_device_ops *ops;
+    int err;
+
+    /* Release the lower lock, the upper is responsible for locking
+     * the lower if needed. None of the existing upper devices
+     * use netdev instance lock, so don't grab it. */
+
+    if (upper_dev) {
+        if (upper_dev->ifindex == ifindex)
+            return 0;
+        ops = upper_dev->netdev_ops;
+        if (ops->ndo_del_slave) {
+            netdev_unlock_ops(dev);
+            err = ops->ndo_del_slave(upper_dev, dev);
+            netdev_lock_ops(dev);
+            if (err)
+                return err;
+        } else {
+            return -EOPNOTSUPP;
+        }
+    }
+
+    if (ifindex) {
+        upper_dev = __dev_get_by_index(dev_net(dev), ifindex) {
+            struct net_device *dev;
+            struct hlist_head *head = dev_index_hash(net, ifindex);
+
+            hlist_for_each_entry(dev, head, index_hlist)
+                if (dev->ifindex == ifindex)
+                    return dev;
+
+            return NULL;
+        }
+        if (!upper_dev)
+            return -EINVAL;
+        ops = upper_dev->netdev_ops;
+        if (ops->ndo_add_slave) {
+            netdev_unlock_ops(dev);
+            err = ops->ndo_add_slave(upper_dev, dev, extack) {
+                br_add_if();
+            }
+            netdev_lock_ops(dev);
+            if (err)
+                return err;
+        } else {
+            return -EOPNOTSUPP;
+        }
+    }
+    return 0;
+}
+```
+
+### fib_rtnl_msg_handlers
+
+> ip route add 10.0.0.2/32 dev vxlan0
+
+```c
+static const struct rtnl_msg_handler fib_rtnl_msg_handlers[] __initconst = {
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_NEWROUTE,
+        .doit       = inet_rtm_newroute,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_DELROUTE,
+        .doit       = inet_rtm_delroute,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETROUTE,
+        .dumpit     = inet_dump_fib,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE
+    },
+};
+```
+
+### devinet_rtnl_msg_handlers
+
+> ip addr add 10.0.0.1/24 dev vxlan
+
+```c
+static const struct rtnl_msg_handler devinet_rtnl_msg_handlers[] __initconst = {
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_NEWADDR,
+        .doit       = inet_rtm_newaddr,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_DELADDR,
+        .doit       = inet_rtm_deladdr,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETADDR,
+        .dumpit     = inet_dump_ifaddr,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE},
+    {
+        .protocol   = PF_INET, .msgtype = RTM_GETNETCONF,
+        .doit       = inet_netconf_get_devconf,
+        .dumpit     = inet_netconf_dump_devconf,
+        .flags      = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED},
+    {
+        .owner      = THIS_MODULE,
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETMULTICAST,
+        .dumpit     = inet_dump_ifmcaddr,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED},
+};
+```
+
+## rtnl_link_ops
+
+```c
+static DEFINE_MUTEX(link_ops_mutex);
+static LIST_HEAD(link_ops);
+
+rtnl_link_register(&veth_link_ops);
+rtnl_link_register(&vxlan_link_ops);
+
+int rtnl_link_register(struct rtnl_link_ops *ops)
+{
+    struct rtnl_link_ops *tmp;
+    int err;
+
+    /* Sanity-check max sizes to avoid stack buffer overflow. */
+    if (WARN_ON(ops->maxtype > RTNL_MAX_TYPE ||
+            ops->slave_maxtype > RTNL_SLAVE_MAX_TYPE))
+        return -EINVAL;
+
+    /* The check for alloc/setup is here because if ops
+     * does not have that filled up, it is not possible
+     * to use the ops for creating device. So do not
+     * fill up dellink as well. That disables rtnl_dellink. */
+    if ((ops->alloc || ops->setup) && !ops->dellink)
+        ops->dellink = unregister_netdevice_queue;
+
+    err = init_srcu_struct(&ops->srcu);
+    if (err)
+        return err;
+
+    mutex_lock(&link_ops_mutex);
+
+    list_for_each_entry(tmp, &link_ops, list) {
+        if (!strcmp(ops->kind, tmp->kind)) {
+            err = -EEXIST;
+            goto unlock;
+        }
+    }
+
+    list_add_tail_rcu(&ops->list, &link_ops);
+unlock:
+    mutex_unlock(&link_ops_mutex);
+
+    if (err)
+        cleanup_srcu_struct(&ops->srcu);
+
+    return err;
+}
+```
+
+## fib_rtnl_msg_handlers
+
+```c
+
+```
+
+### inet_rtm_newroute
+
+```c
+```
+
+# vxlan
+
+```sh
+SETUP:
+    ip addr add 10.0.0.1/24 dev vxlan0
+        fib_add_ifaddr() → table 254: 10.0.0.0/24 dev vxlan0
+
+    ip addr add 192.168.1.1/24 dev eth0
+        fib_add_ifaddr() → table 254: 192.168.1.0/24 dev eth0
+
+    ip link set vxlan0 id 100 remote 192.168.1.100 ...
+        vxlan_newlink() → FDB: 00:00:00:00:00:00 → 192.168.1.100
+
+    ip fdb add aa:bb:cc:dd:ee:ff dev vxlan0 dst 192.168.1.2 vni 100
+
+SEND (TCP segment to 10.0.0.2):
+    __ip_queue_xmit():
+        fib_lookup(dst=10.0.0.2)
+            → 10.0.0.0/24 dev vxlan0   ← inner/overlay route
+        dev_queue_xmit(vxlan0)
+
+    vxlan_xmit():
+        FDB lookup(inner_dst_mac, vni=100)
+            → remote_ip = 192.168.1.100  ← FDB, not FIB!
+
+    udp_tunnel_dst_lookup():
+        fib_lookup(dst=192.168.1.100)
+            → 192.168.1.0/24 dev eth0   ← outer/underlay route
+        dev_queue_xmit(eth0)
+```
+
+```txt
+╔════════════════════════════════════════════════════════════════════════════════════════════════╗
+║      VXLAN TCP PACKET FLOW  —  SEND (left)  ←→  RECEIVE (right)                                ║
+║     Node 0: VM1=10.0.0.1, VTEP=192.168.1.1     Node 1: VM2=10.0.0.2, VTEP=192.168.1.2          ║
+╚════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+  ┌─────────────────────────────────────┐             ┌─────────────────────────────────────┐
+  │           VM1  (guest)              │             │           VM2  (guest)              │
+  │                                     │             │                                     │
+  │  App: send(fd, buf)                 │             │  App: recv(fd, buf)  ◄── woken up   │
+  │  tcp_sendmsg()                      │             │  tcp_data_queue()                   │
+  │  tcp_transmit_skb()                 │             │  tcp_v4_rcv()                       │
+  │  __ip_queue_xmit()                  │             │  ip_local_deliver_finish()          │
+  │   fib → 10.0.0.0/24 dev vxlan0      │             │  ip_local_deliver()                 │
+  │   ip_output()                       │             │  ip_rcv()  [inner]                  │
+  │  dev_queue_xmit(vxlan0)             │             │  netif_receive_skb()  ← veth0       │
+  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
+                   │ [inner ETH|IP|TCP|data]                           │ [inner ETH|IP|TCP|data]
+                   ▼                                                   │ virtio/KVM
+  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
+  │         VETH PAIR                   │             │         VETH PAIR                   │
+  │                                     │             │                                     │
+  │  veth_xmit() → netif_rx()           │             │  veth_xmit() → netif_rx()           │
+  │  skb appears on veth-peer (host)    │             │  skb appears on veth0 (VM side)     │
+  │  netif_receive_skb()                │             │  dev_queue_xmit(veth-peer2)         │
+  │   rx_handler = br_handle_frame      │             │   ← from bridge                     │
+  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
+                   │                                                   │
+                   ▼                                                   │
+  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
+  │         BRIDGE  br0  (Node 0)       │             │         BRIDGE  br0  (Node 1)       │
+  │                                     │             │                                     │
+  │  br_handle_frame()         :339     │             │  br_handle_frame()         :339     │
+  │  br_handle_frame_finish()  :76      │             │  br_handle_frame_finish()  :76      │
+  │                                     │             │                                     │
+  │  src learn: VM1_mac→veth-peer       │             │  src learn: VM1_mac→vxlan0 port     │
+  │                                     │             │                                     │
+  │  Bridge FDB lookup (dst=VM2_mac):   │             │  Bridge FDB lookup (dst=VM2_mac):   │
+  │  ┌──────────────────────────────┐   │             │  ┌──────────────────────────────┐   │
+  │  │ VM2_mac → port=vxlan0   HIT  │   │             │  │ VM2_mac → port=veth-peer2 HIT│   │
+  │  └──────────────────┬───────────┘   │             │  └──────────────────┬───────────┘   │
+  │  br_forward(vxlan0 port, skb):317   │             │  br_forward(veth-peer2, skb):117    │
+  │  __br_forward(): skb->dev=vxlan0    │             │  __br_forward(): skb->dev=veth-p2   │
+  │  br_dev_queue_push_xmit()  :345     │             │  br_dev_queue_push_xmit()  :345     │
+  │  dev_queue_xmit(vxlan0)             │             │  dev_queue_xmit(veth-peer2)         │
+  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
+                   │                                                   │
+                   ▼                                                   │
+  ╔═════════════════════════════════════╗             ╔════════════════╧════════════════════╗
+  ║         VXLAN DEVICE  vxlan0        ║             ║         VXLAN DEVICE  vxlan0        ║
+  ║                                     ║             ║                                     ║
+  ║  vxlan_xmit()                       ║             ║  vxlan_rcv()                        ║
+  ║                                     ║             ║  [called via encap_rcv hook]        ║
+  ║  VXLAN FDB lookup:                  ║             ║                                     ║
+  ║  vxlan_find_mac_tx(VM2_mac,100)     ║             ║  validate VXLAN hdr, VNI=100        ║
+  ║  ┌──────────────────────────────┐   ║             ║  vxlan_vs_find_vni() → vxlan0       ║
+  ║  │{VM2_mac,100}→192.168.1.2 HIT │   ║             ║                                     ║
+  ║  └──────────────────┬───────────┘   ║             ║  __iptunnel_pull_header():          ║
+  ║  vxlan_xmit_one()                   ║             ║   strip [outer IP][UDP][VXLAN]      ║
+  ║   udp_tunnel_dst_lookup():          ║             ║  skb_reset_network_header()         ║
+  ║    fib(192.168.1.2) → eth0          ║             ║                                     ║
+  ║   vxlan_build_skb():                ║             ║  vxlan_set_mac() → vxlan_snoop()    ║
+  ║    push [VXLAN: VNI=100]            ║             ║   learn {VM1_mac,100}→192.168.1.1   ║
+  ║   udp_tunnel_xmit_skb():            ║             ║                                     ║
+  ║    push [UDP: sp=hash, dp=4789]     ║             ║  gro_cells_receive()        :1802   ║
+  ║   iptunnel_xmit():                  ║             ║   napi_gro_receive()                ║
+  ║    push [outer IPv4: 1.1→1.2]       ║             ║   netif_receive_skb()               ║
+  ╚═════════════════════════════════════╝             ║    rx_handler=br_handle_frame  ─────╫──►(bridge above)
+                   │                                  ╚════════════════▲════════════════════╝
+                   ▼                                                   │
+  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
+  │         OUTER UDP LAYER             │             │         OUTER UDP LAYER             │
+  │                                     │             │                                     │
+  │  (UDP header pushed above by        │             │  __udp4_lib_rcv()                   │
+  │   udp_tunnel_xmit_skb)              │             │  socket lookup: dport=4789          │
+  │                                     │             │   → finds vxlan UDP sock            │
+  │                                     │             │  udp_queue_rcv_one_skb()   :2349    │
+  │                                     │             │   up->encap_rcv = vxlan_rcv         │
+  │                                     │             │   encap_rcv(sk, skb)  ──────────────│──►(vxlan above)
+  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
+                   │                                                   │
+                   ▼                                                   │
+  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
+  │         OUTER IP STACK              │             │         OUTER IP STACK              │
+  │                                     │             │                                     │
+  │  ip_local_out()                     │             │  ip_rcv()                           │
+  │   NF_INET_LOCAL_OUT (iptables)      │             │   NF_INET_PRE_ROUTING               │
+  │  ip_output()                        │             │  ip_rcv_finish()                    │
+  │   NF_INET_POST_ROUTING (iptables)   │             │  ip_route_input():                  │
+  │  ip_finish_output2()                │             │   dst = LOCAL (192.168.1.2 ours)    │
+  │   ip_neigh_for_gw() [ARP cache]     │             │  ip_local_deliver()                 │
+  │   neigh_hh_output()                 │             │   NF_INET_LOCAL_IN                  │
+  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
+                   │                                                   │
+                   ▼                                                   │
+  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
+  │       PHYSICAL NIC  eth0  (Node 0)  │             │       PHYSICAL NIC  eth0  (Node 1)  │
+  │                                     │             │                                     │
+  │  dev_queue_xmit()                   │             │  NIC IRQ → NAPI poll                │
+  │  qdisc enqueue/dequeue              │             │  napi_gro_receive()                 │
+  │  driver ndo_start_xmit()            │             │  netif_receive_skb()                │
+  │  DMA → wire ───────────────────────────────────────────────────► ip_rcv() (outer)       │
+  └─────────────────────────────────────┘             └─────────────────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ CORRESPONDING LAYER PAIRS  (same row = same protocol layer)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  VM (app/TCP/inner-IP)    ◄────────────────────────────►  VM (inner-IP/TCP/app)
+  veth pair                ◄────────────────────────────►  veth pair
+  bridge FDB lookup        ◄────────────────────────────►  bridge FDB lookup
+  VXLAN FDB + encapsulate  ◄────────────────────────────►  VXLAN decapsulate + learn
+  outer UDP                ◄────────────────────────────►  outer UDP (encap_rcv hook)
+  outer IP                 ◄────────────────────────────►  outer IP
+  eth0 (NIC xmit)          ◄────── wire ────────────────►  eth0 (NIC recv)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  PACKET HEADERS ON THE WIRE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ┌──────────┬──────────────┬──────────┬──────────┬────────────────┬──────────┬──────┐
+  │underlay  │ outer IPv4   │ UDP      │ VXLAN    │ inner Ethernet │ inner IP │ TCP  │
+  │Ethernet  │ src=192.1.1  │ sp=hash  │ VNI=100  │ VM1→VM2 MACs   │ .0.1→.2  │ data │
+  │ 14B      │ dst=192.1.2  │ dp=4789  │ 8B       │ 14B            │ 20B      │      │
+  └──────────┴──────────────┴──────────┴──────────┴────────────────┴──────────┴──────┘
+  ◄─ neigh ─►◄─ iptunnel_xmit ────────►◄─udp_tun►◄─ vxlan_build ─►◄─ original inner ────►
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  KEY LOOKUP TABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  ① TCP socket cache   sk_dst_cache       inner dst → vxlan0     (set at connect())
+  ② Bridge FDB         {dst_mac, vid}     VM2_mac   → vxlan0 port
+  ③ VXLAN FDB          {dst_mac, vni}     VM2_mac   → VTEP 192.168.1.2
+  ④ Underlay FIB       dst=192.168.1.2    → eth0    (ip_route_output_key)
+  ⑤ ARP / neigh        192.168.1.2        → underlay L2 header
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ TWO FDB TABLES — DIFFERENT KEYS, DIFFERENT PURPOSES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Bridge FDB  (per bridge, net/bridge/br_fdb.c)
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  key = {dst_mac, vlan_id}    value = net_bridge_port *dst          │
+  │  VM1_mac → veth-peer1 port   (local VM, direct delivery)           │
+  │  VM2_mac → vxlan0 port       (remote VM, send via tunnel)          │
+  │  Learned from: br_fdb_update() when frames arrive on each port     │
+  └────────────────────────────────────────────────────────────────────┘
+
+  VXLAN FDB  (per vxlan device, drivers/net/vxlan/vxlan_core.c)
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  key = {dst_mac, vni}        value = vxlan_rdst.remote_ip          │
+  │  VM2_mac,vni=100 → 192.168.1.2  (Node1's VTEP IP)                  │
+  │  VM3_mac,vni=100 → 192.168.1.3  (Node2's VTEP IP)                  │
+  │  00:00:00:00:00  → 192.168.1.2  (BUM flood default)                │
+  │  Learned from: vxlan_snoop() on RX (outer src IP = remote VTEP)    │
+  └────────────────────────────────────────────────────────────────────┘
+```
+
+## vxlan_link_ops
+
+```c
+static struct rtnl_link_ops vxlan_link_ops __read_mostly = {
+    .kind           = "vxlan",
+    .maxtype        = IFLA_VXLAN_MAX,
+    .policy         = vxlan_policy,
+    .priv_size      = sizeof(struct vxlan_dev),
+    .setup          = vxlan_setup,
+    .validate       = vxlan_validate,
+    .newlink        = vxlan_newlink,
+    .changelink     = vxlan_changelink,
+    .dellink        = vxlan_dellink,
+    .get_size       = vxlan_get_size,
+    .fill_info      = vxlan_fill_info,
+    .get_link_net   = vxlan_get_link_net,
+};
+```
+
+### vxlan_newlink
+
+```c
+static int vxlan_newlink(struct net_device *dev,
+             struct rtnl_newlink_params *params,
+             struct netlink_ext_ack *extack)
+{
+    struct net *link_net = rtnl_newlink_link_net(params);
+    struct nlattr **data = params->data;
+    struct nlattr **tb = params->tb;
+    struct vxlan_config conf;
+    int err;
+
+    err = vxlan_nl2conf(tb, data, dev, &conf, false, extack);
+    if (err)
+        return err;
+
+    return __vxlan_dev_create(link_net, dev, &conf, extack);
+}
+
+int __vxlan_dev_create(struct net *net, struct net_device *dev,
+                  struct vxlan_config *conf,
+                  struct netlink_ext_ack *extack)
+{
+    struct vxlan_net *vn = net_generic(net, vxlan_net_id);
+    struct vxlan_dev *vxlan = netdev_priv(dev);
+    struct net_device *remote_dev = NULL;
+    struct vxlan_rdst *dst;
+    int err;
+
+    dst = &vxlan->default_dst;
+    err = vxlan_dev_configure(net, dev, conf, extack);
+    if (err)
+        return err;
+
+    dev->ethtool_ops = &vxlan_ethtool_ops;
+
+    err = register_netdevice(dev);
+    if (err)
+        return err;
+
+    if (dst->remote_ifindex) {
+        remote_dev = __dev_get_by_index(net, dst->remote_ifindex);
+        if (!remote_dev) {
+            err = -ENODEV;
+            goto unregister;
+        }
+
+        err = netdev_upper_dev_link(remote_dev, dev, extack);
+        if (err)
+            goto unregister;
+
+        dst->remote_dev = remote_dev;
+    }
+
+    err = rtnl_configure_link(dev, NULL, 0, NULL);
+    if (err < 0)
+        goto unlink;
+
+    /* create an fdb entry for a valid default destination */
+    if (!vxlan_addr_any(&dst->remote_ip)) {
+        spin_lock_bh(&vxlan->hash_lock);
+        err = vxlan_fdb_update(vxlan, all_zeros_mac,
+                       &dst->remote_ip,
+                       NUD_REACHABLE | NUD_PERMANENT,
+                       NLM_F_EXCL | NLM_F_CREATE,
+                       vxlan->cfg.dst_port,
+                       dst->remote_vni,
+                       dst->remote_vni,
+                       dst->remote_ifindex,
+                       NTF_SELF, 0, true, extack);
+        spin_unlock_bh(&vxlan->hash_lock);
+        if (err)
+            goto unlink;
+    }
+
+    list_add(&vxlan->next, &vn->vxlan_list);
+
+    return 0;
+
+unlink:
+    if (remote_dev)
+        netdev_upper_dev_unlink(remote_dev, dev);
+unregister:
+    unregister_netdevice(dev);
+    return err;
+}
+```
+
+## vxlan_netdev_ether_ops
+
+```c
+/* VXLAN protocol (RFC 7348) header:
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |R|R|R|R|I|R|R|R|               Reserved                        |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                VXLAN Network Identifier (VNI) |   Reserved    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ * I = VXLAN Network Identifier (VNI) present. */
+
+static const struct net_device_ops vxlan_netdev_ether_ops = {
+    .ndo_init           = vxlan_init,
+    .ndo_uninit         = vxlan_uninit,
+    .ndo_open           = vxlan_open,
+    .ndo_stop           = vxlan_stop,
+    .ndo_start_xmit     = vxlan_xmit,
+};
+```
+
+### vxlan_open
+
+```c
+```
+
+### vxlan_xmit
+
+```c
+vxlan_xmit(skb, dev)
+│
+├─ [1] COLLECT_METADATA mode?
+│       if VXLAN_F_COLLECT_METADATA set:
+│         - skb must carry ip_tunnel_info (from OVS/tc metadata)
+│         - extract vni + nhid from info->key
+│         - if non-bridge tunnel info → vxlan_xmit_one() directly + return
+│         - if no TX info → drop (SKB_DROP_REASON_TUNNEL_TXINFO)
+│
+├─ [2] ARP/ND proxy? (VXLAN_F_PROXY)
+│       if ARP  → arp_reduce()    (answer locally, suppress flood)
+│       if NDP  → neigh_reduce()  (answer locally, suppress flood)
+│       return
+│
+├─ [3] Nexthop group? (nhid != 0)
+│       → vxlan_xmit_nhid()   (ECMP via nexthop object)
+│         return
+│
+├─ [4] Multicast group DB? (VXLAN_F_MDB)
+│       vxlan_mdb_entry_skb_get() → if found → vxlan_mdb_xmit()
+│         return
+│
+├─ [5] FDB lookup on dst MAC
+│       f = vxlan_find_mac_tx(vxlan, eth->h_dest, vni)
+│
+│       [5a] Route short-circuit (VXLAN_F_RSC)?
+│              if f has NTF_ROUTER + VXLAN_F_RSC + IP payload:
+│                route_shortcircuit() rewrites eth->h_dest → re-lookup f
+│
+│       [5b] f == NULL → try all-zeros MAC (default/flood entry)
+│              if still NULL:
+│                - VXLAN_F_L2MISS → vxlan_fdb_miss() upcall to userspace
+│                - drop (SKB_DROP_REASON_NO_TX_TARGET)
+│
+├─ [6] Transmit via f
+│       if f has nexthop (f->nh):
+│         → vxlan_xmit_nh()          (nexthop-based ECMP)
+│       else:
+│         foreach rdst in f->remotes:   (multicast/multiple remotes)
+│           skb_clone() for all but last
+│           → vxlan_xmit_one(skb_clone, rdst)
+│         → vxlan_xmit_one(skb, fdst)  (original skb to first remote)
+│
+└─ return NETDEV_TX_OK
+
+
+vxlan_xmit_one(skb, dev, vni, rdst, did_rsc)
+│
+├─ [1] Resolve tunnel parameters
+│       from rdst  → use vxlan device config (static FDB path)
+│       from info  → use skb tunnel metadata (metadata/OVS path)
+│       compute: src_port (UDP hash), dst_port, tos, ttl, vni, udp_sum
+│
+├─ [2] Route lookup
+│       IPv4: udp_tunnel_dst_lookup() → rtable *rt
+│       IPv6: udp_tunnel6_dst_lookup() → dst_entry *ndst
+│       (cached in rdst->dst_cache / info->dst_cache)
+│
+├─ [3] Local bypass check
+│       encap_bypass_if_local():
+│         if route resolves to local → vxlan_encap_bypass()
+│           (deliver directly to local vxlan RX, no UDP wire)
+│
+├─ [4] PMTU check
+│       skb_tunnel_check_pmtu() — if too big:
+│         send ICMP frag-needed and vxlan_encap_bypass()
+│
+├─ [5] Build VXLAN headers (vxlan_build_skb)
+│       prepend:  [ VXLAN hdr | UDP hdr | IP/IPv6 hdr ]
+│                  8 bytes      8 bytes    20/40 bytes
+│       VXLAN header: flags(I=1) + VNI (24-bit)
+│       UDP src = flow-hash port, dst = 4789 (default)
+│
+└─ [6] Hand off to UDP tunnel TX
+        IPv4: udp_tunnel_xmit_skb()  → ip_local_out()
+        IPv6: udp_tunnel6_xmit_skb() → ip6_local_out()
+```
+
+```c
+static netdev_tx_t vxlan_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+    struct vxlan_dev *vxlan = netdev_priv(dev);
+    struct vxlan_rdst *rdst, *fdst = NULL;
+    const struct ip_tunnel_info *info;
+    struct vxlan_fdb *f;
+    struct ethhdr *eth;
+    __be32 vni = 0;
+    u32 nhid = 0;
+    bool did_rsc;
+
+    info = skb_tunnel_info(skb);
+
+    skb_reset_mac_header(skb);
+
+    if (vxlan->cfg.flags & VXLAN_F_COLLECT_METADATA) {
+        if (info && info->mode & IP_TUNNEL_INFO_BRIDGE &&
+            info->mode & IP_TUNNEL_INFO_TX) {
+            vni = tunnel_id_to_key32(info->key.tun_id);
+            nhid = info->key.nhid;
+        } else {
+            if (info && info->mode & IP_TUNNEL_INFO_TX)
+                vxlan_xmit_one(skb, dev, vni, NULL, false);
+            else
+                kfree_skb_reason(skb, SKB_DROP_REASON_TUNNEL_TXINFO);
+            return NETDEV_TX_OK;
+        }
+    }
+
+    if (vxlan->cfg.flags & VXLAN_F_PROXY) {
+        eth = eth_hdr(skb);
+        if (ntohs(eth->h_proto) == ETH_P_ARP)
+            return arp_reduce(dev, skb, vni);
+#if IS_ENABLED(CONFIG_IPV6)
+        else if (ntohs(eth->h_proto) == ETH_P_IPV6 &&
+             pskb_may_pull(skb, sizeof(struct ipv6hdr) + sizeof(struct nd_msg)) &&
+             ipv6_hdr(skb)->nexthdr == IPPROTO_ICMPV6)
+        {
+            struct nd_msg *m = (struct nd_msg *)(ipv6_hdr(skb) + 1);
+
+            if (m->icmph.icmp6_code == 0 &&
+                m->icmph.icmp6_type == NDISC_NEIGHBOUR_SOLICITATION)
+                return neigh_reduce(dev, skb, vni);
+        }
+#endif
+    }
+
+    if (nhid)
+        return vxlan_xmit_nhid(skb, dev, nhid, vni);
+
+    if (vxlan->cfg.flags & VXLAN_F_MDB) {
+        struct vxlan_mdb_entry *mdb_entry;
+
+        rcu_read_lock();
+        mdb_entry = vxlan_mdb_entry_skb_get(vxlan, skb, vni);
+        if (mdb_entry) {
+            netdev_tx_t ret;
+
+            ret = vxlan_mdb_xmit(vxlan, mdb_entry, skb);
+            rcu_read_unlock();
+            return ret;
+        }
+        rcu_read_unlock();
+    }
+
+    eth = eth_hdr(skb);
+    rcu_read_lock();
+    f = vxlan_find_mac_tx(vxlan, eth->h_dest, vni);
+    did_rsc = false;
+
+    if (f && (f->flags & NTF_ROUTER) && (vxlan->cfg.flags & VXLAN_F_RSC) &&
+        (ntohs(eth->h_proto) == ETH_P_IP ||
+         ntohs(eth->h_proto) == ETH_P_IPV6)) {
+        did_rsc = route_shortcircuit(dev, skb);
+        if (did_rsc)
+            f = vxlan_find_mac_tx(vxlan, eth->h_dest, vni);
+    }
+
+    if (f == NULL) {
+        f = vxlan_find_mac_tx(vxlan, all_zeros_mac, vni);
+        if (f == NULL) {
+            if ((vxlan->cfg.flags & VXLAN_F_L2MISS) &&
+                !is_multicast_ether_addr(eth->h_dest))
+                vxlan_fdb_miss(vxlan, eth->h_dest);
+
+            dev_dstats_tx_dropped(dev);
+            vxlan_vnifilter_count(vxlan, vni, NULL, VXLAN_VNI_STATS_TX_DROPS, 0);
+            kfree_skb_reason(skb, SKB_DROP_REASON_NO_TX_TARGET);
+            goto out;
+        }
+    }
+
+    if (rcu_access_pointer(f->nh)) {
+        vxlan_xmit_nh(skb, dev, f,
+                  (vni ? : vxlan->default_dst.remote_vni), did_rsc);
+    } else {
+        list_for_each_entry_rcu(rdst, &f->remotes, list) {
+            struct sk_buff *skb1;
+
+            if (!fdst) {
+                fdst = rdst;
+                continue;
+            }
+            skb1 = skb_clone(skb, GFP_ATOMIC);
+            if (skb1)
+                vxlan_xmit_one(skb1, dev, vni, rdst, did_rsc);
+        }
+        if (fdst)
+            vxlan_xmit_one(skb, dev, vni, fdst, did_rsc);
+        else
+            kfree_skb_reason(skb, SKB_DROP_REASON_NO_TX_TARGET);
+    }
+
+out:
+    rcu_read_unlock();
+    return NETDEV_TX_OK;
+}
+
+void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
+            __be32 default_vni, struct vxlan_rdst *rdst, bool did_rsc)
+{
+    struct dst_cache *dst_cache;
+    struct ip_tunnel_info *info;
+    struct ip_tunnel_key *pkey;
+    struct ip_tunnel_key key;
+    struct vxlan_dev *vxlan = netdev_priv(dev);
+    const struct iphdr *old_iph;
+    struct vxlan_metadata _md;
+    struct vxlan_metadata *md = &_md;
+    unsigned int pkt_len = skb->len;
+    __be16 src_port = 0, dst_port;
+    struct dst_entry *ndst = NULL;
+    int addr_family;
+    __u8 tos, ttl;
+    int ifindex;
+    int err = 0;
+    u32 flags = vxlan->cfg.flags;
+    bool use_cache;
+    bool udp_sum = false;
+    bool xnet = !net_eq(vxlan->net, dev_net(vxlan->dev));
+    enum skb_drop_reason reason;
+    bool no_eth_encap;
+    __be32 vni = 0;
+
+    no_eth_encap = flags & VXLAN_F_GPE && skb->protocol != htons(ETH_P_TEB);
+    reason = skb_vlan_inet_prepare(skb, no_eth_encap);
+    if (reason)
+        goto drop;
+
+    reason = SKB_DROP_REASON_NOT_SPECIFIED;
+    old_iph = ip_hdr(skb);
+
+    info = skb_tunnel_info(skb);
+    use_cache = ip_tunnel_dst_cache_usable(skb, info);
+
+    if (rdst) {
+        memset(&key, 0, sizeof(key));
+        pkey = &key;
+
+        if (vxlan_addr_any(&rdst->remote_ip)) {
+            if (did_rsc) {
+                /* short-circuited back to local bridge */
+                vxlan_encap_bypass(skb, vxlan, vxlan, default_vni, true);
+                return;
+            }
+            goto drop;
+        }
+
+        addr_family = vxlan->cfg.saddr.sa.sa_family;
+        dst_port = rdst->remote_port ? rdst->remote_port : vxlan->cfg.dst_port;
+        vni = (rdst->remote_vni) ? : default_vni;
+        ifindex = rdst->remote_ifindex;
+
+        if (addr_family == AF_INET) {
+            key.u.ipv4.src = vxlan->cfg.saddr.sin.sin_addr.s_addr;
+            key.u.ipv4.dst = rdst->remote_ip.sin.sin_addr.s_addr;
+        } else {
+            key.u.ipv6.src = vxlan->cfg.saddr.sin6.sin6_addr;
+            key.u.ipv6.dst = rdst->remote_ip.sin6.sin6_addr;
+        }
+
+        dst_cache = &rdst->dst_cache;
+        md->gbp = skb->mark;
+        if (flags & VXLAN_F_TTL_INHERIT) {
+            ttl = ip_tunnel_get_ttl(old_iph, skb);
+        } else {
+            ttl = vxlan->cfg.ttl;
+            if (!ttl && vxlan_addr_multicast(&rdst->remote_ip))
+                ttl = 1;
+        }
+        tos = vxlan->cfg.tos;
+        if (tos == 1)
+            tos = ip_tunnel_get_dsfield(old_iph, skb);
+        if (tos && !info)
+            use_cache = false;
+
+        if (addr_family == AF_INET)
+            udp_sum = !(flags & VXLAN_F_UDP_ZERO_CSUM_TX);
+        else
+            udp_sum = !(flags & VXLAN_F_UDP_ZERO_CSUM6_TX);
+#if IS_ENABLED(CONFIG_IPV6)
+        switch (vxlan->cfg.label_policy) {
+        case VXLAN_LABEL_FIXED:
+            key.label = vxlan->cfg.label;
+            break;
+        case VXLAN_LABEL_INHERIT:
+            key.label = ip_tunnel_get_flowlabel(old_iph, skb);
+            break;
+        default:
+            DEBUG_NET_WARN_ON_ONCE(1);
+            goto drop;
+        }
+#endif
+    } else {
+        if (!info) {
+            WARN_ONCE(1, "%s: Missing encapsulation instructions\n",
+                  dev->name);
+            goto drop;
+        }
+        pkey = &info->key;
+        addr_family = ip_tunnel_info_af(info);
+        dst_port = info->key.tp_dst ? : vxlan->cfg.dst_port;
+        vni = tunnel_id_to_key32(info->key.tun_id);
+        ifindex = 0;
+        dst_cache = &info->dst_cache;
+        if (test_bit(IP_TUNNEL_VXLAN_OPT_BIT, info->key.tun_flags)) {
+            if (info->options_len < sizeof(*md))
+                goto drop;
+            md = ip_tunnel_info_opts(info);
+        }
+        ttl = info->key.ttl;
+        tos = info->key.tos;
+        udp_sum = test_bit(IP_TUNNEL_CSUM_BIT, info->key.tun_flags);
+    }
+    src_port = udp_flow_src_port(dev_net(dev), skb, vxlan->cfg.port_min,
+                     vxlan->cfg.port_max, true);
+
+    rcu_read_lock();
+    if (addr_family == AF_INET) {
+        struct vxlan_sock *sock4;
+        u16 ipcb_flags = 0;
+        struct rtable *rt;
+        __be16 df = 0;
+        __be32 saddr;
+
+        sock4 = rcu_dereference(vxlan->vn4_sock);
+        if (unlikely(!sock4)) {
+            reason = SKB_DROP_REASON_DEV_READY;
+            goto tx_error;
+        }
+
+        if (!ifindex)
+            ifindex = sock4->sk->sk_bound_dev_if;
+
+        rt = udp_tunnel_dst_lookup(skb, dev, vxlan->net, ifindex,
+                       &saddr, pkey, src_port, dst_port,
+                       tos, use_cache ? dst_cache : NULL);
+        if (IS_ERR(rt)) {
+            err = PTR_ERR(rt);
+            reason = SKB_DROP_REASON_IP_OUTNOROUTES;
+            goto tx_error;
+        }
+
+        if (flags & VXLAN_F_MC_ROUTE)
+            ipcb_flags |= IPSKB_MCROUTE;
+
+        if (!info) {
+            /* Bypass encapsulation if the destination is local */
+            err = encap_bypass_if_local(skb, dev, vxlan, AF_INET,
+                            dst_port, ifindex, vni,
+                            &rt->dst, rt->rt_flags);
+            if (err)
+                goto out_unlock;
+
+            if (vxlan->cfg.df == VXLAN_DF_SET) {
+                df = htons(IP_DF);
+            } else if (vxlan->cfg.df == VXLAN_DF_INHERIT) {
+                struct ethhdr *eth = eth_hdr(skb);
+
+                if (ntohs(eth->h_proto) == ETH_P_IPV6 ||
+                    (ntohs(eth->h_proto) == ETH_P_IP &&
+                     old_iph->frag_off & htons(IP_DF)))
+                    df = htons(IP_DF);
+            }
+        } else if (test_bit(IP_TUNNEL_DONT_FRAGMENT_BIT,
+                    info->key.tun_flags)) {
+            df = htons(IP_DF);
+        }
+
+        ndst = &rt->dst;
+        err = skb_tunnel_check_pmtu(skb, ndst, vxlan_headroom(flags & VXLAN_F_GPE),
+                        netif_is_any_bridge_port(dev));
+        if (err < 0) {
+            goto tx_error;
+        } else if (err) {
+            if (info) {
+                struct ip_tunnel_info *unclone;
+
+                unclone = skb_tunnel_info_unclone(skb);
+                if (unlikely(!unclone))
+                    goto tx_error;
+
+                unclone->key.u.ipv4.src = pkey->u.ipv4.dst;
+                unclone->key.u.ipv4.dst = saddr;
+            }
+            vxlan_encap_bypass(skb, vxlan, vxlan, vni, false);
+            dst_release(ndst);
+            goto out_unlock;
+        }
+
+        tos = ip_tunnel_ecn_encap(tos, ip_hdr(skb), skb);
+        ttl = ttl ? : ip4_dst_hoplimit(&rt->dst);
+        err = vxlan_build_skb(skb, ndst, sizeof(struct iphdr), vni, md, flags, udp_sum);
+        if (err < 0) {
+            reason = SKB_DROP_REASON_NOMEM;
+            goto tx_error;
+        }
+
+        udp_tunnel_xmit_skb(rt, sock4->sk, skb, saddr,
+                    pkey->u.ipv4.dst, tos, ttl, df,
+                    src_port, dst_port, xnet, !udp_sum,
+                    ipcb_flags);
+#if IS_ENABLED(CONFIG_IPV6)
+    } else {
+        struct vxlan_sock *sock6;
+        struct in6_addr saddr;
+        u16 ip6cb_flags = 0;
+
+        sock6 = rcu_dereference(vxlan->vn6_sock);
+        if (unlikely(!sock6)) {
+            reason = SKB_DROP_REASON_DEV_READY;
+            goto tx_error;
+        }
+
+        if (!ifindex)
+            ifindex = sock6->sk->sk_bound_dev_if;
+
+        ndst = udp_tunnel6_dst_lookup(skb, dev, vxlan->net, sock6->sk,
+                          ifindex, &saddr, pkey,
+                          src_port, dst_port, tos,
+                          use_cache ? dst_cache : NULL);
+        if (IS_ERR(ndst)) {
+            err = PTR_ERR(ndst);
+            ndst = NULL;
+            reason = SKB_DROP_REASON_IP_OUTNOROUTES;
+            goto tx_error;
+        }
+
+        if (flags & VXLAN_F_MC_ROUTE)
+            ip6cb_flags |= IP6SKB_MCROUTE;
+
+        if (!info) {
+            u32 rt6i_flags = dst_rt6_info(ndst)->rt6i_flags;
+
+            err = encap_bypass_if_local(skb, dev, vxlan, AF_INET6,
+                            dst_port, ifindex, vni,
+                            ndst, rt6i_flags);
+            if (err)
+                goto out_unlock;
+        }
+
+        err = skb_tunnel_check_pmtu(skb, ndst,
+                        vxlan_headroom((flags & VXLAN_F_GPE) | VXLAN_F_IPV6),
+                        netif_is_any_bridge_port(dev));
+        if (err < 0) {
+            goto tx_error;
+        } else if (err) {
+            if (info) {
+                struct ip_tunnel_info *unclone;
+
+                unclone = skb_tunnel_info_unclone(skb);
+                if (unlikely(!unclone))
+                    goto tx_error;
+
+                unclone->key.u.ipv6.src = pkey->u.ipv6.dst;
+                unclone->key.u.ipv6.dst = saddr;
+            }
+
+            vxlan_encap_bypass(skb, vxlan, vxlan, vni, false);
+            dst_release(ndst);
+            goto out_unlock;
+        }
+
+        tos = ip_tunnel_ecn_encap(tos, ip_hdr(skb), skb);
+        ttl = ttl ? : ip6_dst_hoplimit(ndst);
+        skb_scrub_packet(skb, xnet);
+        err = vxlan_build_skb(skb, ndst, sizeof(struct ipv6hdr), vni, md, flags, udp_sum);
+        if (err < 0) {
+            reason = SKB_DROP_REASON_NOMEM;
+            goto tx_error;
+        }
+
+        udp_tunnel6_xmit_skb(ndst, sock6->sk, skb, dev,
+                     &saddr, &pkey->u.ipv6.dst, tos, ttl,
+                     pkey->label, src_port, dst_port, !udp_sum,
+                     ip6cb_flags);
+#endif /* CONFIG_IPV6 */
+    }
+    vxlan_vnifilter_count(vxlan, vni, NULL, VXLAN_VNI_STATS_TX, pkt_len);
+out_unlock:
+    rcu_read_unlock();
+    return;
+
+drop:
+    dev_dstats_tx_dropped(dev);
+    vxlan_vnifilter_count(vxlan, vni, NULL, VXLAN_VNI_STATS_TX_DROPS, 0);
+    kfree_skb_reason(skb, reason);
+    return;
+
+tx_error:
+    rcu_read_unlock();
+    if (err == -ELOOP)
+        DEV_STATS_INC(dev, collisions);
+    else if (err == -ENETUNREACH)
+        DEV_STATS_INC(dev, tx_carrier_errors);
+    dst_release(ndst);
+    DEV_STATS_INC(dev, tx_errors);
+    vxlan_vnifilter_count(vxlan, vni, NULL, VXLAN_VNI_STATS_TX_ERRORS, 0);
+    kfree_skb_reason(skb, reason);
+}
+```
+
+#### vxlan_build_skb
+
+```c
+int vxlan_build_skb(struct sk_buff *skb, struct dst_entry *dst,
+               int iphdr_len, __be32 vni,
+               struct vxlan_metadata *md, u32 vxflags,
+               bool udp_sum)
+{
+    int type = udp_sum ? SKB_GSO_UDP_TUNNEL_CSUM : SKB_GSO_UDP_TUNNEL;
+    __be16 inner_protocol = htons(ETH_P_TEB);
+    struct vxlanhdr *vxh;
+    bool double_encap;
+    int min_headroom;
+    int err;
+
+    if ((vxflags & VXLAN_F_REMCSUM_TX) &&
+        skb->ip_summed == CHECKSUM_PARTIAL) {
+        int csum_start = skb_checksum_start_offset(skb);
+
+        if (csum_start <= VXLAN_MAX_REMCSUM_START &&
+            !(csum_start & VXLAN_RCO_SHIFT_MASK) &&
+            (skb->csum_offset == offsetof(struct udphdr, check) ||
+             skb->csum_offset == offsetof(struct tcphdr, check)))
+            type |= SKB_GSO_TUNNEL_REMCSUM;
+    }
+
+    min_headroom = LL_RESERVED_SPACE(dst->dev) + dst->header_len
+            + VXLAN_HLEN + iphdr_len;
+
+    /* Need space for new headers (invalidates iph ptr) */
+    err = skb_cow_head(skb, min_headroom);
+    if (unlikely(err))
+        return err;
+
+    double_encap = udp_tunnel_handle_partial(skb);
+    err = iptunnel_handle_offloads(skb, type);
+    if (err)
+        return err;
+
+    vxh = __skb_push(skb, sizeof(*vxh));
+    vxh->vx_flags = VXLAN_HF_VNI;
+    vxh->vx_vni = vxlan_vni_field(vni);
+
+    if (type & SKB_GSO_TUNNEL_REMCSUM) {
+        unsigned int start;
+
+        start = skb_checksum_start_offset(skb) - sizeof(struct vxlanhdr);
+        vxh->vx_vni |= vxlan_compute_rco(start, skb->csum_offset);
+        vxh->vx_flags |= VXLAN_HF_RCO;
+
+        if (!skb_is_gso(skb)) {
+            skb->ip_summed = CHECKSUM_NONE;
+            skb->encapsulation = 0;
+        }
+    }
+
+    if (vxflags & VXLAN_F_GBP) {
+        vxlan_build_gbp_hdr(vxh, md) {
+            struct vxlanhdr_gbp *gbp;
+
+            if (!md->gbp)
+                return;
+
+            gbp = (struct vxlanhdr_gbp *)vxh;
+            vxh->vx_flags |= VXLAN_HF_GBP;
+
+            if (md->gbp & VXLAN_GBP_DONT_LEARN)
+                gbp->dont_learn = 1;
+
+            if (md->gbp & VXLAN_GBP_POLICY_APPLIED)
+                gbp->policy_applied = 1;
+
+            gbp->policy_id = htons(md->gbp & VXLAN_GBP_ID_MASK);
+        }
+    }
+    if (vxflags & VXLAN_F_GPE) {
+        err = vxlan_build_gpe_hdr(vxh, skb->protocol);
+        if (err < 0)
+            return err;
+        inner_protocol = skb->protocol;
+    }
+
+    udp_tunnel_set_inner_protocol(skb, double_encap, inner_protocol) {
+        if (!double_encap) {
+            skb_set_inner_protocol(skb, inner_proto) {
+                skb->inner_protocol = protocol;
+                skb->inner_protocol_type = ENCAP_TYPE_ETHER;
+            }
+        }
+    }
+    return 0;
+}
+```
+
+#### udp_tunnel_xmit_skb
+
+```c
+void udp_tunnel_xmit_skb(struct rtable *rt, struct sock *sk, struct sk_buff *skb,
+             __be32 src, __be32 dst, __u8 tos, __u8 ttl,
+             __be16 df, __be16 src_port, __be16 dst_port,
+             bool xnet, bool nocheck, u16 ipcb_flags)
+{
+    struct udphdr *uh;
+
+    __skb_push(skb, sizeof(*uh));
+    skb_reset_transport_header(skb);
+    uh = udp_hdr(skb);
+
+    uh->dest = dst_port;
+    uh->source = src_port;
+    uh->len = htons(skb->len);
+
+    memset(&(IPCB(skb)->opt), 0, sizeof(IPCB(skb)->opt));
+
+    udp_set_csum(nocheck, skb, src, dst, skb->len);
+
+    iptunnel_xmit(sk, rt, skb, src, dst, IPPROTO_UDP, tos, ttl, df, xnet,
+              ipcb_flags);
+}
+
+void iptunnel_xmit(struct sock *sk, struct rtable *rt, struct sk_buff *skb,
+           __be32 src, __be32 dst, __u8 proto,
+           __u8 tos, __u8 ttl, __be16 df, bool xnet,
+           u16 ipcb_flags)
+{
+    int pkt_len = skb->len - skb_inner_network_offset(skb);
+    struct net *net = dev_net(rt->dst.dev);
+    struct net_device *dev = skb->dev;
+    struct iphdr *iph;
+    int err;
+
+    if (unlikely(dev_recursion_level() > IP_TUNNEL_RECURSION_LIMIT)) {
+        if (dev) {
+            net_crit_ratelimited("Dead loop on virtual device %s (net %llu), fix it urgently!\n",
+                         dev->name, dev_net(dev)->net_cookie);
+            DEV_STATS_INC(dev, tx_errors);
+        }
+        ip_rt_put(rt);
+        kfree_skb_reason(skb, SKB_DROP_REASON_RECURSION_LIMIT);
+        return;
+    }
+
+    dev_xmit_recursion_inc();
+
+    skb_scrub_packet(skb, xnet);
+
+    skb_clear_hash_if_not_l4(skb);
+    skb_dst_set(skb, &rt->dst);
+    memset(IPCB(skb), 0, sizeof(*IPCB(skb)));
+    IPCB(skb)->flags = ipcb_flags;
+
+    /* Push down and install the IP header. */
+    skb_push(skb, sizeof(struct iphdr));
+    skb_reset_network_header(skb);
+
+    iph = ip_hdr(skb);
+
+    iph->version    = 4;
+    iph->ihl        = sizeof(struct iphdr) >> 2;
+    iph->frag_off   = ip_mtu_locked(&rt->dst) ? 0 : df;
+    iph->protocol   = proto;
+    iph->tos        = tos;
+    iph->daddr      = dst;
+    iph->saddr      = src;
+    iph->ttl        = ttl;
+    __ip_select_ident(net, iph, skb_shinfo(skb)->gso_segs ?: 1);
+
+    err = ip_local_out(net, sk, skb);
+
+    if (dev) {
+        if (unlikely(net_xmit_eval(err)))
+            pkt_len = 0;
+        iptunnel_xmit_stats(dev, pkt_len);
+    }
+
+    dev_xmit_recursion_dec();
+}
+```
+
+## vxlan_rcv
+
+```c
+struct vxlan_sock *vxlan_socket_create(struct net *net, bool ipv6,
+                          __be16 port, u32 flags,
+                          int ifindex)
+{
+    struct udp_tunnel_sock_cfg tunnel_cfg;
+    struct vxlan_sock *vs;
+    struct sock *sk;
+    unsigned int h;
+
+    ASSERT_RTNL();
+
+    vs = kzalloc_obj(*vs);
+    if (!vs)
+        return ERR_PTR(-ENOMEM);
+
+    for (h = 0; h < VNI_HASH_SIZE; ++h)
+        INIT_HLIST_HEAD(&vs->vni_list[h]);
+
+    sk = vxlan_create_sock(net, ipv6, port, flags, ifindex);
+    if (IS_ERR(sk)) {
+        kfree(vs);
+        return ERR_CAST(sk);
+    }
+
+    vs->sk = sk;
+    refcount_set(&vs->refcnt, 1);
+    vs->flags = (flags & VXLAN_F_RCV_FLAGS);
+
+    hlist_add_head_rcu(&vs->hlist, vs_head(net, port));
+    udp_tunnel_notify_add_rx_port(sk,
+                      (vs->flags & VXLAN_F_GPE) ?
+                      UDP_TUNNEL_TYPE_VXLAN_GPE :
+                      UDP_TUNNEL_TYPE_VXLAN);
+
+    /* Mark socket as an encapsulation socket. */
+    memset(&tunnel_cfg, 0, sizeof(tunnel_cfg));
+    tunnel_cfg.sk_user_data = vs;
+    tunnel_cfg.encap_type = 1;
+    tunnel_cfg.encap_rcv = vxlan_rcv;
+    tunnel_cfg.encap_err_lookup = vxlan_err_lookup;
+    tunnel_cfg.encap_destroy = NULL;
+    if (vs->flags & VXLAN_F_GPE) {
+        tunnel_cfg.gro_receive = vxlan_gpe_gro_receive;
+        tunnel_cfg.gro_complete = vxlan_gpe_gro_complete;
+    } else {
+        tunnel_cfg.gro_receive = vxlan_gro_receive;
+        tunnel_cfg.gro_complete = vxlan_gro_complete;
+    }
+
+    setup_udp_tunnel_sock(net, sk, &tunnel_cfg);
+
+    return vs;
+}
+
+int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
+{
+    struct vxlan_vni_node *vninode = NULL;
+    const struct vxlanhdr *vh;
+    struct vxlan_dev *vxlan;
+    struct vxlan_sock *vs;
+    struct vxlan_metadata _md;
+    struct vxlan_metadata *md = &_md;
+    __be16 protocol = htons(ETH_P_TEB);
+    enum skb_drop_reason reason;
+    bool raw_proto = false;
+    void *oiph;
+    __be32 vni = 0;
+    int nh;
+
+    /* Need UDP and VXLAN header to be present */
+    reason = pskb_may_pull_reason(skb, VXLAN_HLEN);
+    if (reason)
+        goto drop;
+
+    vh = vxlan_hdr(skb);
+    /* VNI flag always required to be set */
+    if (!(vh->vx_flags & VXLAN_HF_VNI)) {
+        netdev_dbg(skb->dev, "invalid vxlan flags=%#x vni=%#x\n",
+               ntohl(vh->vx_flags), ntohl(vh->vx_vni));
+        reason = SKB_DROP_REASON_VXLAN_INVALID_HDR;
+        /* Return non vxlan pkt */
+        goto drop;
+    }
+
+    vs = rcu_dereference_sk_user_data(sk);
+    if (!vs)
+        goto drop;
+
+    vni = vxlan_vni(vh->vx_vni);
+
+    vxlan = vxlan_vs_find_vni(vs, skb->dev->ifindex, vni, &vninode);
+    if (!vxlan) {
+        reason = SKB_DROP_REASON_VXLAN_VNI_NOT_FOUND;
+        goto drop;
+    }
+
+    if (vh->vx_flags & vxlan->cfg.reserved_bits.vx_flags ||
+        vh->vx_vni & vxlan->cfg.reserved_bits.vx_vni) {
+        /* If the header uses bits besides those enabled by the
+         * netdevice configuration, treat this as a malformed packet.
+         * This behavior diverges from VXLAN RFC (RFC7348) which
+         * stipulates that bits in reserved in reserved fields are to be
+         * ignored. The approach here maintains compatibility with
+         * previous stack code, and also is more robust and provides a
+         * little more security in adding extensions to VXLAN. */
+        reason = SKB_DROP_REASON_VXLAN_INVALID_HDR;
+        DEV_STATS_INC(vxlan->dev, rx_frame_errors);
+        DEV_STATS_INC(vxlan->dev, rx_errors);
+        vxlan_vnifilter_count(vxlan, vni, vninode, VXLAN_VNI_STATS_RX_ERRORS, 0);
+        goto drop;
+    }
+
+    if (vxlan->cfg.flags & VXLAN_F_GPE) {
+        if (!vxlan_parse_gpe_proto(vh, &protocol))
+            goto drop;
+        raw_proto = true;
+    }
+
+    if (__iptunnel_pull_header(skb, VXLAN_HLEN, protocol, raw_proto, !net_eq(vxlan->net, dev_net(vxlan->dev)))) {
+        reason = SKB_DROP_REASON_NOMEM;
+        goto drop;
+    }
+
+    if (vxlan->cfg.flags & VXLAN_F_REMCSUM_RX) {
+        reason = vxlan_remcsum(skb, vxlan->cfg.flags);
+        if (unlikely(reason))
+            goto drop;
+    }
+
+    if (vxlan_collect_metadata(vs)) {
+        IP_TUNNEL_DECLARE_FLAGS(flags) = { };
+        struct metadata_dst *tun_dst;
+
+        __set_bit(IP_TUNNEL_KEY_BIT, flags);
+        tun_dst = udp_tun_rx_dst(skb, vxlan_get_sk_family(vs), flags,
+                     key32_to_tunnel_id(vni), sizeof(*md));
+
+        if (!tun_dst) {
+            reason = SKB_DROP_REASON_NOMEM;
+            goto drop;
+        }
+
+        md = ip_tunnel_info_opts(&tun_dst->u.tun_info);
+
+        skb_dst_set(skb, (struct dst_entry *)tun_dst);
+    } else {
+        memset(md, 0, sizeof(*md));
+    }
+
+    if (vxlan->cfg.flags & VXLAN_F_GBP)
+        vxlan_parse_gbp_hdr(skb, vxlan->cfg.flags, md);
+    /* Note that GBP and GPE can never be active together. This is
+     * ensured in vxlan_dev_configure. */
+
+    if (!raw_proto) {
+        reason = vxlan_set_mac(vxlan, vs, skb, vni);
+        if (reason)
+            goto drop;
+    } else {
+        skb_reset_mac_header(skb);
+        skb->dev = vxlan->dev;
+        skb->pkt_type = PACKET_HOST;
+    }
+
+    /* Save offset of outer header relative to skb->head,
+     * because we are going to reset the network header to the inner header
+     * and might change skb->head. */
+    nh = skb_network_header(skb) - skb->head;
+
+    skb_reset_network_header(skb);
+
+    reason = pskb_inet_may_pull_reason(skb);
+    if (reason) {
+        DEV_STATS_INC(vxlan->dev, rx_length_errors);
+        DEV_STATS_INC(vxlan->dev, rx_errors);
+        vxlan_vnifilter_count(vxlan, vni, vninode,
+                      VXLAN_VNI_STATS_RX_ERRORS, 0);
+        goto drop;
+    }
+
+    /* Get the outer header. */
+    oiph = skb->head + nh;
+
+    if (!vxlan_ecn_decapsulate(vs, oiph, skb)) {
+        reason = SKB_DROP_REASON_IP_TUNNEL_ECN;
+        DEV_STATS_INC(vxlan->dev, rx_frame_errors);
+        DEV_STATS_INC(vxlan->dev, rx_errors);
+        vxlan_vnifilter_count(vxlan, vni, vninode,
+                      VXLAN_VNI_STATS_RX_ERRORS, 0);
+        goto drop;
+    }
+
+    rcu_read_lock();
+
+    if (unlikely(!(vxlan->dev->flags & IFF_UP))) {
+        rcu_read_unlock();
+        dev_dstats_rx_dropped(vxlan->dev);
+        vxlan_vnifilter_count(vxlan, vni, vninode,
+                      VXLAN_VNI_STATS_RX_DROPS, 0);
+        reason = SKB_DROP_REASON_DEV_READY;
+        goto drop;
+    }
+
+    dev_dstats_rx_add(vxlan->dev, skb->len);
+    vxlan_vnifilter_count(vxlan, vni, vninode, VXLAN_VNI_STATS_RX, skb->len);
+    gro_cells_receive(&vxlan->gro_cells, skb);
+
+    rcu_read_unlock();
+
+    return 0;
+
+drop:
+    reason = reason ?: SKB_DROP_REASON_NOT_SPECIFIED;
+    /* Consume bad packet */
+    kfree_skb_reason(skb, reason);
+    return 0;
+}
 ```
 
 # congestion control
