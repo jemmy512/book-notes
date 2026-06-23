@@ -18859,63 +18859,63 @@ SEND (TCP segment to 10.0.0.2):
 ```
 
 ```txt
-╔════════════════════════════════════════════════════════════════════════════════════════════════╗
+╔================================================================================================╗
 ║      VXLAN TCP PACKET FLOW  —  SEND (left)  ←→  RECEIVE (right)                                ║
 ║     Node 0: VM1=10.0.0.1, VTEP=192.168.1.1     Node 1: VM2=10.0.0.2, VTEP=192.168.1.2          ║
-╚════════════════════════════════════════════════════════════════════════════════════════════════╝
+╚================================================================================================╝
 
-  ┌─────────────────────────────────────┐             ┌─────────────────────────────────────┐
-  │           VM1  (guest)              │             │           VM2  (guest)              │
-  │                                     │             │                                     │
-  │  App: send(fd, buf)                 │             │  App: recv(fd, buf)  ◄── woken up   │
-  │  tcp_sendmsg()                      │             │  tcp_data_queue()                   │
-  │  tcp_transmit_skb()                 │             │  tcp_v4_rcv()                       │
-  │  __ip_queue_xmit()                  │             │  ip_local_deliver_finish()          │
-  │   fib → 10.0.0.0/24 dev vxlan0      │             │  ip_local_deliver()                 │
-  │   ip_output()                       │             │  ip_rcv()  [inner]                  │
-  │  dev_queue_xmit(vxlan0)             │             │  netif_receive_skb()  ← veth0       │
-  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
-                   │ [inner ETH|IP|TCP|data]                           │ [inner ETH|IP|TCP|data]
-                   ▼                                                   │ virtio/KVM
-  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
-  │         VETH PAIR                   │             │         VETH PAIR                   │
-  │                                     │             │                                     │
-  │  veth_xmit() → netif_rx()           │             │  veth_xmit() → netif_rx()           │
-  │  skb appears on veth-peer (host)    │             │  skb appears on veth0 (VM side)     │
-  │  netif_receive_skb()                │             │  dev_queue_xmit(veth-peer2)         │
-  │   rx_handler = br_handle_frame      │             │   ← from bridge                     │
-  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
-                   │                                                   │
-                   ▼                                                   │
-  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
-  │         BRIDGE  br0  (Node 0)       │             │         BRIDGE  br0  (Node 1)       │
-  │                                     │             │                                     │
-  │  br_handle_frame()         :339     │             │  br_handle_frame()         :339     │
-  │  br_handle_frame_finish()  :76      │             │  br_handle_frame_finish()  :76      │
-  │                                     │             │                                     │
-  │  src learn: VM1_mac→veth-peer       │             │  src learn: VM1_mac→vxlan0 port     │
-  │                                     │             │                                     │
-  │  Bridge FDB lookup (dst=VM2_mac):   │             │  Bridge FDB lookup (dst=VM2_mac):   │
-  │  ┌──────────────────────────────┐   │             │  ┌──────────────────────────────┐   │
-  │  │ VM2_mac → port=vxlan0   HIT  │   │             │  │ VM2_mac → port=veth-peer2 HIT│   │
-  │  └──────────────────┬───────────┘   │             │  └──────────────────┬───────────┘   │
-  │  br_forward(vxlan0 port, skb):317   │             │  br_forward(veth-peer2, skb):117    │
-  │  __br_forward(): skb->dev=vxlan0    │             │  __br_forward(): skb->dev=veth-p2   │
-  │  br_dev_queue_push_xmit()  :345     │             │  br_dev_queue_push_xmit()  :345     │
-  │  dev_queue_xmit(vxlan0)             │             │  dev_queue_xmit(veth-peer2)         │
-  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
-                   │                                                   │
-                   ▼                                                   │
-  ╔═════════════════════════════════════╗             ╔════════════════╧════════════════════╗
+  |-------------------------------------|             |-------------------------------------|
+  |           VM1  (guest)              |             |           VM2  (guest)              |
+  |                                     |             |                                     |
+  |  App: send(fd, buf)                 |             |  App: recv(fd, buf)  ◄-- woken up   |
+  |  tcp_sendmsg()                      |             |  tcp_data_queue()                   |
+  |  tcp_transmit_skb()                 |             |  tcp_v4_rcv()                       |
+  |  __ip_queue_xmit()                  |             |  ip_local_deliver_finish()          |
+  |   fib → 10.0.0.0/24 dev vxlan0      |             |  ip_local_deliver()                 |
+  |   ip_output()                       |             |  ip_rcv()  [inner]                  |
+  |  dev_queue_xmit(vxlan0)             |             |  netif_receive_skb()  ← veth0       |
+  |-------------------------------------|             |----------------▲--------------------|
+                   | [inner ETH|IP|TCP|data]                           | [inner ETH|IP|TCP|data]
+                   ▼                                                   | virtio/KVM
+  |-------------------------------------|             |-------------------------------------|
+  |         VETH PAIR                   |             |         VETH PAIR                   |
+  |                                     |             |                                     |
+  |  veth_xmit() → netif_rx()           |             |  veth_xmit() → netif_rx()           |
+  |  skb appears on veth-peer (host)    |             |  skb appears on veth0 (VM side)     |
+  |  netif_receive_skb()                |             |  dev_queue_xmit(veth-peer2)         |
+  |   rx_handler = br_handle_frame      |             |   ← from bridge                     |
+  |-------------------------------------|             |----------------▲--------------------|
+                   |                                                   |
+                   ▼                                                   |
+  |-------------------------------------|             |-------------------------------------|
+  |         BRIDGE  br0  (Node 0)       |             |         BRIDGE  br0  (Node 1)       |
+  |                                     |             |                                     |
+  |  br_handle_frame()         :339     |             |  br_handle_frame()         :339     |
+  |  br_handle_frame_finish()  :76      |             |  br_handle_frame_finish()  :76      |
+  |                                     |             |                                     |
+  |  src learn: VM1_mac→veth-peer       |             |  src learn: VM1_mac→vxlan0 port     |
+  |                                     |             |                                     |
+  |  Bridge FDB lookup (dst=VM2_mac):   |             |  Bridge FDB lookup (dst=VM2_mac):   |
+  |  |------------------------------|   |             |  |------------------------------|   |
+  |  | VM2_mac → port=vxlan0   HIT  |   |             |  | VM2_mac → port=veth-peer2 HIT|   |
+  |  |------------------------------|   |             |  |------------------------------|   |
+  |  br_forward(vxlan0 port, skb):317   |             |  br_forward(veth-peer2, skb):117    |
+  |  __br_forward(): skb->dev=vxlan0    |             |  __br_forward(): skb->dev=veth-p2   |
+  |  br_dev_queue_push_xmit()  :345     |             |  br_dev_queue_push_xmit()  :345     |
+  |  dev_queue_xmit(vxlan0)             |             |  dev_queue_xmit(veth-peer2)         |
+  |-------------------------------------|             |----------------▲--------------------|
+                   |                                                   |
+                   ▼                                                   |
+  ╔=====================================╗             ╔================╧====================╗
   ║         VXLAN DEVICE  vxlan0        ║             ║         VXLAN DEVICE  vxlan0        ║
   ║                                     ║             ║                                     ║
   ║  vxlan_xmit()                       ║             ║  vxlan_rcv()                        ║
   ║                                     ║             ║  [called via encap_rcv hook]        ║
   ║  VXLAN FDB lookup:                  ║             ║                                     ║
   ║  vxlan_find_mac_tx(VM2_mac,100)     ║             ║  validate VXLAN hdr, VNI=100        ║
-  ║  ┌──────────────────────────────┐   ║             ║  vxlan_vs_find_vni() → vxlan0       ║
-  ║  │{VM2_mac,100}→192.168.1.2 HIT │   ║             ║                                     ║
-  ║  └──────────────────┬───────────┘   ║             ║  __iptunnel_pull_header():          ║
+  ║  |------------------------------|   ║             ║  vxlan_vs_find_vni() → vxlan0       ║
+  ║  |{VM2_mac,100}→192.168.1.2 HIT |   ║             ║                                     ║
+  ║  |------------------------------|   ║             ║  __iptunnel_pull_header():          ║
   ║  vxlan_xmit_one()                   ║             ║   strip [outer IP][UDP][VXLAN]      ║
   ║   udp_tunnel_dst_lookup():          ║             ║  skb_reset_network_header()         ║
   ║    fib(192.168.1.2) → eth0          ║             ║                                     ║
@@ -18925,63 +18925,63 @@ SEND (TCP segment to 10.0.0.2):
   ║    push [UDP: sp=hash, dp=4789]     ║             ║  gro_cells_receive()        :1802   ║
   ║   iptunnel_xmit():                  ║             ║   napi_gro_receive()                ║
   ║    push [outer IPv4: 1.1→1.2]       ║             ║   netif_receive_skb()               ║
-  ╚═════════════════════════════════════╝             ║    rx_handler=br_handle_frame  ─────╫──►(bridge above)
-                   │                                  ╚════════════════▲════════════════════╝
-                   ▼                                                   │
-  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
-  │         OUTER UDP LAYER             │             │         OUTER UDP LAYER             │
-  │                                     │             │                                     │
-  │  (UDP header pushed above by        │             │  __udp4_lib_rcv()                   │
-  │   udp_tunnel_xmit_skb)              │             │  socket lookup: dport=4789          │
-  │                                     │             │   → finds vxlan UDP sock            │
-  │                                     │             │  udp_queue_rcv_one_skb()   :2349    │
-  │                                     │             │   up->encap_rcv = vxlan_rcv         │
-  │                                     │             │   encap_rcv(sk, skb)  ──────────────│──►(vxlan above)
-  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
-                   │                                                   │
-                   ▼                                                   │
-  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
-  │         OUTER IP STACK              │             │         OUTER IP STACK              │
-  │                                     │             │                                     │
-  │  ip_local_out()                     │             │  ip_rcv()                           │
-  │   NF_INET_LOCAL_OUT (iptables)      │             │   NF_INET_PRE_ROUTING               │
-  │  ip_output()                        │             │  ip_rcv_finish()                    │
-  │   NF_INET_POST_ROUTING (iptables)   │             │  ip_route_input():                  │
-  │  ip_finish_output2()                │             │   dst = LOCAL (192.168.1.2 ours)    │
-  │   ip_neigh_for_gw() [ARP cache]     │             │  ip_local_deliver()                 │
-  │   neigh_hh_output()                 │             │   NF_INET_LOCAL_IN                  │
-  └────────────────┬────────────────────┘             └────────────────▲────────────────────┘
-                   │                                                   │
-                   ▼                                                   │
-  ┌─────────────────────────────────────┐             ┌────────────────┴────────────────────┐
-  │       PHYSICAL NIC  eth0  (Node 0)  │             │       PHYSICAL NIC  eth0  (Node 1)  │
-  │                                     │             │                                     │
-  │  dev_queue_xmit()                   │             │  NIC IRQ → NAPI poll                │
-  │  qdisc enqueue/dequeue              │             │  napi_gro_receive()                 │
-  │  driver ndo_start_xmit()            │             │  netif_receive_skb()                │
-  │  DMA → wire ───────────────────────────────────────────────────► ip_rcv() (outer)       │
-  └─────────────────────────────────────┘             └─────────────────────────────────────┘
+  ╚=====================================╝             ║    rx_handler=br_handle_frame  --------►(bridge above)
+                   |                                  ╚================▲====================╝
+                   ▼                                                   |
+  |-------------------------------------|             |-------------------------------------|
+  |         OUTER UDP LAYER             |             |         OUTER UDP LAYER             |
+  |                                     |             |                                     |
+  |  (UDP header pushed above by        |             |  __udp4_lib_rcv()                   |
+  |   udp_tunnel_xmit_skb)              |             |  socket lookup: dport=4789          |
+  |                                     |             |   → finds vxlan UDP sock            |
+  |                                     |             |  udp_queue_rcv_one_skb()   :2349    |
+  |                                     |             |   up->encap_rcv = vxlan_rcv         |
+  |                                     |             |   encap_rcv(sk, skb)  --------------|--►(vxlan above)
+  |-------------------------------------|             |----------------▲--------------------|
+                   |                                                   |
+                   ▼                                                   |
+  |-------------------------------------|             |-------------------------------------|
+  |         OUTER IP STACK              |             |         OUTER IP STACK              |
+  |                                     |             |                                     |
+  |  ip_local_out()                     |             |  ip_rcv()                           |
+  |   NF_INET_LOCAL_OUT (iptables)      |             |   NF_INET_PRE_ROUTING               |
+  |  ip_output()                        |             |  ip_rcv_finish()                    |
+  |   NF_INET_POST_ROUTING (iptables)   |             |  ip_route_input():                  |
+  |  ip_finish_output2()                |             |   dst = LOCAL (192.168.1.2 ours)    |
+  |   ip_neigh_for_gw() [ARP cache]     |             |  ip_local_deliver()                 |
+  |   neigh_hh_output()                 |             |   NF_INET_LOCAL_IN                  |
+  |-------------------------------------|             |----------------▲--------------------|
+                   |                                                   |
+                   ▼                                                   |
+  |-------------------------------------|             |-------------------------------------|
+  |       PHYSICAL NIC  eth0  (Node 0)  |             |       PHYSICAL NIC  eth0  (Node 1)  |
+  |                                     |             |                                     |
+  |  dev_queue_xmit()                   |             |  NIC IRQ → NAPI poll                |
+  |  qdisc enqueue/dequeue              |             |  napi_gro_receive()                 |
+  |  driver ndo_start_xmit()            |             |  netif_receive_skb()                |
+  |  DMA → wire ---------------------------------------------------► ip_rcv() (outer)       |
+  |-------------------------------------|             |-------------------------------------|
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  CORRESPONDING LAYER PAIRS  (same row = same protocol layer)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  VM (app/TCP/inner-IP)    ◄────────────────────────────►  VM (inner-IP/TCP/app)
-  veth pair                ◄────────────────────────────►  veth pair
-  bridge FDB lookup        ◄────────────────────────────►  bridge FDB lookup
-  VXLAN FDB + encapsulate  ◄────────────────────────────►  VXLAN decapsulate + learn
-  outer UDP                ◄────────────────────────────►  outer UDP (encap_rcv hook)
-  outer IP                 ◄────────────────────────────►  outer IP
-  eth0 (NIC xmit)          ◄────── wire ────────────────►  eth0 (NIC recv)
+  VM (app/TCP/inner-IP)    ◄----------------------------►  VM (inner-IP/TCP/app)
+  veth pair                ◄----------------------------►  veth pair
+  bridge FDB lookup        ◄----------------------------►  bridge FDB lookup
+  VXLAN FDB + encapsulate  ◄----------------------------►  VXLAN decapsulate + learn
+  outer UDP                ◄----------------------------►  outer UDP (encap_rcv hook)
+  outer IP                 ◄----------------------------►  outer IP
+  eth0 (NIC xmit)          ◄------ wire ----------------►  eth0 (NIC recv)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   PACKET HEADERS ON THE WIRE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  ┌──────────┬──────────────┬──────────┬──────────┬────────────────┬──────────┬──────┐
-  │underlay  │ outer IPv4   │ UDP      │ VXLAN    │ inner Ethernet │ inner IP │ TCP  │
-  │Ethernet  │ src=192.1.1  │ sp=hash  │ VNI=100  │ VM1→VM2 MACs   │ .0.1→.2  │ data │
-  │ 14B      │ dst=192.1.2  │ dp=4789  │ 8B       │ 14B            │ 20B      │      │
-  └──────────┴──────────────┴──────────┴──────────┴────────────────┴──────────┴──────┘
-  ◄─ neigh ─►◄─ iptunnel_xmit ────────►◄─udp_tun►◄─ vxlan_build ─►◄─ original inner ────►
+  |----------------------------------------------------------------------------------|
+  |underlay  | outer IPv4   | UDP      | VXLAN    | inner Ethernet | inner IP | TCP  |
+  |Ethernet  | src=192.1.1  | sp=hash  | VNI=100  | VM1→VM2 MACs   | .0.1→.2  | data |
+  | 14B      | dst=192.1.2  | dp=4789  | 8B       | 14B            | 20B      |      |
+  |----------------------------------------------------------------------------------|
+  ◄- neigh -►◄- iptunnel_xmit --------►◄-udp_tun►◄- vxlan_build -►◄- original inner ----►
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   KEY LOOKUP TABLES
@@ -18997,21 +18997,21 @@ SEND (TCP segment to 10.0.0.2):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Bridge FDB  (per bridge, net/bridge/br_fdb.c)
-  ┌────────────────────────────────────────────────────────────────────┐
-  │  key = {dst_mac, vlan_id}    value = net_bridge_port *dst          │
-  │  VM1_mac → veth-peer1 port   (local VM, direct delivery)           │
-  │  VM2_mac → vxlan0 port       (remote VM, send via tunnel)          │
-  │  Learned from: br_fdb_update() when frames arrive on each port     │
-  └────────────────────────────────────────────────────────────────────┘
+  |--------------------------------------------------------------------|
+  |  key = {dst_mac, vlan_id}    value = net_bridge_port *dst          |
+  |  VM1_mac → veth-peer1 port   (local VM, direct delivery)           |
+  |  VM2_mac → vxlan0 port       (remote VM, send via tunnel)          |
+  |  Learned from: br_fdb_update() when frames arrive on each port     |
+  |--------------------------------------------------------------------|
 
   VXLAN FDB  (per vxlan device, drivers/net/vxlan/vxlan_core.c)
-  ┌────────────────────────────────────────────────────────────────────┐
-  │  key = {dst_mac, vni}        value = vxlan_rdst.remote_ip          │
-  │  VM2_mac,vni=100 → 192.168.1.2  (Node1's VTEP IP)                  │
-  │  VM3_mac,vni=100 → 192.168.1.3  (Node2's VTEP IP)                  │
-  │  00:00:00:00:00  → 192.168.1.2  (BUM flood default)                │
-  │  Learned from: vxlan_snoop() on RX (outer src IP = remote VTEP)    │
-  └────────────────────────────────────────────────────────────────────┘
+  |--------------------------------------------------------------------|
+  |  key = {dst_mac, vni}        value = vxlan_rdst.remote_ip          |
+  |  VM2_mac,vni=100 → 192.168.1.2  (Node1's VTEP IP)                  |
+  |  VM3_mac,vni=100 → 192.168.1.3  (Node2's VTEP IP)                  |
+  |  00:00:00:00:00  → 192.168.1.2  (BUM flood default)                |
+  |  Learned from: vxlan_snoop() on RX (outer src IP = remote VTEP)    |
+  |--------------------------------------------------------------------|
 ```
 
 ## vxlan_link_ops
