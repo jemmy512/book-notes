@@ -2388,32 +2388,6 @@ static struct mempolicy default_policy = {
     .mode   = MPOL_LOCAL,
 };
 
-#ifndef CONFIG_NUMA
-static inline struct page *alloc_pages_noprof(gfp_t gfp_mask, unsigned int order)
-{
-    return alloc_pages_node_noprof(numa_node_id(), gfp_mask, order) {
-        if (nid == NUMA_NO_NODE)
-            nid = numa_mem_id();
-
-        return __alloc_pages_node_noprof(nid, gfp_mask, order) {
-            VM_BUG_ON(nid < 0 || nid >= MAX_NUMNODES);
-            warn_if_node_offline(nid, gfp_mask);
-
-            return __alloc_pages_noprof(gfp_mask, order, nid, NULL) {
-                struct page *page;
-
-                page = __alloc_frozen_pages_noprof(gfp, order, preferred_nid, nodemask);
-                if (page)
-                    set_page_refcounted(page);
-                return page;
-            }
-        }
-    }
-}
-#else
-struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order);
-#endif /* CONFIG_NUMA */
-
 struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
 {
     struct page *page = alloc_frozen_pages_noprof(gfp, order) {
