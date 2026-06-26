@@ -11,11 +11,11 @@
 * [NAT - Network Address Translation](https://www.karlrupp.net/en/computer/nat_tutorial)
 * [How NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works)
 * [Introduction to modern network load balancing and proxying](https://blog.envoyproxy.io/introduction-to-modern-network-load-balancing-and-proxying-a57f6ff80236)
-* [[译] [论文] BBR：基于拥塞(而非丢包)的拥塞控制(ACM, 2017)](http://arthurchiao.art/blog/bbr-paper-zh/)
-* [Linux 网络栈原理、监控与调优：前言(2022)](http://arthurchiao.art/blog/linux-net-stack-zh/)
-    * [Linux 网络栈接收数据(RX)：配置调优(2022)](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
-    * [Linux 网络栈接收数据(RX)：原理及内核实现(2022)](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
-    * [Linux 中断(IRQ/softirq)基础：原理及内核实现(2022)](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
+* [[译] [论文] BBR: 基于拥塞(而非丢包)的拥塞控制(ACM, 2017)](http://arthurchiao.art/blog/bbr-paper-zh/)
+* [Linux 网络栈原理, 监控与调优: 前言(2022)](http://arthurchiao.art/blog/linux-net-stack-zh/)
+    * [Linux 网络栈接收数据(RX): 配置调优(2022)](http://arthurchiao.art/blog/linux-net-stack-tuning-rx-zh/)
+    * [Linux 网络栈接收数据(RX): 原理及内核实现(2022)](http://arthurchiao.art/blog/linux-net-stack-implementation-rx-zh/)
+    * [Linux 中断(IRQ/softirq)基础: 原理及内核实现(2022)](http://arthurchiao.art/blog/linux-irq-softirq-zh/)
 * [Linux Network Performance Ultimate Guide](https://ntk148v.github.io/posts/linux-network-performance-ultimate-guide/)
 * [Life of a Packet in Kubernetes -veth, bridge, ns](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-1-f9bc0909e051) ⊙ [calico](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-2-a07f5bf0ff14) ⊙ [iptables](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-3-dd881476da0f) ⊙ [Ingress](https://dramasamy.medium.com/life-of-a-packet-in-kubernetes-part-4-4dbc5256050a)
 
@@ -3600,15 +3600,15 @@ __sys_shutdown();
 | Area | Where | Description
 | - | - | - |
 Linear | skb->data ... skb->tail | Directly accessible bytes in the head buffer
-Page frags | skb_shinfo->frags[0..nr_frags-1] | (page, offset, len) tuples — zero-copy NIC DMA pages
+Page frags | skb_shinfo->frags[0..nr_frags-1] | (page, offset, len) tuples - zero-copy NIC DMA pages
 frag_list | skb_shinfo->frag_list->next->.. | A chain of complete child sk_buffs
 
 **What gets put into frag_list:**
-1. IP reassembly — when fragments of an IP datagram arrive, the kernel reassembles them by chaining the fragment skbs onto the first fragment's frag_list. The head skb gets the first fragment's data; every subsequent fragment becomes a child skb in the chain.
+1. IP reassembly - when fragments of an IP datagram arrive, the kernel reassembles them by chaining the fragment skbs onto the first fragment's frag_list. The head skb gets the first fragment's data; every subsequent fragment becomes a child skb in the chain.
 
-2. GRO "strategy C" coalescing — when skb_gro_receive cannot copy frag descriptors into frags[] (would exceed MAX_SKB_FRAGS), it falls back to chaining the incoming skb onto the held skb's frag_list:
+2. GRO "strategy C" coalescing - when skb_gro_receive cannot copy frag descriptors into frags[] (would exceed MAX_SKB_FRAGS), it falls back to chaining the incoming skb onto the held skb's frag_list:
 
-3. UDP cork / MSG_MORE — when an application sends multiple sendmsg calls with MSG_MORE, the UDP layer can chain the extra data skbs onto frag_list and send them as one datagram.
+3. UDP cork / MSG_MORE - when an application sends multiple sendmsg calls with MSG_MORE, the UDP layer can chain the extra data skbs onto frag_list and send them as one datagram.
 
 ```c
 struct sk_buff {
@@ -4751,14 +4751,14 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 /* 2. — Zero-Copy Mode Selection */
     if ((flags & MSG_ZEROCOPY) && size) {
         /* MSG_ZEROCOPY with a pre-supplied msg_ubuf
-         * — caller (e.g. io_uring) has already pinned user pages; just adopt uarg. */
+         * - caller (e.g. io_uring) has already pinned user pages; just adopt uarg. */
         if (msg->msg_ubuf) {
             uarg = msg->msg_ubuf;
             if (sk->sk_route_caps & NETIF_F_SG)
                 zc = MSG_ZEROCOPY;
 
         /* MSG_ZEROCOPY with SOCK_ZEROCOPY
-         * — kernel pins the user pages via msg_zerocopy_realloc. */
+         * - kernel pins the user pages via msg_zerocopy_realloc. */
         } else if (sock_flag(sk, SOCK_ZEROCOPY)) {
             skb = tcp_write_queue_tail(sk);
             uarg = msg_zerocopy_realloc(sk, size, skb_zcopy(skb), !sockc_err && sockc.dmabuf_id);
@@ -4791,7 +4791,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
         goto out_err;
     }
 
-/* 3 — TCP Fast Open */
+/* 3 - TCP Fast Open */
     if (unlikely(flags & MSG_FASTOPEN || inet_test_bit(DEFER_CONNECT, sk)) &&
         !tp->repair) {
         err = tcp_sendmsg_fastopen(sk, msg, &copied_syn, size, uarg);
@@ -5001,7 +5001,7 @@ new_segment:
 
 /* 5.2.3 MSG_SPLICE_PAGES
  * Page references are moved from the pipe/splice iterator directly into skb frags
- * — no copy, no user-page pinning. */
+ * - no copy, no user-page pinning. */
         } else if (zc == MSG_SPLICE_PAGES) {
             if (tcp_downgrade_zcopy_pure(sk, skb))
                 goto wait_for_space;
@@ -10589,7 +10589,7 @@ Ring | Buffer
 
 * You can interpret a struct pci_dev as a representation of a struct net_device at the PCI level, but with some important nuances.
 * The struct pci_dev represents the underlying PCI hardware device (e.g., a network interface card or NIC), while the struct net_device represents the network interface at the kernel’s networking layer.
-* They are not the same object—they serve different purposes at different layers.
+* They are not the same object-they serve different purposes at different layers.
 
 
 NAPI Usage:
@@ -11030,6 +11030,16 @@ irqreturn_t ixgbe_intr(int irq, void *data)
     return IRQ_HANDLED;
 }
 
+static inline bool napi_schedule(struct napi_struct *n)
+{
+    if (napi_schedule_prep(n)) {
+        __napi_schedule(n);
+        return true;
+    }
+
+    return false;
+}
+
 static inline void napi_schedule_irqoff(struct napi_struct *n)
 {
     ret = napi_schedule_prep(n) {
@@ -11101,8 +11111,11 @@ void __napi_schedule(struct napi_struct *n)
 
 open_softirq(NET_TX_SOFTIRQ, net_tx_action); /* snd */
 open_softirq(NET_RX_SOFTIRQ, net_rx_action); /* rcv */
+```
 
+### net_rx_action
 
+```c
 void net_rx_action(struct softirq_action *h)
 {
     struct softnet_data *sd = this_cpu_ptr(&softnet_data);
@@ -11145,11 +11158,124 @@ void net_rx_action(struct softirq_action *h)
     if (!list_empty(&sd->poll_list))
         __raise_softirq_irqoff(NET_RX_SOFTIRQ);
 
-    net_rps_action_and_irq_enable(sd);
+    net_rps_action_and_irq_enable(sd) {
+        struct softnet_data *remsd = sd->rps_ipi_list;
+
+        if (!use_backlog_threads() && remsd) {
+            sd->rps_ipi_list = NULL;
+
+            local_irq_enable();
+
+            /* Send pending IPI's to kick RPS processing on remote cpus. */
+            net_rps_send_ipi(remsd) {
+                while (remsd) {
+                    struct softnet_data *next = remsd->rps_ipi_next;
+
+                    if (cpu_online(remsd->cpu))
+                        smp_call_function_single_async(remsd->cpu, &remsd->csd);
+                    remsd = next;
+                }
+            }
+        } else
+            local_irq_enable();
+    }
 out:
     __kfree_skb_flush();
 }
 ```
+
+#### napi_poll
+
+```c
+int napi_poll(struct napi_struct *n, struct list_head *repoll)
+{
+    bool do_repoll = false;
+    void *have;
+    int work;
+
+    list_del_init(&n->poll_list);
+
+    have = netpoll_poll_lock(n);
+
+    work = __napi_poll(n, &do_repoll);
+
+    if (do_repoll) {
+#if defined(CONFIG_DEBUG_NET)
+        if (unlikely(!napi_is_scheduled(n)))
+            pr_crit("repoll requested for device %s %ps but napi is not scheduled.\n",
+                n->dev->name, n->poll);
+#endif
+        list_add_tail(&n->poll_list, repoll);
+    }
+    netpoll_poll_unlock(have);
+
+    return work;
+}
+
+static int __napi_poll(struct napi_struct *n, bool *repoll)
+{
+    int work, weight;
+
+    weight = n->weight;
+
+    /* This NAPI_STATE_SCHED test is for avoiding a race
+     * with netpoll's poll_napi().  Only the entity which
+     * obtains the lock and sees NAPI_STATE_SCHED set will
+     * actually make the ->poll() call.  Therefore we avoid
+     * accidentally calling ->poll() when NAPI is not scheduled. */
+    work = 0;
+    if (napi_is_scheduled(n)) {/* test_bit(NAPI_STATE_SCHED, &n->state) */
+        work = n->poll(n, weight);
+        trace_napi_poll(n, work, weight);
+
+        xdp_do_check_flushed(n);
+    }
+
+    if (unlikely(work > weight))
+        netdev_err_once(n->dev, "NAPI poll function %pS returned %d, exceeding its budget of %d.\n",
+                n->poll, work, weight);
+
+    if (likely(work < weight))
+        return work;
+
+    /* Drivers must not modify the NAPI state if they
+     * consume the entire weight.  In such cases this code
+     * still "owns" the NAPI instance and therefore can
+     * move the instance around on the list at-will. */
+    if (unlikely(napi_disable_pending(n))) {/* test_bit(NAPI_STATE_DISABLE, &n->state) */
+        napi_complete(n);
+        return work;
+    }
+
+    /* The NAPI context has more processing work, but busy-polling
+     * is preferred. Exit early. */
+    if (napi_prefer_busy_poll(n)) {
+        if (napi_complete_done(n, work)) {
+            /* If timeout is not set, we need to make sure
+             * that the NAPI is re-scheduled. */
+            napi_schedule(n);
+        }
+        return work;
+    }
+
+    /* Flush too old packets. If HZ < 1000, flush all packets */
+    gro_flush_normal(&n->gro, HZ >= 1000);
+
+    /* Some drivers may have called napi_schedule
+     * prior to exhausting their budget. */
+    if (unlikely(!list_empty(&n->poll_list))) {
+        pr_warn_once("%s: Budget exhausted after napi rescheduled\n",
+                 n->dev ? n->dev->name : "backlog");
+        return work;
+    }
+
+    *repoll = true;
+
+    return work;
+}
+```
+
+#### ixgbe_poll
 
 |Queue|Key Functions|Purpose|
 |-----|-------------|-------|
@@ -11330,7 +11456,11 @@ bool napi_complete_done(struct napi_struct *n, int work_done)
         hrtimer_start(&n->timer, ns_to_ktime(timeout), HRTIMER_MODE_REL_PINNED);
     return ret;
 }
+```
 
+#### ixgbe_clean_rx_irq
+
+```c
 int ixgbe_clean_rx_irq(struct ixgbe_q_vector *q_vector,
                    struct ixgbe_ring *rx_ring,
                    const int budget)
@@ -11995,8 +12125,8 @@ struct sk_buff *tcp_gro_receive(struct list_head *head, struct sk_buff *skb,
     flush |= skb_cmp_decrypted(p, skb);
 
     /* is_flist.2 aggregation
-     * is_flist mode flushes if any TCP flag differs — including PSH
-     * — because the child skbs retain their original headers,
+     * is_flist mode flushes if any TCP flag differs - including PSH
+     * - because the child skbs retain their original headers,
      * so flags cannot be merged. */
     if (unlikely(NAPI_GRO_CB(p)->is_flist)) {
         flush |= (__force int)(flags ^ tcp_flag_word(th2));
@@ -12083,7 +12213,7 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
     lp = NAPI_GRO_CB(p)->last;
     pinfo = skb_shinfo(lp);
 
-/* Strategy A — frag splice (headlen <= offset): payload in nonlinear area
+/* Strategy A - frag splice (headlen <= offset): payload in nonlinear area
 
    skb->data                     skb->tail
     |                                |
@@ -12135,7 +12265,7 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
         NAPI_GRO_CB(skb)->free = NAPI_GRO_FREE;
         goto done;
 
-/* Strategy B — head-frag promotion (skb->head_frag): payload in linear area and head_frag
+/* Strategy B - head-frag promotion (skb->head_frag): payload in linear area and head_frag
                 PAGE  (from napi_build_skb / page pool)
     ┌──────────────────────────────────────────────────────────────────────────────────┐
     │ hard_start │ ETH | IP | TCP hdr │ payload_head │  frags[0] payload │  shinfo...  │
@@ -12183,7 +12313,7 @@ int skb_gro_receive(struct sk_buff *p, struct sk_buff *skb)
         goto done;
     }
 
-/* Strategy C — frag_list chain: only payload in linear area no frag_head */
+/* Strategy C - frag_list chain: only payload in linear area no frag_head */
 merge:
     /* sk ownership - if any - completely transferred to the aggregated packet */
     skb->destructor = NULL;
@@ -12265,8 +12395,17 @@ int skb_gro_receive_list(struct sk_buff *p, struct sk_buff *skb)
 ### gro_flush_normal
 
 ```c
+struct gro_node {
+    unsigned long       bitmask;
+    struct gro_list     hash[GRO_HASH_BUCKETS]; /* SKBs being actively coalesced into larger segments */
+    struct list_head    rx_list; /* SKBs that cannot be merged (GRO_NORMAL — passed straight through) */
+    u32                 rx_count;
+    u32                 cached_napi_id;
+};
+
 static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
 {
+    /* flush merged list */
     gro_flush(gro, flush_old) {
         if (!gro->bitmask)
             return;
@@ -12275,6 +12414,7 @@ static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
             unsigned long bitmask = gro->bitmask;
             unsigned int i, base = ~0U;
 
+            /* iterate each hash bucket */
             while ((i = ffs(bitmask)) != 0) {
                 bitmask >>= i;
                 base += i;
@@ -12297,6 +12437,7 @@ static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
         }
     }
 
+    /* flusth un-merged list */
     gro_normal_list(gro) {
         if (!gro->rx_count)
             return;
@@ -12313,7 +12454,6 @@ static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
             list_splice_init(&sublist, head);
 
             rcu_read_lock();
-        #ifdef CONFIG_RPS
             if (static_branch_unlikely(&rps_needed)) {
                 list_for_each_entry_safe(skb, next, head, list) {
                     struct rps_dev_flow voidflow, *rflow = &voidflow;
@@ -12326,7 +12466,6 @@ static inline void gro_flush_normal(struct gro_node *gro, bool flush_old)
                     }
                 }
             }
-        #endif
             __netif_receive_skb_list(head);
             rcu_read_unlock();
         }
@@ -12956,8 +13095,30 @@ int enqueue_to_backlog(struct sk_buff *skb, int cpu, unsigned int *qtail)
         if (!qlen) {
             /* Schedule NAPI for backlog device. We can use
              * non atomic operation as we own the queue lock. */
-            if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state))
-                napi_schedule_rps(sd);
+            if (!__test_and_set_bit(NAPI_STATE_SCHED, &sd->backlog.state)) {
+                napi_schedule_rps(sd) {
+                    struct softnet_data *mysd = this_cpu_ptr(&softnet_data);
+
+                #ifdef CONFIG_RPS
+                    if (sd != mysd) {
+                        if (use_backlog_threads()) {
+                            __napi_schedule_irqoff(&sd->backlog);
+                            return;
+                        }
+
+                        sd->rps_ipi_next = mysd->rps_ipi_list;
+                        mysd->rps_ipi_list = sd;
+
+                        /* If not called from net_rx_action() or napi_threaded_poll()
+                        * we have to raise NET_RX_SOFTIRQ. */
+                        if (!mysd->in_net_rx_action && !mysd->in_napi_threaded_poll)
+                            __raise_softirq_irqoff(NET_RX_SOFTIRQ);
+                        return;
+                    }
+                #endif /* CONFIG_RPS */
+                    __napi_schedule_irqoff(&mysd->backlog);
+                }
+            }
         }
         __skb_queue_tail(&sd->input_pkt_queue, skb);
         tail = rps_input_queue_tail_incr(sd) {
@@ -13615,8 +13776,11 @@ int ip_rcv_finish_core(struct net *net,
 #endif
 
 /* 5. IP Options Handling */
-    if (iph->ihl > 5 && ip_rcv_options(skb, dev))
-        goto drop;
+    if (iph->ihl > 5) {
+        drop_reason = ip_rcv_options(skb, dev);
+        if (drop_reason)
+            goto drop;
+    }
 
 /* 6. Multicast/Broadcast Handling */
     rt = skb_rtable(skb);
@@ -13677,17 +13841,68 @@ int ip_local_deliver(struct sk_buff *skb)
 
 int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
+    ret = skb_orphan_frags_rx(skb, GFP_ATOMIC) {
+        if (likely(!skb_zcopy(skb)))
+            return 0;
+        return skb_copy_ubufs(skb, gfp_mask);
+    }
+    if (unlikely(ret)) {
+        __IP_INC_STATS(net, IPSTATS_MIB_INDISCARDS);
+        kfree_skb_reason(skb, SKB_DROP_REASON_NOMEM);
+        return 0;
+    }
+
+    skb_clear_delivery_time(skb);
     __skb_pull(skb, skb_network_header_len(skb));
 
-    int protocol = ip_hdr(skb)->protocol;
+    rcu_read_lock();
+    ip_protocol_deliver_rcu(net, skb, ip_hdr(skb)->protocol);
+    rcu_read_unlock();
+
+    return 0;
+}
+
+void ip_protocol_deliver_rcu(struct net *net, struct sk_buff *skb, int protocol)
+{
     const struct net_protocol *ipprot;
+    int raw, ret;
+
+resubmit:
+    raw = raw_local_deliver(skb, protocol);
 
     ipprot = rcu_dereference(inet_protos[protocol]);
     if (ipprot) {
-        int ret;
-        ret = ipprot->handler(skb);
+        if (!ipprot->no_policy) {
+            if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
+                kfree_skb_reason(skb, SKB_DROP_REASON_XFRM_POLICY);
+                return;
+            }
+            nf_reset_ct(skb);
+        }
+        ret = INDIRECT_CALL_2(ipprot->handler, tcp_v4_rcv, udp_rcv, skb);
+        if (ret < 0) {
+            protocol = -ret;
+            goto resubmit;
+        }
+        __IP_INC_STATS(net, IPSTATS_MIB_INDELIVERS);
+    } else {
+        if (!raw) {
+            if (xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
+                __IP_INC_STATS(net, IPSTATS_MIB_INUNKNOWNPROTOS);
+                icmp_send(skb, ICMP_DEST_UNREACH, ICMP_PROT_UNREACH, 0);
+            }
+            kfree_skb_reason(skb, SKB_DROP_REASON_IP_NOPROTO);
+        } else {
+            __IP_INC_STATS(net, IPSTATS_MIB_INDELIVERS);
+            consume_skb(skb);
+        }
     }
 }
+```
+
+### ip_defrag
+
+```c
 ```
 
 ## tcp layer rx
@@ -13767,7 +13982,7 @@ lookup:
     if (sk->sk_state == TCP_NEW_SYN_RECV) {
         struct request_sock *req = inet_reqsk(sk);
         bool req_stolen = false;
-        struct sock *newsk;
+        struct sock *nsk;
 
         sk = req->rsk_listener;
         if (unlikely(tcp_v4_inbound_md5_hash(sk, skb))) {
@@ -13795,15 +14010,15 @@ lookup:
         }
 
         refcounted = true;
-        newsk = NULL;
+        nsk = NULL;
         if (!tcp_filter(sk, skb)) {
             th = (const struct tcphdr *)skb->data;
             iph = ip_hdr(skb);
             tcp_v4_fill_cb(skb, iph, th);
-            newsk = tcp_check_req(sk, skb, req, false, &req_stolen);
+            nsk = tcp_check_req(sk, skb, req, false, &req_stolen);
         }
 
-        if (!newsk) {
+        if (!nsk) {
             reqsk_put(req);
             if (req_stolen) {
                 /* Another cpu got exclusive access to req
@@ -13817,7 +14032,8 @@ lookup:
             goto discard_and_relse;
         }
 
-        if (newsk == sk) {
+        nf_reset_ct(skb);
+        if (nsk == sk) {
             reqsk_put(req);
             tcp_v4_restore_cb(skb);
         } else {
@@ -13835,10 +14051,26 @@ lookup:
     }
 
 process:
-    drop_reason = tcp_inbound_hash(sk, NULL, skb, &iph->saddr, &iph->daddr,
-                    AF_INET, dif, sdif);
-    if (drop_reason)
-        goto discard_and_relse;
+    if (static_branch_unlikely(&ip4_min_ttl)) {
+		/* min_ttl can be changed concurrently from do_ip_setsockopt() */
+		if (unlikely(iph->ttl < READ_ONCE(inet_sk(sk)->min_ttl))) {
+			__NET_INC_STATS(net, LINUX_MIB_TCPMINTTLDROP);
+			drop_reason = SKB_DROP_REASON_TCP_MINTTL;
+			goto discard_and_relse;
+		}
+	}
+
+	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb)) {
+		drop_reason = SKB_DROP_REASON_XFRM_POLICY;
+		goto discard_and_relse;
+	}
+
+	drop_reason = tcp_inbound_hash(sk, NULL, skb, &iph->saddr, &iph->daddr,
+				       AF_INET, dif, sdif);
+	if (drop_reason)
+		goto discard_and_relse;
+
+	nf_reset_ct(skb);
 
     if (tcp_filter(sk, skb))
         goto discard_and_relse;
@@ -13846,6 +14078,7 @@ process:
     th = (const struct tcphdr *)skb->data;
     iph = ip_hdr(skb);
     tcp_v4_fill_cb(skb, iph, th);
+    TCP_SKB_CB(skb)->tcp_tw_isn = isn;
 
     skb->dev = NULL;
 
@@ -13905,6 +14138,7 @@ discard_and_relse:
         sock_put(sk);
     goto discard_it;
 
+do_time_wait:
     if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
         inet_twsk_put(inet_twsk(sk));
         goto discard_it;
@@ -13917,7 +14151,9 @@ discard_and_relse:
         goto csum_error;
     }
 
-    switch (tcp_timewait_state_process(inet_twsk(sk), skb, th)) {
+    tw_status = tcp_timewait_state_process(inet_twsk(sk), skb, th, &isn, &drop_reason);
+
+    switch (tw_status) {
     case TCP_TW_SYN: {
         struct sock *sk2 = inet_lookup_listener(dev_net(skb->dev),
                 &tcp_hashinfo, skb,
@@ -13933,10 +14169,15 @@ discard_and_relse:
             refcounted = false;
             goto process;
         }
+
+        drop_reason = psp_twsk_rx_policy_check(inet_twsk(sk), skb);
+		if (drop_reason)
+			break;
     }
-    /* to ACK */
-    /* fall through */
+        /* to ACK */
+        fallthrough;
     case TCP_TW_ACK:
+	case TCP_TW_ACK_OOW:
         tcp_v4_timewait_ack(sk, skb);
         break;
     case TCP_TW_RST:
@@ -13948,7 +14189,11 @@ discard_and_relse:
 
     goto discard_it;
 }
+```
 
+#### tcp_child_process
+
+```c
 int tcp_child_process(struct sock *parent, struct sock *child,
           struct sk_buff *skb)
 {
@@ -13976,6 +14221,8 @@ int tcp_child_process(struct sock *parent, struct sock *child,
     return ret;
 }
 ```
+
+#### tcp_filter
 
 ### tcp_v4_do_rcv-TCP_ESTABLISHED
 
@@ -14285,13 +14532,18 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         return 0;
 
     /* Step 5: check the ACK field */
-    acceptable = tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT | FLAG_NO_CHALLENGE_ACK) > 0;
+    reason = tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT | FLAG_NO_CHALLENGE_ACK) > 0;
 
-    if (!acceptable) {
+    if (reason <= 0) {
         if (sk->sk_state == TCP_SYN_RECV)
-            return 1;  /* send one RST */
-        tcp_send_challenge_ack(sk, skb);
-        goto discard;
+            return -reason;  /* send one RST */
+
+        /* accept old ack during closing */
+		if ((int)reason < 0) {
+			tcp_send_challenge_ack(sk, false);
+			reason = -reason;
+			goto discard;
+		}
     }
 
     switch (sk->sk_state) {
@@ -14300,25 +14552,22 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         if (!tp->srtt_us)
             tcp_synack_rtt_meas(sk, req);
 
-        /* Once we leave TCP_SYN_RECV, we no longer need req
-        * so release it. */
+        if (tp->rx_opt.tstamp_ok)
+			tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
+
         if (req) {
-            inet_csk(sk)->icsk_retransmits = 0;
-            reqsk_fastopen_remove(sk, req, false);
-            /* Re-arm the timer because data may have been sent out.
-            * This is similar to the regular data transmission case
-            * when new data has just been ack'ed.
-            *
-            * (TFO) - we could try to be more aggressive and
-            * retransmitting any data sooner based on when they
-            * are sent out. */
-            tcp_rearm_rto(sk);
-        } else {
-            tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB);
-            tp->copied_seq = tp->rcv_nxt;
-        }
-        tcp_set_state(sk, TCP_ESTABLISHED);
-        sk->sk_state_change(sk);
+			tcp_rcv_synrecv_state_fastopen(sk);
+		} else {
+			tcp_try_undo_spurious_syn(sk);
+			tp->retrans_stamp = 0;
+			tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB, skb);
+			WRITE_ONCE(tp->copied_seq, tp->rcv_nxt);
+		}
+
+        tcp_ao_established(sk);
+		smp_mb();
+		tcp_set_state(sk, TCP_ESTABLISHED);
+		sk->sk_state_change(sk);
 
         /* Note, that this wakeup is only for marginal crossed SYN case.
         * Passively open sockets are not waked up, because
@@ -14330,33 +14579,27 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale;
         tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
 
-        if (tp->rx_opt.tstamp_ok)
-            tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
-
         if (!inet_csk(sk)->icsk_ca_ops->cong_control)
-            tcp_update_pacing_rate(sk);
+			tcp_update_pacing_rate(sk);
 
         /* Prevent spurious tcp_cwnd_restart() on first data packet */
         tp->lsndtime = tcp_jiffies32;
 
         tcp_initialize_rcv_mss(sk);
-        tcp_fast_path_on(tp);
-        break;
+		if (tcp_ecn_mode_accecn(tp))
+			tcp_accecn_third_ack(sk, skb, tp->syn_ect_snt);
+		tcp_fast_path_on(tp);
+		if (sk->sk_shutdown & SEND_SHUTDOWN)
+			tcp_shutdown(sk, SEND_SHUTDOWN);
 
     case TCP_FIN_WAIT1: {
         int tmo;
 
-        /* If we enter the TCP_FIN_WAIT1 state and we are a
-        * Fast Open socket and this is the first acceptable
-        * ACK we have received, this would have acknowledged
-        * our SYNACK so stop the SYNACK timer. */
-        if (req) {
-            /* We no longer need the request sock. */
-            reqsk_fastopen_remove(sk, req, false);
-            tcp_rearm_rto(sk);
-        }
-        if (tp->snd_una != tp->write_seq)
-            break;
+        if (req)
+			tcp_rcv_synrecv_state_fastopen(sk);
+
+		if (tp->snd_una != tp->write_seq)
+			break;
 
         tcp_set_state(sk, TCP_FIN_WAIT2);
         sk->sk_shutdown |= SEND_SHUTDOWN;
@@ -14378,32 +14621,33 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         {
             /* Receive out of order FIN after close() */
             if (tp->syn_fastopen && th->fin)
-            tcp_fastopen_active_disable(sk);
+                tcp_fastopen_active_disable(sk);
             tcp_done(sk);
             return 1;
         }
 
         tmo = tcp_fin_time(sk);
-        if (tmo > TCP_TIMEWAIT_LEN) {
-            inet_csk_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
-        } else if (th->fin || sock_owned_by_user(sk)) {
-            /* Bad case. We could lose such FIN otherwise.
-            * It is not a big problem, but it looks confusing
-            * and not so rare event. We still can lose it now,
-            * if it spins in bh_lock_sock(), but it is really
-            * marginal case. */
-            inet_csk_reset_keepalive_timer(sk, tmo);
-        } else {
-            tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
-            goto discard;
-        }
+		if (tmo > TCP_TIMEWAIT_LEN) {
+			tcp_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
+		} else if (th->fin || sock_owned_by_user(sk)) {
+			/* Bad case. We could lose such FIN otherwise.
+			 * It is not a big problem, but it looks confusing
+			 * and not so rare event. We still can lose it now,
+			 * if it spins in bh_lock_sock(), but it is really
+			 * marginal case.
+			 */
+			tcp_reset_keepalive_timer(sk, tmo);
+		} else {
+			tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+			goto consume;
+		}
         break;
     }
 
     case TCP_CLOSING:
         if (tp->snd_una == tp->write_seq) {
             tcp_time_wait(sk, TCP_TIME_WAIT, 0);
-            goto discard;
+            goto consume;
         }
         break;
 
@@ -14411,7 +14655,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         if (tp->snd_una == tp->write_seq) {
             tcp_update_metrics(sk);
             tcp_done(sk);
-            goto discard;
+            goto consume;
         }
         break;
     }
@@ -14424,9 +14668,15 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
     case TCP_CLOSE_WAIT:
     case TCP_CLOSING:
     case TCP_LAST_ACK:
-        if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt))
-            break;
-        /* fall through */
+        if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
+			/* If a subflow has been reset, the packet should not
+			 * continue to be processed, drop the packet.
+			 */
+			if (sk_is_mptcp(sk) && !mptcp_incoming_options(sk, skb))
+				goto discard;
+			break;
+		}
+		fallthrough;
     case TCP_FIN_WAIT1:
     case TCP_FIN_WAIT2:
         /* RFC 793 says to queue data in these states,
@@ -14455,10 +14705,16 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 discard:
         tcp_drop(sk, skb);
     }
-
+consume:
+	__kfree_skb(skb);
     return 0;
 }
+```
 
+#### tcp_validate_incoming
+
+```c
+/* Step 1 2 3 4 */
 bool tcp_validate_incoming(
     struct sock *sk, struct sk_buff *skb,
     const struct tcphdr *th, int syn_inerr)
@@ -14557,6 +14813,12 @@ discard:
     tcp_drop(sk, skb);
     return false;
 }
+```
+
+#### tcp_ack
+
+```c
+/* step 5: check the ACK field */
 ```
 
 ### tcp_data_queue
@@ -14847,6 +15109,8 @@ void tcp_ofo_queue(struct sock *sk)
     }
 }
 ```
+
+### tcp_timewait_state_process
 
 ## vfs layer rx
 
@@ -15315,6 +15579,1642 @@ int sk_wait_data(struct sock *sk, long *timeo, const struct sk_buff *skb)
 * [wait_woken](./linux-proc.md#wait_woken)
 * [wake_up](./linux-proc.md#wake_up)
 
+---
+
+# rtnl_link
+
+```c
+static const struct proto_ops netlink_ops = {
+    .family              = PF_NETLINK,
+    .owner               = THIS_MODULE,
+    .release             = netlink_release,
+    .bind                = netlink_bind,
+    .connect             = netlink_connect,
+    .socketpair          = sock_no_socketpair,
+    .accept              = sock_no_accept,
+    .getname             = netlink_getname,
+    .poll                = datagram_poll,
+    .ioctl               = netlink_ioctl,
+    .listen              = sock_no_listen,
+    .shutdown            = sock_no_shutdown,
+    .setsockopt          = netlink_setsockopt,
+    .getsockopt_iter     = netlink_getsockopt,
+    .sendmsg             = netlink_sendmsg,
+    .recvmsg             = netlink_recvmsg,
+    .mmap                = sock_no_mmap,
+};
+
+struct rtnl_link {
+    rtnl_doit_func          doit;
+    rtnl_dumpit_func        dumpit;
+    struct module           *owner;
+    unsigned int            flags;
+    struct rcu_head         rcu;
+};
+```
+
+## rtnetlink_net_init
+
+```c
+void __init rtnetlink_init(void)
+{
+    if (register_pernet_subsys(&rtnetlink_net_ops))
+        panic("rtnetlink_init: cannot initialize rtnetlink\n");
+
+    register_netdevice_notifier(&rtnetlink_dev_notifier);
+
+    rtnl_register_many(rtnetlink_rtnl_msg_handlers);
+}
+
+static struct pernet_operations rtnetlink_net_ops = {
+    .init = rtnetlink_net_init,
+    .exit = rtnetlink_net_exit,
+};
+
+static int __net_init rtnetlink_net_init(struct net *net)
+{
+    struct sock *sk;
+    struct netlink_kernel_cfg cfg = {
+        .groups         = RTNLGRP_MAX,
+        .input          = rtnetlink_rcv,
+        .flags          = NL_CFG_F_NONROOT_RECV,
+        .bind           = rtnetlink_bind,
+    };
+
+    sk = netlink_kernel_create(net, NETLINK_ROUTE, &cfg) {
+        return __netlink_kernel_create(net, unit, THIS_MODULE, cfg);
+    }
+    if (!sk)
+        return -ENOMEM;
+    net->rtnl = sk;
+    return 0;
+}
+
+struct sock *
+__netlink_kernel_create(struct net *net, int unit, struct module *module,
+            struct netlink_kernel_cfg *cfg)
+{
+    struct socket *sock;
+    struct sock *sk;
+    struct netlink_sock *nlk;
+    struct listeners *listeners = NULL;
+    unsigned int groups;
+
+    BUG_ON(!nl_table);
+
+    if (unit < 0 || unit >= MAX_LINKS)
+        return NULL;
+
+    if (sock_create_lite(PF_NETLINK, SOCK_DGRAM, unit, &sock))
+        return NULL;
+
+    if (__netlink_create(net, sock, unit, 1) < 0)
+        goto out_sock_release_nosk;
+
+    sk = sock->sk;
+
+    if (!cfg || cfg->groups < 32)
+        groups = 32;
+    else
+        groups = cfg->groups;
+
+    listeners = kzalloc(sizeof(*listeners) + NLGRPSZ(groups), GFP_KERNEL);
+    if (!listeners)
+        goto out_sock_release;
+
+    sk->sk_data_ready = netlink_data_ready;
+    if (cfg && cfg->input)
+        nlk_sk(sk)->netlink_rcv = cfg->input;
+
+    if (netlink_insert(sk, 0))
+        goto out_sock_release;
+
+    nlk = nlk_sk(sk);
+    set_bit(NETLINK_F_KERNEL_SOCKET, &nlk->flags);
+
+    netlink_table_grab();
+    if (!nl_table[unit].registered) {
+        nl_table[unit].groups = groups;
+        rcu_assign_pointer(nl_table[unit].listeners, listeners);
+        nl_table[unit].module = module;
+        if (cfg) {
+            nl_table[unit].bind = cfg->bind;
+            nl_table[unit].unbind = cfg->unbind;
+            nl_table[unit].release = cfg->release;
+            nl_table[unit].flags = cfg->flags;
+        }
+        nl_table[unit].registered = 1;
+    } else {
+        kfree(listeners);
+        nl_table[unit].registered++;
+    }
+    netlink_table_ungrab();
+    return sk;
+
+out_sock_release:
+    kfree(listeners);
+    netlink_kernel_release(sk);
+    return NULL;
+
+out_sock_release_nosk:
+    sock_release(sock);
+    return NULL;
+}
+```
+
+## rtnetlink_rcv
+
+```c
+userspace: sendmsg(fd, msg, ...)          [syscall]
+    │
+    ▼
+netlink_sendmsg(sock, msg, len)           [af_netlink.c:1818]
+    │  copies user data into skb
+    │  dst_portid = 0 (kernel socket)
+    │
+    ▼
+netlink_unicast(ssk, skb, dst_portid=0)   [af_netlink.c:1328]
+    │  netlink_is_kernel(sk) == true
+    │
+    ▼
+netlink_unicast_kernel(sk, skb, ssk)      [af_netlink.c:1306]
+    │  nlk->netlink_rcv != NULL
+    │  calls nlk->netlink_rcv(skb)
+    │    └─ set at socket creation time via cfg->input = rtnetlink_rcv
+    │
+    ▼
+rtnetlink_rcv(skb)                        [rtnetlink.c:7093]
+    │  thin wrapper
+    │
+    ▼
+netlink_rcv_skb(skb, &rtnetlink_rcv_msg)  [af_netlink.c:2530]
+    │  loops over all nlmsghdr in skb
+    │  skips non-NLM_F_REQUEST messages
+    │  skips control types < NLMSG_MIN_TYPE
+    │  calls cb(skb, nlh, &extack)
+    │  sends netlink_ack() on NLM_F_ACK or error
+    │
+    ▼
+rtnetlink_rcv_msg(skb, nlh, extack)       [rtnetlink.c:~6969]
+    │  → dispatch to doit/dumpit handler
+
+static void rtnetlink_rcv(struct sk_buff *skb)
+{
+    netlink_rcv_skb(skb, &rtnetlink_rcv_msg/*cb*/) {
+        struct netlink_ext_ack extack;
+        struct nlmsghdr *nlh;
+        int err;
+
+        while (skb->len >= nlmsg_total_size(0)) {
+            int msglen;
+
+            memset(&extack, 0, sizeof(extack));
+            nlh = nlmsg_hdr(skb);
+            err = 0;
+
+            if (nlh->nlmsg_len < NLMSG_HDRLEN || skb->len < nlh->nlmsg_len)
+                return 0;
+
+            /* Only requests are handled by the kernel */
+            if (!(nlh->nlmsg_flags & NLM_F_REQUEST))
+                goto ack;
+
+            /* Skip control messages */
+            if (nlh->nlmsg_type < NLMSG_MIN_TYPE)
+                goto ack;
+
+            err = cb(skb, nlh, &extack);
+            if (err == -EINTR)
+                goto skip;
+
+    ack:
+            if (nlh->nlmsg_flags & NLM_F_ACK || err)
+                netlink_ack(skb, nlh, err, &extack);
+
+    skip:
+            msglen = NLMSG_ALIGN(nlh->nlmsg_len);
+            if (msglen > skb->len)
+                msglen = skb->len;
+            skb_pull(skb, msglen);
+        }
+
+        return 0;
+    }
+}
+
+int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
+                 struct netlink_ext_ack *extack)
+{
+    struct net *net = sock_net(skb->sk);
+    struct rtnl_link *link;
+    enum rtnl_kinds kind;
+    struct module *owner;
+    int err = -EOPNOTSUPP;
+    rtnl_doit_func doit;
+    unsigned int flags;
+    int family;
+    int type;
+
+    type = nlh->nlmsg_type;
+    if (type > RTM_MAX)
+        return -EOPNOTSUPP;
+
+    type -= RTM_BASE;
+
+    /* All the messages must have at least 1 byte length */
+    if (nlmsg_len(nlh) < sizeof(struct rtgenmsg))
+        return 0;
+
+    family = ((struct rtgenmsg *)nlmsg_data(nlh))->rtgen_family;
+    kind = rtnl_msgtype_kind(type) {
+        return msgtype & RTNL_KIND_MASK;
+    }
+
+    if (kind != RTNL_KIND_GET && !netlink_net_capable(skb, CAP_NET_ADMIN))
+        return -EPERM;
+
+    rcu_read_lock();
+    if (kind == RTNL_KIND_GET && (nlh->nlmsg_flags & NLM_F_DUMP)) {
+        struct sock *rtnl;
+        rtnl_dumpit_func dumpit;
+        u32 min_dump_alloc = 0;
+
+        link = rtnl_get_link(family, type);
+        if (!link || !link->dumpit) {
+            family = PF_UNSPEC;
+            link = rtnl_get_link(family, type);
+            if (!link || !link->dumpit)
+                goto err_unlock;
+        }
+        owner = link->owner;
+        dumpit = link->dumpit;
+        flags = link->flags;
+
+        if (type == RTM_GETLINK - RTM_BASE)
+            min_dump_alloc = rtnl_calcit(skb, nlh);
+
+        err = 0;
+        /* need to do this before rcu_read_unlock() */
+        if (!try_module_get(owner))
+            err = -EPROTONOSUPPORT;
+
+        rcu_read_unlock();
+
+        rtnl = net->rtnl;
+        if (err == 0) {
+            struct netlink_dump_control c = {
+                .dump               = dumpit,
+                .min_dump_alloc     = min_dump_alloc,
+                .module             = owner,
+                .flags              = flags,
+            };
+            err = rtnetlink_dump_start(rtnl, skb, nlh, &c);
+            /* netlink_dump_start() will keep a reference on
+             * module if dump is still in progress. */
+            module_put(owner);
+        }
+        return err;
+    }
+
+    link = rtnl_get_link(family, type);
+    if (!link || !link->doit) {
+        family = PF_UNSPEC;
+        link = rtnl_get_link(PF_UNSPEC, type);
+        if (!link || !link->doit)
+            goto out_unlock;
+    }
+
+    owner = link->owner;
+    if (!try_module_get(owner)) {
+        err = -EPROTONOSUPPORT;
+        goto out_unlock;
+    }
+
+    flags = link->flags;
+    if (kind == RTNL_KIND_DEL && (nlh->nlmsg_flags & NLM_F_BULK) &&
+        !(flags & RTNL_FLAG_BULK_DEL_SUPPORTED)) {
+        NL_SET_ERR_MSG(extack, "Bulk delete is not supported");
+        module_put(owner);
+        goto err_unlock;
+    }
+
+    if (flags & RTNL_FLAG_DOIT_UNLOCKED) {
+        doit = link->doit;
+        rcu_read_unlock();
+        if (doit)
+            err = doit(skb, nlh, extack);
+        module_put(owner);
+        return err;
+    }
+    rcu_read_unlock();
+
+    rtnl_lock();
+    link = rtnl_get_link(family, type);
+    if (link && link->doit)
+        err = link->doit(skb, nlh, extack) {
+            rtnl_newlink();
+            rtm_new_nexthop();
+            fib_nl_newrule();
+            inet_rtm_newaddr();
+        }
+    rtnl_unlock();
+
+    module_put(owner);
+
+    return err;
+
+out_unlock:
+    rcu_read_unlock();
+    return err;
+
+err_unlock:
+    rcu_read_unlock();
+    return -EOPNOTSUPP;
+}
+```
+
+## rtnl_msg_handler
+
+```c
+struct rtnl_msg_handler {
+    struct module       *owner;
+    int                 protocol;
+    int                 msgtype;
+    rtnl_doit_func      doit;
+    rtnl_dumpit_func    dumpit;
+    int                 flags;
+};
+
+#define rtnl_register_many(handlers)                \
+    __rtnl_register_many(handlers, ARRAY_SIZE(handlers))
+
+int __rtnl_register_many(const struct rtnl_msg_handler *handlers, int n)
+{
+    const struct rtnl_msg_handler *handler;
+    int i, err;
+
+    for (i = 0, handler = handlers; i < n; i++, handler++) {
+        err = rtnl_register_internal(handler->owner, handler->protocol,
+                         handler->msgtype, handler->doit,
+                         handler->dumpit, handler->flags);
+        if (err) {
+            if (!handler->owner)
+                panic("Unable to register rtnetlink message "
+                      "handlers, %pS\n", handlers);
+
+            __rtnl_unregister_many(handlers, i);
+            break;
+        }
+    }
+
+    return err;
+}
+
+static struct rtnl_link __rcu *__rcu *rtnl_msg_handlers[RTNL_FAMILY_MAX + 1];
+/* rtnl_msg_handlers[protocol][msgtype - RTM_BASE] */
+
+int rtnl_register_internal(struct module *owner,
+                  int protocol, int msgtype,
+                  rtnl_doit_func doit, rtnl_dumpit_func dumpit,
+                  unsigned int flags)
+{
+    struct rtnl_link *link, *old;
+    struct rtnl_link __rcu **tab;
+    int msgindex;
+    int ret = -ENOBUFS;
+
+    BUG_ON(protocol < 0 || protocol > RTNL_FAMILY_MAX);
+    msgindex = rtm_msgindex(msgtype) {
+        return msgtype - RTM_BASE;
+    }
+
+    rtnl_lock();
+    tab = rtnl_dereference(rtnl_msg_handlers[protocol]);
+    if (tab == NULL) {
+        tab = kcalloc(RTM_NR_MSGTYPES, sizeof(void *), GFP_KERNEL);
+        if (!tab)
+            goto unlock;
+
+        /* ensures we see the 0 stores */
+        rcu_assign_pointer(rtnl_msg_handlers[protocol], tab);
+    }
+
+    old = rtnl_dereference(tab[msgindex]);
+    if (old) {
+        link = kmemdup(old, sizeof(*old), GFP_KERNEL);
+        if (!link)
+            goto unlock;
+    } else {
+        link = kzalloc_obj(*link);
+        if (!link)
+            goto unlock;
+    }
+
+    WARN_ON(link->owner && link->owner != owner);
+    link->owner = owner;
+
+    WARN_ON(doit && link->doit && link->doit != doit);
+    if (doit)
+        link->doit = doit;
+    WARN_ON(dumpit && link->dumpit && link->dumpit != dumpit);
+    if (dumpit)
+        link->dumpit = dumpit;
+
+    WARN_ON(rtnl_msgtype_kind(msgtype) != RTNL_KIND_DEL &&
+        (flags & RTNL_FLAG_BULK_DEL_SUPPORTED));
+    link->flags |= flags;
+
+    /* publish protocol:msgtype */
+    rcu_assign_pointer(tab[msgindex], link);
+    ret = 0;
+    if (old)
+        kfree_rcu(old, rcu);
+unlock:
+    rtnl_unlock();
+    return ret;
+}
+```
+
+### rtnetlink_rtnl_msg_handlers
+
+> ip link [show, add, delete] COMMAND
+> ip link add
+
+```c
+static const struct rtnl_msg_handler rtnetlink_rtnl_msg_handlers[] __initconst = {
+    {
+        .msgtype    = RTM_NEWLINK,
+        .doit       = rtnl_newlink,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .msgtype    = RTM_DELLINK,
+        .doit       = rtnl_dellink,
+        .flags      = RTNL_FLAG_DOIT_PERNET_WIP
+    }, {
+        .msgtype    = RTM_GETLINK,
+        .doit       = rtnl_getlink,
+        .dumpit     = rtnl_dump_ifinfo,
+        .flags      = RTNL_FLAG_DUMP_SPLIT_NLM_DONE |
+            RTNL_FLAG_DOIT_UNLOCKED |
+            RTNL_FLAG_DUMP_UNLOCKED
+    },
+};
+```
+
+#### rtnl_newlink
+
+```c
+int rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+            struct netlink_ext_ack *extack)
+{
+    struct net *tgt_net, *link_net = NULL, *peer_net = NULL;
+    struct nlattr **tb, **linkinfo, **data = NULL;
+    struct rtnl_link_ops *ops = NULL;
+    struct rtnl_newlink_tbs *tbs;
+    struct rtnl_nets rtnl_nets;
+    int ops_srcu_index;
+    int ret;
+
+    tbs = kmalloc_obj(*tbs);
+    if (!tbs)
+        return -ENOMEM;
+
+    tb = tbs->tb;
+    ret = nlmsg_parse_deprecated(nlh, sizeof(struct ifinfomsg), tb, IFLA_MAX, ifla_policy, extack);
+    if (ret < 0)
+        goto free;
+
+    ret = rtnl_ensure_unique_netns(tb, extack, false);
+    if (ret < 0)
+        goto free;
+
+    linkinfo = tbs->linkinfo;
+    if (tb[IFLA_LINKINFO]) {
+        ret = nla_parse_nested_deprecated(linkinfo, IFLA_INFO_MAX,
+                          tb[IFLA_LINKINFO],
+                          ifla_info_policy, NULL);
+        if (ret < 0)
+            goto free;
+    } else {
+        memset(linkinfo, 0, sizeof(tbs->linkinfo));
+    }
+
+    if (linkinfo[IFLA_INFO_KIND]) {
+        char kind[MODULE_NAME_LEN]; /* "vxlan", "veth" */
+
+        nla_strscpy(kind, linkinfo[IFLA_INFO_KIND], sizeof(kind));
+        ops = rtnl_link_ops_get(kind, &ops_srcu_index) {
+            struct rtnl_link_ops *ops;
+
+            rcu_read_lock();
+
+            list_for_each_entry_rcu(ops, &link_ops, list) {
+                if (!strcmp(ops->kind, kind)) {
+                    *srcu_index = srcu_read_lock(&ops->srcu);
+                    goto unlock;
+                }
+            }
+
+            ops = NULL;
+        unlock:
+            rcu_read_unlock();
+
+            return ops;
+        }
+#ifdef CONFIG_MODULES
+        if (!ops) {
+            request_module("rtnl-link-%s", kind);
+            ops = rtnl_link_ops_get(kind, &ops_srcu_index);
+        }
+#endif
+    }
+
+    rtnl_nets_init(&rtnl_nets);
+
+    if (ops) {
+        if (ops->maxtype > RTNL_MAX_TYPE) {
+            ret = -EINVAL;
+            goto put_ops;
+        }
+
+        if (ops->maxtype && linkinfo[IFLA_INFO_DATA]) {
+            ret = nla_parse_nested_deprecated(tbs->attr, ops->maxtype,
+                              linkinfo[IFLA_INFO_DATA],
+                              ops->policy, extack);
+            if (ret < 0)
+                goto put_ops;
+
+            data = tbs->attr;
+        }
+
+        if (ops->validate) {
+            ret = ops->validate(tb, data, extack);
+            if (ret < 0)
+                goto put_ops;
+        }
+
+        if (ops->peer_type) {
+            peer_net = rtnl_get_peer_net(skb, ops, tb, data, extack);
+            if (IS_ERR(peer_net)) {
+                ret = PTR_ERR(peer_net);
+                goto put_ops;
+            }
+            if (peer_net)
+                rtnl_nets_add(&rtnl_nets, peer_net);
+        }
+    }
+
+    tgt_net = rtnl_link_get_net_capable(skb, sock_net(skb->sk), tb, CAP_NET_ADMIN);
+    if (IS_ERR(tgt_net)) {
+        ret = PTR_ERR(tgt_net);
+        goto put_net;
+    }
+
+    rtnl_nets_add(&rtnl_nets, tgt_net);
+
+    if (tb[IFLA_LINK_NETNSID]) {
+        int id = nla_get_s32(tb[IFLA_LINK_NETNSID]);
+
+        link_net = get_net_ns_by_id(tgt_net, id);
+        if (!link_net) {
+            NL_SET_ERR_MSG(extack, "Unknown network namespace id");
+            ret =  -EINVAL;
+            goto put_net;
+        }
+
+        rtnl_nets_add(&rtnl_nets, link_net);
+
+        if (!netlink_ns_capable(skb, link_net->user_ns, CAP_NET_ADMIN)) {
+            ret = -EPERM;
+            goto put_net;
+        }
+    }
+
+    rtnl_nets_lock(&rtnl_nets);
+    ret = __rtnl_newlink(skb, nlh, ops, tgt_net, link_net, peer_net, tbs, data, extack);
+    rtnl_nets_unlock(&rtnl_nets);
+
+put_net:
+    rtnl_nets_destroy(&rtnl_nets);
+put_ops:
+    if (ops)
+        rtnl_link_ops_put(ops, ops_srcu_index);
+free:
+    kfree(tbs);
+    return ret;
+}
+
+ int __rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
+              const struct rtnl_link_ops *ops,
+              struct net *tgt_net, struct net *link_net,
+              struct net *peer_net,
+              struct rtnl_newlink_tbs *tbs,
+              struct nlattr **data,
+              struct netlink_ext_ack *extack)
+{
+    struct nlattr ** const tb = tbs->tb;
+    struct net *net = sock_net(skb->sk);
+    struct net *device_net;
+    struct net_device *dev;
+    struct ifinfomsg *ifm;
+    bool link_specified;
+
+    /* When creating, lookup for existing device in target net namespace */
+    device_net = (nlh->nlmsg_flags & NLM_F_CREATE) &&
+             (nlh->nlmsg_flags & NLM_F_EXCL) ?
+             tgt_net : net;
+
+    ifm = nlmsg_data(nlh);
+    if (ifm->ifi_index > 0) {
+        link_specified = true;
+        dev = __dev_get_by_index(device_net, ifm->ifi_index);
+    } else if (ifm->ifi_index < 0) {
+        NL_SET_ERR_MSG(extack, "ifindex can't be negative");
+        return -EINVAL;
+    } else if (tb[IFLA_IFNAME] || tb[IFLA_ALT_IFNAME]) {
+        link_specified = true;
+        dev = rtnl_dev_get(device_net, tb);
+    } else {
+        link_specified = false;
+        dev = NULL;
+    }
+
+    if (dev)
+        return rtnl_changelink(skb, nlh, ops, dev, tgt_net, tbs, data, extack);
+
+    if (!(nlh->nlmsg_flags & NLM_F_CREATE)) {
+        /* No dev found and NLM_F_CREATE not set. Requested dev does not exist,
+         * or it's for a group */
+        if (link_specified || !tb[IFLA_GROUP])
+            return -ENODEV;
+
+        return rtnl_group_changelink(skb, net, tgt_net,
+                         nla_get_u32(tb[IFLA_GROUP]),
+                         ifm, extack, tb);
+    }
+
+    if (tb[IFLA_MAP] || tb[IFLA_PROTINFO])
+        return -EOPNOTSUPP;
+
+    if (!ops) {
+        NL_SET_ERR_MSG(extack, "Unknown device type");
+        return -EOPNOTSUPP;
+    }
+
+    return rtnl_newlink_create(skb, ifm, ops, tgt_net, link_net, peer_net, nlh,
+                   tb, data, extack);
+}
+
+int rtnl_newlink_create(struct sk_buff *skb, struct ifinfomsg *ifm,
+                   const struct rtnl_link_ops *ops,
+                   struct net *tgt_net, struct net *link_net,
+                   struct net *peer_net,
+                   const struct nlmsghdr *nlh,
+                   struct nlattr **tb, struct nlattr **data,
+                   struct netlink_ext_ack *extack)
+{
+    unsigned char name_assign_type = NET_NAME_USER;
+    struct rtnl_newlink_params params = {
+        .src_net = sock_net(skb->sk),
+        .link_net = link_net,
+        .peer_net = peer_net,
+        .tb = tb,
+        .data = data,
+    };
+    u32 portid = NETLINK_CB(skb).portid;
+    struct net_device *dev;
+    char ifname[IFNAMSIZ];
+    int err;
+
+    if (!ops->alloc && !ops->setup)
+        return -EOPNOTSUPP;
+
+    if (tb[IFLA_IFNAME]) {
+        nla_strscpy(ifname, tb[IFLA_IFNAME], IFNAMSIZ);
+    } else {
+        snprintf(ifname, IFNAMSIZ, "%s%%d", ops->kind);
+        name_assign_type = NET_NAME_ENUM;
+    }
+
+    dev = rtnl_create_link(tgt_net, ifname, name_assign_type, ops, tb,
+                   extack);
+    if (IS_ERR(dev)) {
+        err = PTR_ERR(dev);
+        goto out;
+    }
+
+    dev->ifindex = ifm->ifi_index;
+
+    if (ops->newlink) {
+        err = ops->newlink(dev, &params, extack) {
+            veth_newlink();
+            vxlan_newlink();
+        }
+    }
+    else
+        err = register_netdevice(dev);
+    if (err < 0) {
+        free_netdev(dev);
+        goto out;
+    }
+
+    netdev_lock_ops(dev);
+
+    err = rtnl_configure_link(dev, ifm, portid, nlh);
+    if (err < 0)
+        goto out_unregister;
+    if (tb[IFLA_MASTER]) {
+        err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]), extack);
+        if (err)
+            goto out_unregister;
+    }
+
+    netdev_unlock_ops(dev);
+out:
+    return err;
+out_unregister:
+    netdev_unlock_ops(dev);
+    if (ops->newlink) {
+        LIST_HEAD(list_kill);
+
+        ops->dellink(dev, &list_kill);
+        unregister_netdevice_many(&list_kill);
+    } else {
+        unregister_netdevice(dev);
+    }
+    goto out;
+}
+```
+
+#### do_set_master
+
+```c
+int do_set_master(struct net_device *dev, int ifindex,
+             struct netlink_ext_ack *extack)
+{
+    struct net_device *upper_dev = netdev_master_upper_dev_get(dev);
+    const struct net_device_ops *ops;
+    int err;
+
+    /* Release the lower lock, the upper is responsible for locking
+     * the lower if needed. None of the existing upper devices
+     * use netdev instance lock, so don't grab it. */
+
+    if (upper_dev) {
+        if (upper_dev->ifindex == ifindex)
+            return 0;
+        ops = upper_dev->netdev_ops;
+        if (ops->ndo_del_slave) {
+            netdev_unlock_ops(dev);
+            err = ops->ndo_del_slave(upper_dev, dev);
+            netdev_lock_ops(dev);
+            if (err)
+                return err;
+        } else {
+            return -EOPNOTSUPP;
+        }
+    }
+
+    if (ifindex) {
+        upper_dev = __dev_get_by_index(dev_net(dev), ifindex) {
+            struct net_device *dev;
+            struct hlist_head *head = dev_index_hash(net, ifindex);
+
+            hlist_for_each_entry(dev, head, index_hlist)
+                if (dev->ifindex == ifindex)
+                    return dev;
+
+            return NULL;
+        }
+        if (!upper_dev)
+            return -EINVAL;
+        ops = upper_dev->netdev_ops;
+        if (ops->ndo_add_slave) {
+            netdev_unlock_ops(dev);
+            err = ops->ndo_add_slave(upper_dev, dev, extack) {
+                br_add_if();
+            }
+            netdev_lock_ops(dev);
+            if (err)
+                return err;
+        } else {
+            return -EOPNOTSUPP;
+        }
+    }
+    return 0;
+}
+```
+
+### fib_rules_rtnl_msg_handlers
+
+```c
+  ip rule add from 10.0.0.0/8 table 100     ← RTM_NEWRULE
+  ip route add 192.168.1.0/24 via 10.0.0.1  ← RTM_NEWROUTE
+       │ RTM_NEWRULE                              │ RTM_NEWROUTE
+       │ "which TABLE to use"                     │ "what to do within a TABLE"
+       ▼                                          ▼
+  struct fib_rule                           struct fib_alias
+   (policy selector)                         → fib_info
+                                               → nexthop
+```
+
+
+```c
+static const struct rtnl_msg_handler fib_rules_rtnl_msg_handlers[] __initconst = {
+    {
+        .msgtype    = RTM_NEWRULE,
+        .doit       = fib_nl_newrule,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .msgtype    = RTM_DELRULE,
+        .doit       = fib_nl_delrule,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .msgtype    = RTM_GETRULE,
+        .dumpit     = fib_nl_dumprule,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED
+    },
+};
+```
+
+```c
+static const struct fib_rules_ops __net_initconst fib4_rules_ops_template = {
+    .family             = AF_INET,
+    .rule_size          = sizeof(struct fib4_rule),
+    .addr_size          = sizeof(u32),
+    .action             = fib4_rule_action,
+    .suppress           = fib4_rule_suppress,
+    .match              = fib4_rule_match,
+    .configure          = fib4_rule_configure,
+    .delete             = fib4_rule_delete,
+    .compare            = fib4_rule_compare,
+    .fill               = fib4_rule_fill,
+    .nlmsg_payload      = fib4_rule_nlmsg_payload,
+    .flush_cache        = fib4_rule_flush_cache,
+    .nlgroup            = RTNLGRP_IPV4_RULE,
+    .owner              = THIS_MODULE,
+};
+
+static int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr *nlh,
+              struct netlink_ext_ack *extack)
+{
+    return fib_newrule(sock_net(skb->sk), skb, nlh, extack, false);
+}
+
+int fib_newrule(struct net *net, struct sk_buff *skb, struct nlmsghdr *nlh,
+        struct netlink_ext_ack *extack, bool rtnl_held)
+{
+    struct fib_rule *rule = NULL, *r, *last = NULL;
+    int err = -EINVAL, unresolved = 0;
+    struct fib_rules_ops *ops = NULL;
+    struct nlattr *tb[FRA_MAX + 1];
+    bool user_priority = false;
+    struct fib_rule_hdr *frh;
+
+    frh = nlmsg_payload(nlh, sizeof(*frh));
+    if (!frh) {
+        NL_SET_ERR_MSG(extack, "Invalid msg length");
+        goto errout;
+    }
+
+    ops = lookup_rules_ops(net, frh->family) {
+        struct fib_rules_ops *ops;
+
+        rcu_read_lock();
+        list_for_each_entry_rcu(ops, &net->rules_ops, list) {
+            if (ops->family == family) {
+                if (!try_module_get(ops->owner))
+                    ops = NULL;
+                rcu_read_unlock();
+                return ops;
+            }
+        }
+        rcu_read_unlock();
+
+        return NULL;
+    }
+    if (!ops) {
+        err = -EAFNOSUPPORT;
+        NL_SET_ERR_MSG(extack, "Rule family not supported");
+        goto errout;
+    }
+
+    err = nlmsg_parse_deprecated(nlh, sizeof(*frh), tb, FRA_MAX, fib_rule_policy, extack);
+    if (err < 0) {
+        NL_SET_ERR_MSG(extack, "Error parsing msg");
+        goto errout;
+    }
+
+    err = fib_nl2rule(net, nlh, extack, ops, tb, &rule, &user_priority);
+    if (err)
+        goto errout;
+
+    if (!rtnl_held)
+        rtnl_net_lock(net);
+
+    err = fib_nl2rule_rtnl(rule, ops, tb, extack);
+    if (err)
+        goto errout_free;
+
+    if ((nlh->nlmsg_flags & NLM_F_EXCL) && rule_exists(ops, frh, tb, rule)) {
+        err = -EEXIST;
+        goto errout_free;
+    }
+
+    err = ops->configure(rule, skb, frh, tb, extack);
+    if (err < 0)
+        goto errout_free;
+
+    err = call_fib_rule_notifiers(net, FIB_EVENT_RULE_ADD, rule, ops, extack);
+    if (err < 0)
+        goto errout_free;
+
+    list_for_each_entry(r, &ops->rules_list, list) {
+        if (r->pref == rule->target) {
+            RCU_INIT_POINTER(rule->ctarget, r);
+            break;
+        }
+    }
+
+    if (rcu_dereference_protected(rule->ctarget, 1) == NULL)
+        unresolved = 1;
+
+    list_for_each_entry(r, &ops->rules_list, list) {
+        if (r->pref > rule->pref)
+            break;
+        last = r;
+    }
+
+    if (last)
+        list_add_rcu(&rule->list, &last->list);
+    else
+        list_add_rcu(&rule->list, &ops->rules_list);
+
+    if (ops->unresolved_rules) {
+        /* There are unresolved goto rules in the list, check if
+         * any of them are pointing to this new rule. */
+        list_for_each_entry(r, &ops->rules_list, list) {
+            if (r->action == FR_ACT_GOTO &&
+                r->target == rule->pref &&
+                rtnl_dereference(r->ctarget) == NULL) {
+                rcu_assign_pointer(r->ctarget, rule);
+                if (--ops->unresolved_rules == 0)
+                    break;
+            }
+        }
+    }
+
+    if (rule->action == FR_ACT_GOTO)
+        ops->nr_goto_rules++;
+
+    if (unresolved)
+        ops->unresolved_rules++;
+
+    if (rule->tun_id)
+        ip_tunnel_need_metadata();
+
+    fib_rule_get(rule);
+
+    if (!rtnl_held)
+        rtnl_net_unlock(net);
+
+    notify_rule_change(RTM_NEWRULE, rule, ops, nlh, NETLINK_CB(skb).portid);
+    fib_rule_put(rule);
+    flush_route_cache(ops);
+    rules_ops_put(ops);
+    return 0;
+
+errout_free:
+    if (!rtnl_held)
+        rtnl_net_unlock(net);
+    kfree(rule);
+errout:
+    rules_ops_put(ops);
+    return err;
+}
+```
+
+### fib_rtnl_msg_handlers
+
+```c
+  ip rule add from 10.0.0.0/8 table 100     ← RTM_NEWRULE
+  ip route add 192.168.1.0/24 via 10.0.0.1  ← RTM_NEWROUTE
+       │ RTM_NEWRULE                              │ RTM_NEWROUTE
+       │ "which TABLE to use"                     │ "what to do within a TABLE"
+       ▼                                          ▼
+  struct fib_rule                           struct fib_alias
+   (policy selector)                         → fib_info
+                                               → nexthop
+```
+
+```c
+static const struct rtnl_msg_handler fib_rtnl_msg_handlers[] __initconst = {
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_NEWROUTE,
+        .doit       = inet_rtm_newroute,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_DELROUTE,
+        .doit       = inet_rtm_delroute,
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    }, {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETROUTE,
+        .dumpit     = inet_dump_fib,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE
+    },
+};
+```
+
+#### inet_rtm_newroute
+
+```c
+static int inet_rtm_newroute(struct sk_buff *skb, struct nlmsghdr *nlh,
+                 struct netlink_ext_ack *extack)
+{
+    struct net *net = sock_net(skb->sk);
+    struct fib_config cfg;
+    struct fib_table *tb;
+    int err;
+
+    err = rtm_to_fib_config(net, skb, nlh, &cfg, extack);
+    if (err < 0)
+        goto errout;
+
+    rtnl_net_lock(net);
+
+    tb = fib_new_table(net, cfg.fc_table);
+    if (!tb) {
+        err = -ENOBUFS;
+        goto unlock;
+    }
+
+    err = fib_table_insert(net, tb, &cfg, extack);
+    if (!err && cfg.fc_type == RTN_LOCAL)
+        net->ipv4.fib_has_custom_local_routes = true;
+
+unlock:
+    rtnl_net_unlock(net);
+errout:
+    return err;
+}
+
+struct fib_table *fib_new_table(struct net *net, u32 id)
+{
+    struct fib_table *tb, *alias = NULL;
+    unsigned int h;
+
+    if (id == 0)
+        id = RT_TABLE_MAIN;
+    tb = fib_get_table(net, id) {
+        struct fib_table *tb;
+        struct hlist_head *head;
+        unsigned int h;
+
+        if (id == 0)
+            id = RT_TABLE_MAIN;
+        h = id & (FIB_TABLE_HASHSZ - 1);
+
+        head = &net->ipv4.fib_table_hash[h];
+        hlist_for_each_entry_rcu(tb, head, tb_hlist, lockdep_rtnl_is_held()) {
+            if (tb->tb_id == id)
+                return tb;
+        }
+        return NULL;
+    }
+
+    if (tb)
+        return tb;
+
+    if (id == RT_TABLE_LOCAL && !net->ipv4.fib_has_custom_rules)
+        alias = fib_new_table(net, RT_TABLE_MAIN);
+
+    if (check_net(net)) {
+        tb = fib_trie_table(id, alias) {
+            struct fib_table *tb;
+            struct trie *t;
+            size_t sz = sizeof(*tb);
+
+            if (!alias)
+                sz += sizeof(struct trie);
+
+            tb = kzalloc(sz, GFP_KERNEL);
+            if (!tb)
+                return NULL;
+
+            tb->tb_id = id;
+            tb->tb_num_default = 0;
+            tb->tb_data = (alias ? alias->__data : tb->__data);
+
+            if (alias)
+                return tb;
+
+            t = (struct trie *) tb->tb_data;
+            t->kv[0].pos = KEYLENGTH;
+            t->kv[0].slen = KEYLENGTH;
+        #ifdef CONFIG_IP_FIB_TRIE_STATS
+            t->stats = alloc_percpu(struct trie_use_stats);
+            if (!t->stats) {
+                kfree(tb);
+                tb = NULL;
+            }
+        #endif
+
+            return tb;
+        }
+    }
+    if (!tb)
+        return NULL;
+
+    switch (id) {
+    case RT_TABLE_MAIN:
+        rcu_assign_pointer(net->ipv4.fib_main, tb);
+        break;
+    case RT_TABLE_DEFAULT:
+        rcu_assign_pointer(net->ipv4.fib_default, tb);
+        break;
+    default:
+        break;
+    }
+
+    h = id & (FIB_TABLE_HASHSZ - 1);
+    hlist_add_head_rcu(&tb->tb_hlist, &net->ipv4.fib_table_hash[h]);
+    return tb;
+}
+```
+
+```c
+int fib_table_insert(struct net *net, struct fib_table *tb,
+             struct fib_config *cfg, struct netlink_ext_ack *extack)
+{
+    struct trie *t = (struct trie *)tb->tb_data;
+    struct fib_alias *fa, *new_fa;
+    struct key_vector *l, *tp;
+    u16 nlflags = NLM_F_EXCL;
+    struct fib_info *fi;
+    u8 plen = cfg->fc_dst_len;
+    u8 slen = KEYLENGTH - plen;
+    dscp_t dscp;
+    u32 key;
+    int err;
+
+    key = ntohl(cfg->fc_dst);
+
+    pr_debug("Insert table=%u %08x/%d\n", tb->tb_id, key, plen);
+
+    fi = fib_create_info(cfg, extack);
+    if (IS_ERR(fi)) {
+        err = PTR_ERR(fi);
+        goto err;
+    }
+
+    dscp = cfg->fc_dscp;
+    l = fib_find_node(t, &tp, key);
+    fa = l ? fib_find_alias(&l->leaf, slen, dscp, fi->fib_priority,
+                tb->tb_id, false) : NULL;
+
+    /* Now fa, if non-NULL, points to the first fib alias
+     * with the same keys [prefix,dscp,priority], if such key already
+     * exists or to the node before which we will insert new one.
+     *
+     * If fa is NULL, we will need to allocate a new one and
+     * insert to the tail of the section matching the suffix length
+     * of the new alias. */
+
+    if (fa && fa->fa_dscp == dscp &&
+        fa->fa_info->fib_priority == fi->fib_priority) {
+        struct fib_alias *fa_first, *fa_match;
+
+        err = -EEXIST;
+        if (cfg->fc_nlflags & NLM_F_EXCL)
+            goto out;
+
+        nlflags &= ~NLM_F_EXCL;
+
+        /* We have 2 goals:
+         * 1. Find exact match for type, scope, fib_info to avoid
+         * duplicate routes
+         * 2. Find next 'fa' (or head), NLM_F_APPEND inserts before it */
+        fa_match = NULL;
+        fa_first = fa;
+        hlist_for_each_entry_from(fa, fa_list) {
+            if ((fa->fa_slen != slen) ||
+                (fa->tb_id != tb->tb_id) ||
+                (fa->fa_dscp != dscp))
+                break;
+            if (fa->fa_info->fib_priority != fi->fib_priority)
+                break;
+            if (fa->fa_type == cfg->fc_type &&
+                fa->fa_info == fi) {
+                fa_match = fa;
+                break;
+            }
+        }
+
+        if (cfg->fc_nlflags & NLM_F_REPLACE) {
+            struct fib_info *fi_drop;
+            u8 state;
+
+            nlflags |= NLM_F_REPLACE;
+            fa = fa_first;
+            if (fa_match) {
+                if (fa == fa_match)
+                    err = 0;
+                goto out;
+            }
+            err = -ENOBUFS;
+            new_fa = kmem_cache_alloc(fn_alias_kmem, GFP_KERNEL);
+            if (!new_fa)
+                goto out;
+
+            fi_drop = fa->fa_info;
+            new_fa->fa_dscp = fa->fa_dscp;
+            new_fa->fa_info = fi;
+            new_fa->fa_type = cfg->fc_type;
+            state = READ_ONCE(fa->fa_state);
+            new_fa->fa_state = state & ~FA_S_ACCESSED;
+            new_fa->fa_slen = fa->fa_slen;
+            new_fa->tb_id = tb->tb_id;
+            new_fa->fa_default = -1;
+            new_fa->offload = 0;
+            new_fa->trap = 0;
+            new_fa->offload_failed = 0;
+
+            hlist_replace_rcu(&fa->fa_list, &new_fa->fa_list);
+
+            if (fib_find_alias(&l->leaf, fa->fa_slen, 0, 0,
+                       tb->tb_id, true) == new_fa) {
+                enum fib_event_type fib_event;
+
+                fib_event = FIB_EVENT_ENTRY_REPLACE;
+                err = call_fib_entry_notifiers(net, fib_event,
+                                   key, plen,
+                                   new_fa, extack);
+                if (err) {
+                    hlist_replace_rcu(&new_fa->fa_list,
+                              &fa->fa_list);
+                    goto out_free_new_fa;
+                }
+            }
+
+            rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen,
+                  tb->tb_id, &cfg->fc_nlinfo, nlflags);
+
+            alias_free_mem_rcu(fa);
+
+            fib_release_info(fi_drop);
+            if (state & FA_S_ACCESSED)
+                rt_cache_flush(cfg->fc_nlinfo.nl_net);
+
+            goto succeeded;
+        }
+        /* Error if we find a perfect match which
+         * uses the same scope, type, and nexthop
+         * information. */
+        if (fa_match)
+            goto out;
+
+        if (cfg->fc_nlflags & NLM_F_APPEND)
+            nlflags |= NLM_F_APPEND;
+        else
+            fa = fa_first;
+    }
+    err = -ENOENT;
+    if (!(cfg->fc_nlflags & NLM_F_CREATE))
+        goto out;
+
+    nlflags |= NLM_F_CREATE;
+    err = -ENOBUFS;
+    new_fa = kmem_cache_alloc(fn_alias_kmem, GFP_KERNEL);
+    if (!new_fa)
+        goto out;
+
+    new_fa->fa_info = fi;
+    new_fa->fa_dscp = dscp;
+    new_fa->fa_type = cfg->fc_type;
+    new_fa->fa_state = 0;
+    new_fa->fa_slen = slen;
+    new_fa->tb_id = tb->tb_id;
+    new_fa->fa_default = -1;
+    new_fa->offload = 0;
+    new_fa->trap = 0;
+    new_fa->offload_failed = 0;
+
+    /* Insert new entry to the list. */
+    err = fib_insert_alias(t, tp, l, new_fa, fa, key);
+    if (err)
+        goto out_free_new_fa;
+
+    /* The alias was already inserted, so the node must exist. */
+    l = l ? l : fib_find_node(t, &tp, key);
+    if (WARN_ON_ONCE(!l)) {
+        err = -ENOENT;
+        goto out_free_new_fa;
+    }
+
+    if (fib_find_alias(&l->leaf, new_fa->fa_slen, 0, 0, tb->tb_id, true) ==
+        new_fa) {
+        enum fib_event_type fib_event;
+
+        fib_event = FIB_EVENT_ENTRY_REPLACE;
+        err = call_fib_entry_notifiers(net, fib_event, key, plen,
+                           new_fa, extack);
+        if (err)
+            goto out_remove_new_fa;
+    }
+
+    if (!plen)
+        tb->tb_num_default++;
+
+    rt_cache_flush(cfg->fc_nlinfo.nl_net);
+    rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen, new_fa->tb_id,
+          &cfg->fc_nlinfo, nlflags);
+succeeded:
+    return 0;
+
+out_remove_new_fa:
+    fib_remove_alias(t, tp, l, new_fa);
+out_free_new_fa:
+    kmem_cache_free(fn_alias_kmem, new_fa);
+out:
+    fib_release_info(fi);
+err:
+    return err;
+}
+```
+
+### neigh_rtnl_msg_handlers
+
+```c
+static const struct rtnl_msg_handler neigh_rtnl_msg_handlers[] __initconst = {
+    {
+        .msgtype    = RTM_NEWNEIGH,
+        .doit       = neigh_add
+    }, {
+        .msgtype    = RTM_DELNEIGH,
+        .doit       = neigh_delete
+    }, {
+        .msgtype    = RTM_GETNEIGH,
+        .doit       = neigh_get,
+        .dumpit     = neigh_dump_info,
+        .flags      = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED
+    }, {
+        .msgtype    = RTM_GETNEIGHTBL,
+        .dumpit     = neightbl_dump_info,
+
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED
+    }, {
+        .msgtype    = RTM_SETNEIGHTBL,
+        .doit       = neightbl_set,
+        .flags      = RTNL_FLAG_DOIT_UNLOCKED
+    },
+};
+```
+
+### nexthop_rtnl_msg_handlers
+
+```c
+ip nexthop add id 10 via 192.168.1.1 dev eth0
+         │
+         ▼ netlink RTM_NEWNEXTHOP
+         │
+  rtm_new_nexthop()
+         │
+  nexthop_add()
+    ├── cfg->nh_grp?
+    │    ├── YES → nexthop_create_group()   builds nh_group + nh_grp_entry[]
+    │    └── NO  → nexthop_create()         builds nh_info
+    │                  ├── AF_INET  → nh_create_ipv4()  → fib_nh_init()
+    │                  └── AF_INET6 → nh_create_ipv6()  → fib6_nh_init()
+    │
+    └── insert_nexthop()  →  rb_insert into net->nexthop.rb_root (keyed by id)
+                          →  hlist_add into net->nexthop.devhash (for dev events)
+```
+
+```c
+static const struct rtnl_msg_handler nexthop_rtnl_msg_handlers[] __initconst = {
+    {
+        .msgtype    = RTM_NEWNEXTHOP,
+        .doit       = rtm_new_nexthop,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .msgtype    = RTM_DELNEXTHOP,
+        .doit       = rtm_del_nexthop,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .msgtype    = RTM_GETNEXTHOP,
+        .doit       = rtm_get_nexthop,
+        .dumpit     = rtm_dump_nexthop},
+    {
+        .msgtype    = RTM_GETNEXTHOPBUCKET,
+        .doit       = rtm_get_nexthop_bucket,
+        .dumpit     = rtm_dump_nexthop_bucket},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_NEWNEXTHOP,
+        .doit       = rtm_new_nexthop,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETNEXTHOP,
+        .dumpit     = rtm_dump_nexthop},
+    {
+        .protocol   = PF_INET6,
+        .msgtype    = RTM_NEWNEXTHOP,
+        .doit       = rtm_new_nexthop,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET6,
+        .msgtype    = RTM_GETNEXTHOP,
+        .dumpit     = rtm_dump_nexthop},
+};
+```
+
+#### rtm_new_nexthop
+
+```c
+int rtm_new_nexthop(struct sk_buff *skb, struct nlmsghdr *nlh,
+               struct netlink_ext_ack *extack)
+{
+    struct nlattr *tb[ARRAY_SIZE(rtm_nh_policy_new)];
+    struct net *net = sock_net(skb->sk);
+    struct nh_config cfg;
+    struct nexthop *nh;
+    int err;
+
+    err = nlmsg_parse(nlh, sizeof(struct nhmsg), tb,
+              ARRAY_SIZE(rtm_nh_policy_new) - 1,
+              rtm_nh_policy_new, extack);
+    if (err < 0)
+        goto out;
+
+    err = rtm_to_nh_config(net, skb, nlh, tb, &cfg, extack);
+    if (err)
+        goto out;
+
+    if (cfg.nlflags & NLM_F_REPLACE && !cfg.nh_id) {
+        NL_SET_ERR_MSG(extack, "Replace requires nexthop id");
+        err = -EINVAL;
+        goto out;
+    }
+
+    rtnl_net_lock(net);
+
+    err = rtm_to_nh_config_rtnl(net, tb, &cfg, extack);
+    if (err)
+        goto unlock;
+
+    nh = nexthop_add(net, &cfg, extack);
+    if (IS_ERR(nh))
+        err = PTR_ERR(nh);
+
+unlock:
+    rtnl_net_unlock(net);
+out:
+    return err;
+}
+
+struct nexthop *nexthop_add(struct net *net, struct nh_config *cfg,
+                   struct netlink_ext_ack *extack)
+{
+    struct nexthop *nh;
+    int err;
+
+    if (!cfg->nh_id) {
+        cfg->nh_id = nh_find_unused_id(net);
+        if (!cfg->nh_id) {
+            NL_SET_ERR_MSG(extack, "No unused id");
+            return ERR_PTR(-EINVAL);
+        }
+    }
+
+    if (cfg->nh_grp)
+        nh = nexthop_create_group(net, cfg);
+    else
+        nh = nexthop_create(net, cfg, extack);
+
+    if (IS_ERR(nh))
+        return nh;
+
+    refcount_set(&nh->refcnt, 1);
+    nh->id = cfg->nh_id;
+    nh->protocol = cfg->nh_protocol;
+    nh->net = net;
+
+    err = insert_nexthop(net, nh, cfg, extack);
+    if (err) {
+        WARN_ON_ONCE(__remove_nexthop(net, nh, NULL));
+        nexthop_put(nh);
+        nh = ERR_PTR(err);
+    }
+
+    return nh;
+}
+```
+
+### devinet_rtnl_msg_handlers
+
+> ip addr add 10.0.0.1/24 dev vxlan
+
+```c
+static const struct rtnl_msg_handler devinet_rtnl_msg_handlers[] __initconst = {
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_NEWADDR,
+        .doit       = inet_rtm_newaddr,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_DELADDR,
+        .doit       = inet_rtm_deladdr,
+        .flags      = RTNL_FLAG_DOIT_PERNET},
+    {
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETADDR,
+        .dumpit     = inet_dump_ifaddr,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE},
+    {
+        .protocol   = PF_INET, .msgtype = RTM_GETNETCONF,
+        .doit       = inet_netconf_get_devconf,
+        .dumpit     = inet_netconf_dump_devconf,
+        .flags      = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED},
+    {
+        .owner      = THIS_MODULE,
+        .protocol   = PF_INET,
+        .msgtype    = RTM_GETMULTICAST,
+        .dumpit     = inet_dump_ifmcaddr,
+        .flags      = RTNL_FLAG_DUMP_UNLOCKED},
+};
+```
+
+### br_vlan_rtnl_msg_handlers
+
+```sh
+ip link add link eth0 name eth0.30 type vlan id 30
+ip link set eth0.30 up
+ip addr add 172.30.0.50/24 dev eth0.30
+```
+
+```c
+static const struct rtnl_msg_handler br_vlan_rtnl_msg_handlers[] = {
+    {THIS_MODULE, PF_BRIDGE, RTM_NEWVLAN, br_vlan_rtm_process, NULL, 0},
+    {THIS_MODULE, PF_BRIDGE, RTM_DELVLAN, br_vlan_rtm_process, NULL, 0},
+    {THIS_MODULE, PF_BRIDGE, RTM_GETVLAN, NULL, br_vlan_rtm_dump, 0},
+};
+```
+
+## rtnl_link_ops
+
+```c
+static DEFINE_MUTEX(link_ops_mutex);
+static LIST_HEAD(link_ops);
+
+rtnl_link_register(&veth_link_ops);
+rtnl_link_register(&vxlan_link_ops);
+
+int rtnl_link_register(struct rtnl_link_ops *ops)
+{
+    struct rtnl_link_ops *tmp;
+    int err;
+
+    /* Sanity-check max sizes to avoid stack buffer overflow. */
+    if (WARN_ON(ops->maxtype > RTNL_MAX_TYPE ||
+            ops->slave_maxtype > RTNL_SLAVE_MAX_TYPE))
+        return -EINVAL;
+
+    /* The check for alloc/setup is here because if ops
+     * does not have that filled up, it is not possible
+     * to use the ops for creating device. So do not
+     * fill up dellink as well. That disables rtnl_dellink. */
+    if ((ops->alloc || ops->setup) && !ops->dellink)
+        ops->dellink = unregister_netdevice_queue;
+
+    err = init_srcu_struct(&ops->srcu);
+    if (err)
+        return err;
+
+    mutex_lock(&link_ops_mutex);
+
+    list_for_each_entry(tmp, &link_ops, list) {
+        if (!strcmp(ops->kind, tmp->kind)) {
+            err = -EEXIST;
+            goto unlock;
+        }
+    }
+
+    list_add_tail_rcu(&ops->list, &link_ops);
+unlock:
+    mutex_unlock(&link_ops_mutex);
+
+    if (err)
+        cleanup_srcu_struct(&ops->srcu);
+
+    return err;
+}
+```
+
 # route
 <img src='../images/kernel/net-filter.svg' style='max-height:850px'/>
 
@@ -15607,8 +17507,7 @@ struct rtable *ip_route_output_key_hash_rcu(struct net *net, struct flowi4 *fl4,
             rth = ERR_PTR(-ENETUNREACH);
             goto out;
         }
-        if (ipv4_is_local_multicast(fl4->daddr) ||
-            ipv4_is_lbcast(fl4->daddr) ||
+        if (ipv4_is_local_multicast(fl4->daddr) || ipv4_is_lbcast(fl4->daddr) ||
             fl4->flowi4_proto == IPPROTO_IGMP) {
             if (!fl4->saddr)
                 fl4->saddr = inet_select_addr(dev_out, 0, RT_SCOPE_LINK);
@@ -15697,6 +17596,98 @@ make_route:
 
 out:
     return rth;
+}
+```
+
+### inet_select_addr
+
+```c
+__be32 inet_select_addr(const struct net_device *dev, __be32 dst, int scope)
+{
+    const struct in_ifaddr *ifa;
+    __be32 addr = 0;
+    unsigned char localnet_scope = RT_SCOPE_HOST;
+    struct in_device *in_dev;
+    struct net *net;
+    int master_idx;
+
+    rcu_read_lock();
+    net = dev_net_rcu(dev);
+    in_dev = __in_dev_get_rcu(dev) {
+        return rcu_dereference(dev->ip_ptr);
+    }
+    if (!in_dev)
+        goto no_in_dev;
+
+    if (unlikely(IN_DEV_ROUTE_LOCALNET(in_dev)))
+        localnet_scope = RT_SCOPE_LINK;
+
+    in_dev_for_each_ifa_rcu(ifa, in_dev) {
+        if (READ_ONCE(ifa->ifa_flags) & IFA_F_SECONDARY)
+            continue;
+        if (min(ifa->ifa_scope, localnet_scope) > scope)
+            continue;
+
+        match = inet_ifa_match(dst, ifa) {
+            return !((addr^ifa->ifa_address)&ifa->ifa_mask);
+        }
+        if (!dst || match) {
+            addr = ifa->ifa_local;
+            break;
+        }
+        if (!addr)
+            addr = ifa->ifa_local;
+    }
+
+    if (addr)
+        goto out_unlock;
+no_in_dev:
+    master_idx = l3mdev_master_ifindex_rcu(dev);
+
+    /* For VRFs, the VRF device takes the place of the loopback device,
+     * with addresses on it being preferred.  Note in such cases the
+     * loopback device will be among the devices that fail the master_idx
+     * equality check in the loop below. */
+    if (master_idx &&
+        (dev = dev_get_by_index_rcu(net, master_idx)) && (in_dev = __in_dev_get_rcu(dev))) {
+        addr = in_dev_select_addr(in_dev, scope);
+        if (addr)
+            goto out_unlock;
+    }
+
+    /* Not loopback addresses on loopback should be preferred
+       in this case. It is important that lo is the first interface
+       in dev_base list. */
+    for_each_netdev_rcu(net, dev) {
+        if (l3mdev_master_ifindex_rcu(dev) != master_idx)
+            continue;
+
+        in_dev = __in_dev_get_rcu(dev);
+        if (!in_dev)
+            continue;
+
+        addr = in_dev_select_addr(in_dev, scope);
+        if (addr)
+            goto out_unlock;
+    }
+out_unlock:
+    rcu_read_unlock();
+    return addr;
+}
+
+static __be32 in_dev_select_addr(const struct in_device *in_dev,
+                 int scope)
+{
+    const struct in_ifaddr *ifa;
+
+    in_dev_for_each_ifa_rcu(ifa, in_dev) {
+        if (READ_ONCE(ifa->ifa_flags) & IFA_F_SECONDARY)
+            continue;
+        if (ifa->ifa_scope != RT_SCOPE_LINK && ifa->ifa_scope <= scope)
+            return ifa->ifa_local;
+    }
+
+    return 0;
 }
 ```
 
@@ -15860,7 +17851,7 @@ void fib_select_multipath(struct fib_result *res, int hash,
     use_neigh = READ_ONCE(net->ipv4.sysctl_fib_multipath_use_neigh);
     saddr = fl4 ? fl4->saddr : 0;
 
-#define change_nexthops(fi) {               \
+#define change_nexthops(fi)                \
     int nhsel; struct fib_nh *nexthop_nh;   \
     for (nhsel = 0,    nexthop_nh = (struct fib_nh *)((fi)->fib_nh);   \
          nhsel < fib_info_num_path((fi));   \
@@ -15987,9 +17978,7 @@ struct rtable *__mkroute_output(const struct fib_result *res,
         return ERR_PTR(-EINVAL);
 
     if (likely(!IN_DEV_ROUTE_LOCALNET(in_dev)))
-        if (ipv4_is_loopback(fl4->saddr) &&
-            !(dev_out->flags & IFF_LOOPBACK) &&
-            !netif_is_l3_master(dev_out))
+        if (ipv4_is_loopback(fl4->saddr) && !(dev_out->flags & IFF_LOOPBACK) && !netif_is_l3_master(dev_out))
             return ERR_PTR(-EINVAL);
 
     if (ipv4_is_lbcast(fl4->daddr)) {
@@ -16145,48 +18134,48 @@ struct dst_ops ipv4_dst_ops = {
     .confirm_neigh    = ipv4_confirm_neigh,
 };
 struct rtable *rt_dst_alloc(struct net_device *dev,
-			    unsigned int flags, u16 type,
-			    bool noxfrm)
+                unsigned int flags, u16 type,
+                bool noxfrm)
 {
-	struct rtable *rt;
+    struct rtable *rt;
 
-	rt = dst_alloc(&ipv4_dst_ops, dev, DST_OBSOLETE_FORCE_CHK,
-		       (noxfrm ? DST_NOXFRM : 0));
+    rt = dst_alloc(&ipv4_dst_ops, dev, DST_OBSOLETE_FORCE_CHK,
+               (noxfrm ? DST_NOXFRM : 0));
 
-	if (rt) {
-		rt->rt_genid = rt_genid_ipv4(dev_net(dev));
-		rt->rt_flags = flags;
-		rt->rt_type = type;
-		rt->rt_is_input = 0;
-		rt->rt_iif = 0;
-		rt->rt_pmtu = 0;
-		rt->rt_mtu_locked = 0;
-		rt->rt_uses_gateway = 0;
-		rt->rt_gw_family = 0;
-		rt->rt_gw4 = 0;
+    if (rt) {
+        rt->rt_genid = rt_genid_ipv4(dev_net(dev));
+        rt->rt_flags = flags;
+        rt->rt_type = type;
+        rt->rt_is_input = 0;
+        rt->rt_iif = 0;
+        rt->rt_pmtu = 0;
+        rt->rt_mtu_locked = 0;
+        rt->rt_uses_gateway = 0;
+        rt->rt_gw_family = 0;
+        rt->rt_gw4 = 0;
 
-		rt->dst.output = ip_output;
-		if (flags & RTCF_LOCAL)
-			rt->dst.input = ip_local_deliver;
-	}
+        rt->dst.output = ip_output;
+        if (flags & RTCF_LOCAL)
+            rt->dst.input = ip_local_deliver;
+    }
 
-	return rt;
+    return rt;
 }
 
 void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
-		int initial_obsolete, unsigned short flags)
+        int initial_obsolete, unsigned short flags)
 {
-	struct dst_entry *dst;
+    struct dst_entry *dst;
 
-	if (ops->gc && !(flags & DST_NOCOUNT) &&
-	    dst_entries_get_fast(ops) > ops->gc_thresh)
-		ops->gc(ops);
+    if (ops->gc && !(flags & DST_NOCOUNT) &&
+        dst_entries_get_fast(ops) > ops->gc_thresh)
+        ops->gc(ops);
 
-	dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
-	if (!dst)
-		return NULL;
+    dst = kmem_cache_alloc(ops->kmem_cachep, GFP_ATOMIC);
+    if (!dst)
+        return NULL;
 
-	dst_init(dst, ops, dev, initial_obsolete, flags) {
+    dst_init(dst, ops, dev, initial_obsolete, flags) {
         dst->dev = dev;
         netdev_hold(dev, &dst->dev_tracker, GFP_ATOMIC);
         dst->ops = ops;
@@ -16215,7 +18204,7 @@ void *dst_alloc(struct dst_ops *ops, struct net_device *dev,
             dst_entries_add(ops, 1);
     }
 
-	return dst;
+    return dst;
 }
 ```
 
@@ -17300,6 +19289,8 @@ suppress_route:
 ```
 
 # nexthop
+
+<img src='../images/kernel/net-route-nexthop.drawio.svg' style='max-height:850px'/>
 
 ```c
 struct nexthop (group)
@@ -18920,1266 +20911,6 @@ ip netns exec server ping -c 4 10.0.0.11
          Physical Network
 ```
 
-# rtnl_link
-
-```c
-static const struct proto_ops netlink_ops = {
-    .family              = PF_NETLINK,
-    .owner               = THIS_MODULE,
-    .release             = netlink_release,
-    .bind                = netlink_bind,
-    .connect             = netlink_connect,
-    .socketpair          = sock_no_socketpair,
-    .accept              = sock_no_accept,
-    .getname             = netlink_getname,
-    .poll                = datagram_poll,
-    .ioctl               = netlink_ioctl,
-    .listen              = sock_no_listen,
-    .shutdown            = sock_no_shutdown,
-    .setsockopt          = netlink_setsockopt,
-    .getsockopt_iter     = netlink_getsockopt,
-    .sendmsg             = netlink_sendmsg,
-    .recvmsg             = netlink_recvmsg,
-    .mmap                = sock_no_mmap,
-};
-
-struct rtnl_link {
-    rtnl_doit_func          doit;
-    rtnl_dumpit_func        dumpit;
-    struct module           *owner;
-    unsigned int            flags;
-    struct rcu_head         rcu;
-};
-```
-
-## rtnetlink_net_init
-
-```c
-void __init rtnetlink_init(void)
-{
-    if (register_pernet_subsys(&rtnetlink_net_ops))
-        panic("rtnetlink_init: cannot initialize rtnetlink\n");
-
-    register_netdevice_notifier(&rtnetlink_dev_notifier);
-
-    rtnl_register_many(rtnetlink_rtnl_msg_handlers);
-}
-
-static struct pernet_operations rtnetlink_net_ops = {
-    .init = rtnetlink_net_init,
-    .exit = rtnetlink_net_exit,
-};
-
-static int __net_init rtnetlink_net_init(struct net *net)
-{
-    struct sock *sk;
-    struct netlink_kernel_cfg cfg = {
-        .groups         = RTNLGRP_MAX,
-        .input          = rtnetlink_rcv,
-        .flags          = NL_CFG_F_NONROOT_RECV,
-        .bind           = rtnetlink_bind,
-    };
-
-    sk = netlink_kernel_create(net, NETLINK_ROUTE, &cfg) {
-        return __netlink_kernel_create(net, unit, THIS_MODULE, cfg);
-    }
-    if (!sk)
-        return -ENOMEM;
-    net->rtnl = sk;
-    return 0;
-}
-
-struct sock *
-__netlink_kernel_create(struct net *net, int unit, struct module *module,
-            struct netlink_kernel_cfg *cfg)
-{
-    struct socket *sock;
-    struct sock *sk;
-    struct netlink_sock *nlk;
-    struct listeners *listeners = NULL;
-    unsigned int groups;
-
-    BUG_ON(!nl_table);
-
-    if (unit < 0 || unit >= MAX_LINKS)
-        return NULL;
-
-    if (sock_create_lite(PF_NETLINK, SOCK_DGRAM, unit, &sock))
-        return NULL;
-
-    if (__netlink_create(net, sock, unit, 1) < 0)
-        goto out_sock_release_nosk;
-
-    sk = sock->sk;
-
-    if (!cfg || cfg->groups < 32)
-        groups = 32;
-    else
-        groups = cfg->groups;
-
-    listeners = kzalloc(sizeof(*listeners) + NLGRPSZ(groups), GFP_KERNEL);
-    if (!listeners)
-        goto out_sock_release;
-
-    sk->sk_data_ready = netlink_data_ready;
-    if (cfg && cfg->input)
-        nlk_sk(sk)->netlink_rcv = cfg->input;
-
-    if (netlink_insert(sk, 0))
-        goto out_sock_release;
-
-    nlk = nlk_sk(sk);
-    set_bit(NETLINK_F_KERNEL_SOCKET, &nlk->flags);
-
-    netlink_table_grab();
-    if (!nl_table[unit].registered) {
-        nl_table[unit].groups = groups;
-        rcu_assign_pointer(nl_table[unit].listeners, listeners);
-        nl_table[unit].module = module;
-        if (cfg) {
-            nl_table[unit].bind = cfg->bind;
-            nl_table[unit].unbind = cfg->unbind;
-            nl_table[unit].release = cfg->release;
-            nl_table[unit].flags = cfg->flags;
-        }
-        nl_table[unit].registered = 1;
-    } else {
-        kfree(listeners);
-        nl_table[unit].registered++;
-    }
-    netlink_table_ungrab();
-    return sk;
-
-out_sock_release:
-    kfree(listeners);
-    netlink_kernel_release(sk);
-    return NULL;
-
-out_sock_release_nosk:
-    sock_release(sock);
-    return NULL;
-}
-```
-
-## rtnetlink_rcv
-
-```c
-userspace: sendmsg(fd, msg, ...)          [syscall]
-    │
-    ▼
-netlink_sendmsg(sock, msg, len)           [af_netlink.c:1818]
-    │  copies user data into skb
-    │  dst_portid = 0 (kernel socket)
-    │
-    ▼
-netlink_unicast(ssk, skb, dst_portid=0)   [af_netlink.c:1328]
-    │  netlink_is_kernel(sk) == true
-    │
-    ▼
-netlink_unicast_kernel(sk, skb, ssk)      [af_netlink.c:1306]
-    │  nlk->netlink_rcv != NULL
-    │  calls nlk->netlink_rcv(skb)
-    │    └─ set at socket creation time via cfg->input = rtnetlink_rcv
-    │
-    ▼
-rtnetlink_rcv(skb)                        [rtnetlink.c:7093]
-    │  thin wrapper
-    │
-    ▼
-netlink_rcv_skb(skb, &rtnetlink_rcv_msg)  [af_netlink.c:2530]
-    │  loops over all nlmsghdr in skb
-    │  skips non-NLM_F_REQUEST messages
-    │  skips control types < NLMSG_MIN_TYPE
-    │  calls cb(skb, nlh, &extack)
-    │  sends netlink_ack() on NLM_F_ACK or error
-    │
-    ▼
-rtnetlink_rcv_msg(skb, nlh, extack)       [rtnetlink.c:~6969]
-    │  → dispatch to doit/dumpit handler
-
-static void rtnetlink_rcv(struct sk_buff *skb)
-{
-    netlink_rcv_skb(skb, &rtnetlink_rcv_msg/*cb*/) {
-        struct netlink_ext_ack extack;
-        struct nlmsghdr *nlh;
-        int err;
-
-        while (skb->len >= nlmsg_total_size(0)) {
-            int msglen;
-
-            memset(&extack, 0, sizeof(extack));
-            nlh = nlmsg_hdr(skb);
-            err = 0;
-
-            if (nlh->nlmsg_len < NLMSG_HDRLEN || skb->len < nlh->nlmsg_len)
-                return 0;
-
-            /* Only requests are handled by the kernel */
-            if (!(nlh->nlmsg_flags & NLM_F_REQUEST))
-                goto ack;
-
-            /* Skip control messages */
-            if (nlh->nlmsg_type < NLMSG_MIN_TYPE)
-                goto ack;
-
-            err = cb(skb, nlh, &extack);
-            if (err == -EINTR)
-                goto skip;
-
-    ack:
-            if (nlh->nlmsg_flags & NLM_F_ACK || err)
-                netlink_ack(skb, nlh, err, &extack);
-
-    skip:
-            msglen = NLMSG_ALIGN(nlh->nlmsg_len);
-            if (msglen > skb->len)
-                msglen = skb->len;
-            skb_pull(skb, msglen);
-        }
-
-        return 0;
-    }
-}
-
-int rtnetlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
-                 struct netlink_ext_ack *extack)
-{
-    struct net *net = sock_net(skb->sk);
-    struct rtnl_link *link;
-    enum rtnl_kinds kind;
-    struct module *owner;
-    int err = -EOPNOTSUPP;
-    rtnl_doit_func doit;
-    unsigned int flags;
-    int family;
-    int type;
-
-    type = nlh->nlmsg_type;
-    if (type > RTM_MAX)
-        return -EOPNOTSUPP;
-
-    type -= RTM_BASE;
-
-    /* All the messages must have at least 1 byte length */
-    if (nlmsg_len(nlh) < sizeof(struct rtgenmsg))
-        return 0;
-
-    family = ((struct rtgenmsg *)nlmsg_data(nlh))->rtgen_family;
-    kind = rtnl_msgtype_kind(type) {
-        return msgtype & RTNL_KIND_MASK;
-    }
-
-    if (kind != RTNL_KIND_GET && !netlink_net_capable(skb, CAP_NET_ADMIN))
-        return -EPERM;
-
-    rcu_read_lock();
-    if (kind == RTNL_KIND_GET && (nlh->nlmsg_flags & NLM_F_DUMP)) {
-        struct sock *rtnl;
-        rtnl_dumpit_func dumpit;
-        u32 min_dump_alloc = 0;
-
-        link = rtnl_get_link(family, type);
-        if (!link || !link->dumpit) {
-            family = PF_UNSPEC;
-            link = rtnl_get_link(family, type);
-            if (!link || !link->dumpit)
-                goto err_unlock;
-        }
-        owner = link->owner;
-        dumpit = link->dumpit;
-        flags = link->flags;
-
-        if (type == RTM_GETLINK - RTM_BASE)
-            min_dump_alloc = rtnl_calcit(skb, nlh);
-
-        err = 0;
-        /* need to do this before rcu_read_unlock() */
-        if (!try_module_get(owner))
-            err = -EPROTONOSUPPORT;
-
-        rcu_read_unlock();
-
-        rtnl = net->rtnl;
-        if (err == 0) {
-            struct netlink_dump_control c = {
-                .dump               = dumpit,
-                .min_dump_alloc     = min_dump_alloc,
-                .module             = owner,
-                .flags              = flags,
-            };
-            err = rtnetlink_dump_start(rtnl, skb, nlh, &c);
-            /* netlink_dump_start() will keep a reference on
-             * module if dump is still in progress. */
-            module_put(owner);
-        }
-        return err;
-    }
-
-    link = rtnl_get_link(family, type);
-    if (!link || !link->doit) {
-        family = PF_UNSPEC;
-        link = rtnl_get_link(PF_UNSPEC, type);
-        if (!link || !link->doit)
-            goto out_unlock;
-    }
-
-    owner = link->owner;
-    if (!try_module_get(owner)) {
-        err = -EPROTONOSUPPORT;
-        goto out_unlock;
-    }
-
-    flags = link->flags;
-    if (kind == RTNL_KIND_DEL && (nlh->nlmsg_flags & NLM_F_BULK) &&
-        !(flags & RTNL_FLAG_BULK_DEL_SUPPORTED)) {
-        NL_SET_ERR_MSG(extack, "Bulk delete is not supported");
-        module_put(owner);
-        goto err_unlock;
-    }
-
-    if (flags & RTNL_FLAG_DOIT_UNLOCKED) {
-        doit = link->doit;
-        rcu_read_unlock();
-        if (doit)
-            err = doit(skb, nlh, extack);
-        module_put(owner);
-        return err;
-    }
-    rcu_read_unlock();
-
-    rtnl_lock();
-    link = rtnl_get_link(family, type);
-    if (link && link->doit)
-        err = link->doit(skb, nlh, extack) {
-            rtnl_newlink();
-            rtm_new_nexthop();
-            fib_nl_newrule();
-            inet_rtm_newaddr();
-        }
-    rtnl_unlock();
-
-    module_put(owner);
-
-    return err;
-
-out_unlock:
-    rcu_read_unlock();
-    return err;
-
-err_unlock:
-    rcu_read_unlock();
-    return -EOPNOTSUPP;
-}
-```
-
-## rtnl_msg_handler
-
-```c
-struct rtnl_msg_handler {
-    struct module       *owner;
-    int                 protocol;
-    int                 msgtype;
-    rtnl_doit_func      doit;
-    rtnl_dumpit_func    dumpit;
-    int                 flags;
-};
-
-#define rtnl_register_many(handlers)                \
-    __rtnl_register_many(handlers, ARRAY_SIZE(handlers))
-
-int __rtnl_register_many(const struct rtnl_msg_handler *handlers, int n)
-{
-    const struct rtnl_msg_handler *handler;
-    int i, err;
-
-    for (i = 0, handler = handlers; i < n; i++, handler++) {
-        err = rtnl_register_internal(handler->owner, handler->protocol,
-                         handler->msgtype, handler->doit,
-                         handler->dumpit, handler->flags);
-        if (err) {
-            if (!handler->owner)
-                panic("Unable to register rtnetlink message "
-                      "handlers, %pS\n", handlers);
-
-            __rtnl_unregister_many(handlers, i);
-            break;
-        }
-    }
-
-    return err;
-}
-
-static struct rtnl_link __rcu *__rcu *rtnl_msg_handlers[RTNL_FAMILY_MAX + 1];
-/* rtnl_msg_handlers[protocol][msgtype - RTM_BASE] */
-
-int rtnl_register_internal(struct module *owner,
-                  int protocol, int msgtype,
-                  rtnl_doit_func doit, rtnl_dumpit_func dumpit,
-                  unsigned int flags)
-{
-    struct rtnl_link *link, *old;
-    struct rtnl_link __rcu **tab;
-    int msgindex;
-    int ret = -ENOBUFS;
-
-    BUG_ON(protocol < 0 || protocol > RTNL_FAMILY_MAX);
-    msgindex = rtm_msgindex(msgtype) {
-        return msgtype - RTM_BASE;
-    }
-
-    rtnl_lock();
-    tab = rtnl_dereference(rtnl_msg_handlers[protocol]);
-    if (tab == NULL) {
-        tab = kcalloc(RTM_NR_MSGTYPES, sizeof(void *), GFP_KERNEL);
-        if (!tab)
-            goto unlock;
-
-        /* ensures we see the 0 stores */
-        rcu_assign_pointer(rtnl_msg_handlers[protocol], tab);
-    }
-
-    old = rtnl_dereference(tab[msgindex]);
-    if (old) {
-        link = kmemdup(old, sizeof(*old), GFP_KERNEL);
-        if (!link)
-            goto unlock;
-    } else {
-        link = kzalloc_obj(*link);
-        if (!link)
-            goto unlock;
-    }
-
-    WARN_ON(link->owner && link->owner != owner);
-    link->owner = owner;
-
-    WARN_ON(doit && link->doit && link->doit != doit);
-    if (doit)
-        link->doit = doit;
-    WARN_ON(dumpit && link->dumpit && link->dumpit != dumpit);
-    if (dumpit)
-        link->dumpit = dumpit;
-
-    WARN_ON(rtnl_msgtype_kind(msgtype) != RTNL_KIND_DEL &&
-        (flags & RTNL_FLAG_BULK_DEL_SUPPORTED));
-    link->flags |= flags;
-
-    /* publish protocol:msgtype */
-    rcu_assign_pointer(tab[msgindex], link);
-    ret = 0;
-    if (old)
-        kfree_rcu(old, rcu);
-unlock:
-    rtnl_unlock();
-    return ret;
-}
-```
-
-### rtnetlink_rtnl_msg_handlers
-
-> ip link [show, add, delete] COMMAND
-> ip link add
-
-```c
-static const struct rtnl_msg_handler rtnetlink_rtnl_msg_handlers[] __initconst = {
-    {
-        .msgtype    = RTM_NEWLINK,
-        .doit       = rtnl_newlink,
-        .flags      = RTNL_FLAG_DOIT_PERNET
-    }, {
-        .msgtype    = RTM_DELLINK,
-        .doit       = rtnl_dellink,
-        .flags      = RTNL_FLAG_DOIT_PERNET_WIP
-    }, {
-        .msgtype    = RTM_GETLINK,
-        .doit       = rtnl_getlink,
-        .dumpit     = rtnl_dump_ifinfo,
-        .flags      = RTNL_FLAG_DUMP_SPLIT_NLM_DONE |
-            RTNL_FLAG_DOIT_UNLOCKED |
-            RTNL_FLAG_DUMP_UNLOCKED
-    },
-};
-```
-
-#### rtnl_newlink
-
-```c
-int rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
-            struct netlink_ext_ack *extack)
-{
-    struct net *tgt_net, *link_net = NULL, *peer_net = NULL;
-    struct nlattr **tb, **linkinfo, **data = NULL;
-    struct rtnl_link_ops *ops = NULL;
-    struct rtnl_newlink_tbs *tbs;
-    struct rtnl_nets rtnl_nets;
-    int ops_srcu_index;
-    int ret;
-
-    tbs = kmalloc_obj(*tbs);
-    if (!tbs)
-        return -ENOMEM;
-
-    tb = tbs->tb;
-    ret = nlmsg_parse_deprecated(nlh, sizeof(struct ifinfomsg), tb, IFLA_MAX, ifla_policy, extack);
-    if (ret < 0)
-        goto free;
-
-    ret = rtnl_ensure_unique_netns(tb, extack, false);
-    if (ret < 0)
-        goto free;
-
-    linkinfo = tbs->linkinfo;
-    if (tb[IFLA_LINKINFO]) {
-        ret = nla_parse_nested_deprecated(linkinfo, IFLA_INFO_MAX,
-                          tb[IFLA_LINKINFO],
-                          ifla_info_policy, NULL);
-        if (ret < 0)
-            goto free;
-    } else {
-        memset(linkinfo, 0, sizeof(tbs->linkinfo));
-    }
-
-    if (linkinfo[IFLA_INFO_KIND]) {
-        char kind[MODULE_NAME_LEN]; /* "vxlan", "veth" */
-
-        nla_strscpy(kind, linkinfo[IFLA_INFO_KIND], sizeof(kind));
-        ops = rtnl_link_ops_get(kind, &ops_srcu_index) {
-            struct rtnl_link_ops *ops;
-
-            rcu_read_lock();
-
-            list_for_each_entry_rcu(ops, &link_ops, list) {
-                if (!strcmp(ops->kind, kind)) {
-                    *srcu_index = srcu_read_lock(&ops->srcu);
-                    goto unlock;
-                }
-            }
-
-            ops = NULL;
-        unlock:
-            rcu_read_unlock();
-
-            return ops;
-        }
-#ifdef CONFIG_MODULES
-        if (!ops) {
-            request_module("rtnl-link-%s", kind);
-            ops = rtnl_link_ops_get(kind, &ops_srcu_index);
-        }
-#endif
-    }
-
-    rtnl_nets_init(&rtnl_nets);
-
-    if (ops) {
-        if (ops->maxtype > RTNL_MAX_TYPE) {
-            ret = -EINVAL;
-            goto put_ops;
-        }
-
-        if (ops->maxtype && linkinfo[IFLA_INFO_DATA]) {
-            ret = nla_parse_nested_deprecated(tbs->attr, ops->maxtype,
-                              linkinfo[IFLA_INFO_DATA],
-                              ops->policy, extack);
-            if (ret < 0)
-                goto put_ops;
-
-            data = tbs->attr;
-        }
-
-        if (ops->validate) {
-            ret = ops->validate(tb, data, extack);
-            if (ret < 0)
-                goto put_ops;
-        }
-
-        if (ops->peer_type) {
-            peer_net = rtnl_get_peer_net(skb, ops, tb, data, extack);
-            if (IS_ERR(peer_net)) {
-                ret = PTR_ERR(peer_net);
-                goto put_ops;
-            }
-            if (peer_net)
-                rtnl_nets_add(&rtnl_nets, peer_net);
-        }
-    }
-
-    tgt_net = rtnl_link_get_net_capable(skb, sock_net(skb->sk), tb, CAP_NET_ADMIN);
-    if (IS_ERR(tgt_net)) {
-        ret = PTR_ERR(tgt_net);
-        goto put_net;
-    }
-
-    rtnl_nets_add(&rtnl_nets, tgt_net);
-
-    if (tb[IFLA_LINK_NETNSID]) {
-        int id = nla_get_s32(tb[IFLA_LINK_NETNSID]);
-
-        link_net = get_net_ns_by_id(tgt_net, id);
-        if (!link_net) {
-            NL_SET_ERR_MSG(extack, "Unknown network namespace id");
-            ret =  -EINVAL;
-            goto put_net;
-        }
-
-        rtnl_nets_add(&rtnl_nets, link_net);
-
-        if (!netlink_ns_capable(skb, link_net->user_ns, CAP_NET_ADMIN)) {
-            ret = -EPERM;
-            goto put_net;
-        }
-    }
-
-    rtnl_nets_lock(&rtnl_nets);
-    ret = __rtnl_newlink(skb, nlh, ops, tgt_net, link_net, peer_net, tbs, data, extack);
-    rtnl_nets_unlock(&rtnl_nets);
-
-put_net:
-    rtnl_nets_destroy(&rtnl_nets);
-put_ops:
-    if (ops)
-        rtnl_link_ops_put(ops, ops_srcu_index);
-free:
-    kfree(tbs);
-    return ret;
-}
-
- int __rtnl_newlink(struct sk_buff *skb, struct nlmsghdr *nlh,
-              const struct rtnl_link_ops *ops,
-              struct net *tgt_net, struct net *link_net,
-              struct net *peer_net,
-              struct rtnl_newlink_tbs *tbs,
-              struct nlattr **data,
-              struct netlink_ext_ack *extack)
-{
-    struct nlattr ** const tb = tbs->tb;
-    struct net *net = sock_net(skb->sk);
-    struct net *device_net;
-    struct net_device *dev;
-    struct ifinfomsg *ifm;
-    bool link_specified;
-
-    /* When creating, lookup for existing device in target net namespace */
-    device_net = (nlh->nlmsg_flags & NLM_F_CREATE) &&
-             (nlh->nlmsg_flags & NLM_F_EXCL) ?
-             tgt_net : net;
-
-    ifm = nlmsg_data(nlh);
-    if (ifm->ifi_index > 0) {
-        link_specified = true;
-        dev = __dev_get_by_index(device_net, ifm->ifi_index);
-    } else if (ifm->ifi_index < 0) {
-        NL_SET_ERR_MSG(extack, "ifindex can't be negative");
-        return -EINVAL;
-    } else if (tb[IFLA_IFNAME] || tb[IFLA_ALT_IFNAME]) {
-        link_specified = true;
-        dev = rtnl_dev_get(device_net, tb);
-    } else {
-        link_specified = false;
-        dev = NULL;
-    }
-
-    if (dev)
-        return rtnl_changelink(skb, nlh, ops, dev, tgt_net, tbs, data, extack);
-
-    if (!(nlh->nlmsg_flags & NLM_F_CREATE)) {
-        /* No dev found and NLM_F_CREATE not set. Requested dev does not exist,
-         * or it's for a group */
-        if (link_specified || !tb[IFLA_GROUP])
-            return -ENODEV;
-
-        return rtnl_group_changelink(skb, net, tgt_net,
-                         nla_get_u32(tb[IFLA_GROUP]),
-                         ifm, extack, tb);
-    }
-
-    if (tb[IFLA_MAP] || tb[IFLA_PROTINFO])
-        return -EOPNOTSUPP;
-
-    if (!ops) {
-        NL_SET_ERR_MSG(extack, "Unknown device type");
-        return -EOPNOTSUPP;
-    }
-
-    return rtnl_newlink_create(skb, ifm, ops, tgt_net, link_net, peer_net, nlh,
-                   tb, data, extack);
-}
-
-int rtnl_newlink_create(struct sk_buff *skb, struct ifinfomsg *ifm,
-                   const struct rtnl_link_ops *ops,
-                   struct net *tgt_net, struct net *link_net,
-                   struct net *peer_net,
-                   const struct nlmsghdr *nlh,
-                   struct nlattr **tb, struct nlattr **data,
-                   struct netlink_ext_ack *extack)
-{
-    unsigned char name_assign_type = NET_NAME_USER;
-    struct rtnl_newlink_params params = {
-        .src_net = sock_net(skb->sk),
-        .link_net = link_net,
-        .peer_net = peer_net,
-        .tb = tb,
-        .data = data,
-    };
-    u32 portid = NETLINK_CB(skb).portid;
-    struct net_device *dev;
-    char ifname[IFNAMSIZ];
-    int err;
-
-    if (!ops->alloc && !ops->setup)
-        return -EOPNOTSUPP;
-
-    if (tb[IFLA_IFNAME]) {
-        nla_strscpy(ifname, tb[IFLA_IFNAME], IFNAMSIZ);
-    } else {
-        snprintf(ifname, IFNAMSIZ, "%s%%d", ops->kind);
-        name_assign_type = NET_NAME_ENUM;
-    }
-
-    dev = rtnl_create_link(tgt_net, ifname, name_assign_type, ops, tb,
-                   extack);
-    if (IS_ERR(dev)) {
-        err = PTR_ERR(dev);
-        goto out;
-    }
-
-    dev->ifindex = ifm->ifi_index;
-
-    if (ops->newlink) {
-        err = ops->newlink(dev, &params, extack) {
-            veth_newlink();
-            vxlan_newlink();
-        }
-    }
-    else
-        err = register_netdevice(dev);
-    if (err < 0) {
-        free_netdev(dev);
-        goto out;
-    }
-
-    netdev_lock_ops(dev);
-
-    err = rtnl_configure_link(dev, ifm, portid, nlh);
-    if (err < 0)
-        goto out_unregister;
-    if (tb[IFLA_MASTER]) {
-        err = do_set_master(dev, nla_get_u32(tb[IFLA_MASTER]), extack);
-        if (err)
-            goto out_unregister;
-    }
-
-    netdev_unlock_ops(dev);
-out:
-    return err;
-out_unregister:
-    netdev_unlock_ops(dev);
-    if (ops->newlink) {
-        LIST_HEAD(list_kill);
-
-        ops->dellink(dev, &list_kill);
-        unregister_netdevice_many(&list_kill);
-    } else {
-        unregister_netdevice(dev);
-    }
-    goto out;
-}
-```
-
-#### do_set_master
-
-```c
-int do_set_master(struct net_device *dev, int ifindex,
-             struct netlink_ext_ack *extack)
-{
-    struct net_device *upper_dev = netdev_master_upper_dev_get(dev);
-    const struct net_device_ops *ops;
-    int err;
-
-    /* Release the lower lock, the upper is responsible for locking
-     * the lower if needed. None of the existing upper devices
-     * use netdev instance lock, so don't grab it. */
-
-    if (upper_dev) {
-        if (upper_dev->ifindex == ifindex)
-            return 0;
-        ops = upper_dev->netdev_ops;
-        if (ops->ndo_del_slave) {
-            netdev_unlock_ops(dev);
-            err = ops->ndo_del_slave(upper_dev, dev);
-            netdev_lock_ops(dev);
-            if (err)
-                return err;
-        } else {
-            return -EOPNOTSUPP;
-        }
-    }
-
-    if (ifindex) {
-        upper_dev = __dev_get_by_index(dev_net(dev), ifindex) {
-            struct net_device *dev;
-            struct hlist_head *head = dev_index_hash(net, ifindex);
-
-            hlist_for_each_entry(dev, head, index_hlist)
-                if (dev->ifindex == ifindex)
-                    return dev;
-
-            return NULL;
-        }
-        if (!upper_dev)
-            return -EINVAL;
-        ops = upper_dev->netdev_ops;
-        if (ops->ndo_add_slave) {
-            netdev_unlock_ops(dev);
-            err = ops->ndo_add_slave(upper_dev, dev, extack) {
-                br_add_if();
-            }
-            netdev_lock_ops(dev);
-            if (err)
-                return err;
-        } else {
-            return -EOPNOTSUPP;
-        }
-    }
-    return 0;
-}
-```
-
-### fib_rules_rtnl_msg_handlers
-
-```c
-  ip rule add from 10.0.0.0/8 table 100     ← RTM_NEWRULE
-  ip route add 192.168.1.0/24 via 10.0.0.1  ← RTM_NEWROUTE
-       │ RTM_NEWRULE                              │ RTM_NEWROUTE
-       │ "which TABLE to use"                     │ "what to do within a TABLE"
-       ▼                                          ▼
-  struct fib_rule                           struct fib_alias
-   (policy selector)                         → fib_info
-                                               → nexthop
-```
-
-
-```c
-static const struct rtnl_msg_handler fib_rules_rtnl_msg_handlers[] __initconst = {
-    {
-        .msgtype    = RTM_NEWRULE,
-        .doit       = fib_nl_newrule,
-        .flags      = RTNL_FLAG_DOIT_PERNET
-    }, {
-        .msgtype    = RTM_DELRULE,
-        .doit       = fib_nl_delrule,
-        .flags      = RTNL_FLAG_DOIT_PERNET
-    }, {
-        .msgtype    = RTM_GETRULE,
-        .dumpit     = fib_nl_dumprule,
-        .flags      = RTNL_FLAG_DUMP_UNLOCKED
-    },
-};
-```
-
-```c
-static const struct fib_rules_ops __net_initconst fib4_rules_ops_template = {
-    .family             = AF_INET,
-    .rule_size          = sizeof(struct fib4_rule),
-    .addr_size          = sizeof(u32),
-    .action             = fib4_rule_action,
-    .suppress           = fib4_rule_suppress,
-    .match              = fib4_rule_match,
-    .configure          = fib4_rule_configure,
-    .delete             = fib4_rule_delete,
-    .compare            = fib4_rule_compare,
-    .fill               = fib4_rule_fill,
-    .nlmsg_payload      = fib4_rule_nlmsg_payload,
-    .flush_cache        = fib4_rule_flush_cache,
-    .nlgroup            = RTNLGRP_IPV4_RULE,
-    .owner              = THIS_MODULE,
-};
-
-static int fib_nl_newrule(struct sk_buff *skb, struct nlmsghdr *nlh,
-              struct netlink_ext_ack *extack)
-{
-    return fib_newrule(sock_net(skb->sk), skb, nlh, extack, false);
-}
-
-int fib_newrule(struct net *net, struct sk_buff *skb, struct nlmsghdr *nlh,
-        struct netlink_ext_ack *extack, bool rtnl_held)
-{
-    struct fib_rule *rule = NULL, *r, *last = NULL;
-    int err = -EINVAL, unresolved = 0;
-    struct fib_rules_ops *ops = NULL;
-    struct nlattr *tb[FRA_MAX + 1];
-    bool user_priority = false;
-    struct fib_rule_hdr *frh;
-
-    frh = nlmsg_payload(nlh, sizeof(*frh));
-    if (!frh) {
-        NL_SET_ERR_MSG(extack, "Invalid msg length");
-        goto errout;
-    }
-
-    ops = lookup_rules_ops(net, frh->family) {
-        struct fib_rules_ops *ops;
-
-        rcu_read_lock();
-        list_for_each_entry_rcu(ops, &net->rules_ops, list) {
-            if (ops->family == family) {
-                if (!try_module_get(ops->owner))
-                    ops = NULL;
-                rcu_read_unlock();
-                return ops;
-            }
-        }
-        rcu_read_unlock();
-
-        return NULL;
-    }
-    if (!ops) {
-        err = -EAFNOSUPPORT;
-        NL_SET_ERR_MSG(extack, "Rule family not supported");
-        goto errout;
-    }
-
-    err = nlmsg_parse_deprecated(nlh, sizeof(*frh), tb, FRA_MAX, fib_rule_policy, extack);
-    if (err < 0) {
-        NL_SET_ERR_MSG(extack, "Error parsing msg");
-        goto errout;
-    }
-
-    err = fib_nl2rule(net, nlh, extack, ops, tb, &rule, &user_priority);
-    if (err)
-        goto errout;
-
-    if (!rtnl_held)
-        rtnl_net_lock(net);
-
-    err = fib_nl2rule_rtnl(rule, ops, tb, extack);
-    if (err)
-        goto errout_free;
-
-    if ((nlh->nlmsg_flags & NLM_F_EXCL) && rule_exists(ops, frh, tb, rule)) {
-        err = -EEXIST;
-        goto errout_free;
-    }
-
-    err = ops->configure(rule, skb, frh, tb, extack);
-    if (err < 0)
-        goto errout_free;
-
-    err = call_fib_rule_notifiers(net, FIB_EVENT_RULE_ADD, rule, ops, extack);
-    if (err < 0)
-        goto errout_free;
-
-    list_for_each_entry(r, &ops->rules_list, list) {
-        if (r->pref == rule->target) {
-            RCU_INIT_POINTER(rule->ctarget, r);
-            break;
-        }
-    }
-
-    if (rcu_dereference_protected(rule->ctarget, 1) == NULL)
-        unresolved = 1;
-
-    list_for_each_entry(r, &ops->rules_list, list) {
-        if (r->pref > rule->pref)
-            break;
-        last = r;
-    }
-
-    if (last)
-        list_add_rcu(&rule->list, &last->list);
-    else
-        list_add_rcu(&rule->list, &ops->rules_list);
-
-    if (ops->unresolved_rules) {
-        /* There are unresolved goto rules in the list, check if
-         * any of them are pointing to this new rule. */
-        list_for_each_entry(r, &ops->rules_list, list) {
-            if (r->action == FR_ACT_GOTO &&
-                r->target == rule->pref &&
-                rtnl_dereference(r->ctarget) == NULL) {
-                rcu_assign_pointer(r->ctarget, rule);
-                if (--ops->unresolved_rules == 0)
-                    break;
-            }
-        }
-    }
-
-    if (rule->action == FR_ACT_GOTO)
-        ops->nr_goto_rules++;
-
-    if (unresolved)
-        ops->unresolved_rules++;
-
-    if (rule->tun_id)
-        ip_tunnel_need_metadata();
-
-    fib_rule_get(rule);
-
-    if (!rtnl_held)
-        rtnl_net_unlock(net);
-
-    notify_rule_change(RTM_NEWRULE, rule, ops, nlh, NETLINK_CB(skb).portid);
-    fib_rule_put(rule);
-    flush_route_cache(ops);
-    rules_ops_put(ops);
-    return 0;
-
-errout_free:
-    if (!rtnl_held)
-        rtnl_net_unlock(net);
-    kfree(rule);
-errout:
-    rules_ops_put(ops);
-    return err;
-}
-```
-
-### fib_rtnl_msg_handlers
-
-```c
-static const struct rtnl_msg_handler fib_rtnl_msg_handlers[] __initconst = {
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_NEWROUTE,
-        .doit       = inet_rtm_newroute,
-        .flags      = RTNL_FLAG_DOIT_PERNET
-    }, {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_DELROUTE,
-        .doit       = inet_rtm_delroute,
-        .flags      = RTNL_FLAG_DOIT_PERNET
-    }, {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_GETROUTE,
-        .dumpit     = inet_dump_fib,
-        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE
-    },
-};
-```
-
-#### inet_rtm_newroute
-
-```c
-static int inet_rtm_newroute(struct sk_buff *skb, struct nlmsghdr *nlh,
-                 struct netlink_ext_ack *extack)
-{
-    struct net *net = sock_net(skb->sk);
-    struct fib_config cfg;
-    struct fib_table *tb;
-    int err;
-
-    err = rtm_to_fib_config(net, skb, nlh, &cfg, extack);
-    if (err < 0)
-        goto errout;
-
-    rtnl_net_lock(net);
-
-    tb = fib_new_table(net, cfg.fc_table);
-    if (!tb) {
-        err = -ENOBUFS;
-        goto unlock;
-    }
-
-    err = fib_table_insert(net, tb, &cfg, extack);
-    if (!err && cfg.fc_type == RTN_LOCAL)
-        net->ipv4.fib_has_custom_local_routes = true;
-
-unlock:
-    rtnl_net_unlock(net);
-errout:
-    return err;
-}
-```
-
-### neigh_rtnl_msg_handlers
-
-```c
-static const struct rtnl_msg_handler neigh_rtnl_msg_handlers[] __initconst = {
-    {
-        .msgtype    = RTM_NEWNEIGH,
-        .doit       = neigh_add
-    }, {
-        .msgtype    = RTM_DELNEIGH,
-        .doit       = neigh_delete
-    }, {
-        .msgtype    = RTM_GETNEIGH,
-        .doit       = neigh_get,
-        .dumpit     = neigh_dump_info,
-        .flags      = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED
-    }, {
-        .msgtype    = RTM_GETNEIGHTBL,
-        .dumpit     = neightbl_dump_info,
-
-        .flags      = RTNL_FLAG_DUMP_UNLOCKED
-    }, {
-        .msgtype    = RTM_SETNEIGHTBL,
-        .doit       = neightbl_set,
-        .flags      = RTNL_FLAG_DOIT_UNLOCKED
-    },
-};
-```
-
-### nexthop_rtnl_msg_handlers
-
-> sudo ip route add 10.0.0.0/8 via 192.168.1.1 dev eth0 metric 50 src 192.168.1.100
-
-```c
-static const struct rtnl_msg_handler nexthop_rtnl_msg_handlers[] __initconst = {
-    {
-        .msgtype    = RTM_NEWNEXTHOP,
-        .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .msgtype    = RTM_DELNEXTHOP,
-        .doit       = rtm_del_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .msgtype    = RTM_GETNEXTHOP,
-        .doit       = rtm_get_nexthop,
-        .dumpit     = rtm_dump_nexthop},
-    {
-        .msgtype    = RTM_GETNEXTHOPBUCKET,
-        .doit       = rtm_get_nexthop_bucket,
-        .dumpit     = rtm_dump_nexthop_bucket},
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_NEWNEXTHOP,
-        .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_GETNEXTHOP,
-        .dumpit     = rtm_dump_nexthop},
-    {
-        .protocol   = PF_INET6,
-        .msgtype    = RTM_NEWNEXTHOP,
-        .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .protocol   = PF_INET6,
-        .msgtype    = RTM_GETNEXTHOP,
-        .dumpit     = rtm_dump_nexthop},
-};
-```
-
-```c
-ip nexthop add id 10 via 192.168.1.1 dev eth0
-         │
-         ▼ netlink RTM_NEWNEXTHOP
-         │
-  rtm_new_nexthop()
-         │
-  nexthop_add()
-    ├── cfg->nh_grp?
-    │    ├── YES → nexthop_create_group()   builds nh_group + nh_grp_entry[]
-    │    └── NO  → nexthop_create()         builds nh_info
-    │                  ├── AF_INET  → nh_create_ipv4()  → fib_nh_init()
-    │                  └── AF_INET6 → nh_create_ipv6()  → fib6_nh_init()
-    │
-    └── insert_nexthop()  →  rb_insert into net->nexthop.rb_root (keyed by id)
-                          →  hlist_add into net->nexthop.devhash (for dev events)
-```
-
-### devinet_rtnl_msg_handlers
-
-> ip addr add 10.0.0.1/24 dev vxlan
-
-```c
-static const struct rtnl_msg_handler devinet_rtnl_msg_handlers[] __initconst = {
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_NEWADDR,
-        .doit       = inet_rtm_newaddr,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_DELADDR,
-        .doit       = inet_rtm_deladdr,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
-    {
-        .protocol   = PF_INET,
-        .msgtype    = RTM_GETADDR,
-        .dumpit     = inet_dump_ifaddr,
-        .flags      = RTNL_FLAG_DUMP_UNLOCKED | RTNL_FLAG_DUMP_SPLIT_NLM_DONE},
-    {
-        .protocol   = PF_INET, .msgtype = RTM_GETNETCONF,
-        .doit       = inet_netconf_get_devconf,
-        .dumpit     = inet_netconf_dump_devconf,
-        .flags      = RTNL_FLAG_DOIT_UNLOCKED | RTNL_FLAG_DUMP_UNLOCKED},
-    {
-        .owner      = THIS_MODULE,
-        .protocol   = PF_INET,
-        .msgtype    = RTM_GETMULTICAST,
-        .dumpit     = inet_dump_ifmcaddr,
-        .flags      = RTNL_FLAG_DUMP_UNLOCKED},
-};
-```
-
-### br_vlan_rtnl_msg_handlers
-
-```sh
-ip link add link eth0 name eth0.30 type vlan id 30
-ip link set eth0.30 up
-ip addr add 172.30.0.50/24 dev eth0.30
-```
-
-```c
-static const struct rtnl_msg_handler br_vlan_rtnl_msg_handlers[] = {
-    {THIS_MODULE, PF_BRIDGE, RTM_NEWVLAN, br_vlan_rtm_process, NULL, 0},
-    {THIS_MODULE, PF_BRIDGE, RTM_DELVLAN, br_vlan_rtm_process, NULL, 0},
-    {THIS_MODULE, PF_BRIDGE, RTM_GETVLAN, NULL, br_vlan_rtm_dump, 0},
-};
-```
-
-## rtnl_link_ops
-
-```c
-static DEFINE_MUTEX(link_ops_mutex);
-static LIST_HEAD(link_ops);
-
-rtnl_link_register(&veth_link_ops);
-rtnl_link_register(&vxlan_link_ops);
-
-int rtnl_link_register(struct rtnl_link_ops *ops)
-{
-    struct rtnl_link_ops *tmp;
-    int err;
-
-    /* Sanity-check max sizes to avoid stack buffer overflow. */
-    if (WARN_ON(ops->maxtype > RTNL_MAX_TYPE ||
-            ops->slave_maxtype > RTNL_SLAVE_MAX_TYPE))
-        return -EINVAL;
-
-    /* The check for alloc/setup is here because if ops
-     * does not have that filled up, it is not possible
-     * to use the ops for creating device. So do not
-     * fill up dellink as well. That disables rtnl_dellink. */
-    if ((ops->alloc || ops->setup) && !ops->dellink)
-        ops->dellink = unregister_netdevice_queue;
-
-    err = init_srcu_struct(&ops->srcu);
-    if (err)
-        return err;
-
-    mutex_lock(&link_ops_mutex);
-
-    list_for_each_entry(tmp, &link_ops, list) {
-        if (!strcmp(ops->kind, tmp->kind)) {
-            err = -EEXIST;
-            goto unlock;
-        }
-    }
-
-    list_add_tail_rcu(&ops->list, &link_ops);
-unlock:
-    mutex_unlock(&link_ops_mutex);
-
-    if (err)
-        cleanup_srcu_struct(&ops->srcu);
-
-    return err;
-}
-```
-
 # vxlan
 
 ```sh
@@ -20213,7 +20944,7 @@ SEND (TCP segment to 10.0.0.2):
 
 ```txt
 ╔================================================================================================╗
-║      VXLAN TCP PACKET FLOW  —  SEND (left)  ←→  RECEIVE (right)                                ║
+║      VXLAN TCP PACKET FLOW  -  SEND (left)  ←→  RECEIVE (right)                                ║
 ║     Node 0: VM1=10.0.0.1, VTEP=192.168.1.1     Node 1: VM2=10.0.0.2, VTEP=192.168.1.2          ║
 ╚================================================================================================╝
 
@@ -20349,7 +21080,7 @@ SEND (TCP segment to 10.0.0.2):
   ⑤ ARP / neigh        192.168.1.2        → underlay L2 header
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
- TWO FDB TABLES — DIFFERENT KEYS, DIFFERENT PURPOSES
+ TWO FDB TABLES - DIFFERENT KEYS, DIFFERENT PURPOSES
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   Bridge FDB  (per bridge, net/bridge/br_fdb.c)
@@ -20571,7 +21302,7 @@ vxlan_xmit_one(skb, dev, vni, rdst, did_rsc)
 │           (deliver directly to local vxlan RX, no UDP wire)
 │
 ├─ [4] PMTU check
-│       skb_tunnel_check_pmtu() — if too big:
+│       skb_tunnel_check_pmtu() - if too big:
 │         send ICMP frag-needed and vxlan_encap_bypass()
 │
 ├─ [5] Build VXLAN headers (vxlan_build_skb)
@@ -21008,6 +21739,127 @@ tx_error:
 }
 ```
 
+#### vxlan_find_mac_tx
+
+```c
+static struct vxlan_fdb *vxlan_find_mac_tx(struct vxlan_dev *vxlan,
+                       const u8 *mac, __be32 vni)
+{
+    struct vxlan_fdb *f;
+
+    f = vxlan_find_mac_rcu(vxlan, mac, vni);
+    if (f) {
+        unsigned long now = jiffies;
+
+        if (READ_ONCE(f->used) != now)
+            WRITE_ONCE(f->used, now);
+    }
+
+    return f;
+}
+
+static struct vxlan_fdb *vxlan_find_mac_rcu(struct vxlan_dev *vxlan,
+                        const u8 *mac, __be32 vni)
+{
+    struct vxlan_fdb_key key;
+
+    memset(&key, 0, sizeof(key));
+    memcpy(key.eth_addr, mac, sizeof(key.eth_addr));
+    if (!(vxlan->cfg.flags & VXLAN_F_COLLECT_METADATA))
+        key.vni = vxlan->default_dst.remote_vni;
+    else
+        key.vni = vni;
+
+    return rhashtable_lookup(&vxlan->fdb_hash_tbl, &key,
+                 vxlan_fdb_rht_params);
+}
+
+static __always_inline void *rhashtable_lookup(
+    struct rhashtable *ht, const void *key,
+    const struct rhashtable_params params)
+    __must_hold_shared(RCU)
+{
+    struct rhash_head *he = __rhashtable_lookup(ht, key, params,
+                            RHT_LOOKUP_NORMAL);
+
+    return he ? rht_obj(ht, he) : NULL;
+}
+
+struct rhash_head *__rhashtable_lookup(
+    struct rhashtable *ht, const void *key,
+    const struct rhashtable_params params,
+    const enum rht_lookup_freq freq)
+    __must_hold_shared(RCU)
+{
+    struct rhashtable_compare_arg arg = {
+        .ht = ht,
+        .key = key,
+    };
+    struct rhash_lock_head __rcu *const *bkt;
+    struct bucket_table *tbl;
+    struct rhash_head *he;
+    unsigned int hash;
+
+    BUILD_BUG_ON(!__builtin_constant_p(freq));
+    tbl = rht_dereference_rcu(ht->tbl, ht);
+restart:
+    hash = rht_key_hashfn(ht, tbl, key, params);
+
+    bkt = rht_bucket(tbl, hash) {
+        return unlikely(tbl->nest) ? rht_bucket_nested(tbl, hash) : &tbl->buckets[hash];
+    }
+    do {
+        rht_for_each_rcu_from(he, __rht_ptr_rcu(bkt, freq), tbl, hash) {
+            if (params.obj_cmpfn
+                ? params.obj_cmpfn(&arg, rht_obj(ht, he))
+                : rhashtable_compare(&arg, rht_obj(ht, he)))
+                continue;
+            return he;
+        }
+        /* An object might have been moved to a different hash chain,
+         * while we walk along it - better check and retry. */
+    } while (he != RHT_NULLS_MARKER(bkt));
+
+    /* Ensure we see any new tables. */
+    smp_rmb();
+
+    tbl = rht_dereference_rcu(tbl->future_tbl, ht);
+    if (unlikely(tbl))
+        goto restart;
+
+    return NULL;
+}
+
+unsigned int rht_key_hashfn(
+    struct rhashtable *ht, const struct bucket_table *tbl,
+    const void *key, const struct rhashtable_params params)
+{
+    unsigned int hash = rht_key_get_hash(ht, key, params, tbl->hash_rnd) {
+        nsigned int hash;
+
+        /* params must be equal to ht->p if it isn't constant. */
+        if (!__builtin_constant_p(params.key_len)) {
+            hash = ht->p.hashfn(key, ht->key_len, hash_rnd);
+        } else {
+            unsigned int key_len = params.key_len ? : ht->p.key_len;
+
+            if (params.hashfn)
+                hash = params.hashfn(key, key_len, hash_rnd);
+            else if (key_len & (sizeof(u32) - 1))
+                hash = jhash(key, key_len, hash_rnd);
+            else
+                hash = jhash2(key, key_len / sizeof(u32), hash_rnd);
+        }
+
+        return hash;
+    }
+
+    return rht_bucket_index(tbl, hash) {
+        return hash & (tbl->size - 1);
+    }
+}
+```
+
 #### vxlan_build_skb
 
 ```c
@@ -21365,8 +22217,7 @@ int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
     if (reason) {
         DEV_STATS_INC(vxlan->dev, rx_length_errors);
         DEV_STATS_INC(vxlan->dev, rx_errors);
-        vxlan_vnifilter_count(vxlan, vni, vninode,
-                      VXLAN_VNI_STATS_RX_ERRORS, 0);
+        vxlan_vnifilter_count(vxlan, vni, vninode, VXLAN_VNI_STATS_RX_ERRORS, 0);
         goto drop;
     }
 
@@ -21377,8 +22228,7 @@ int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
         reason = SKB_DROP_REASON_IP_TUNNEL_ECN;
         DEV_STATS_INC(vxlan->dev, rx_frame_errors);
         DEV_STATS_INC(vxlan->dev, rx_errors);
-        vxlan_vnifilter_count(vxlan, vni, vninode,
-                      VXLAN_VNI_STATS_RX_ERRORS, 0);
+        vxlan_vnifilter_count(vxlan, vni, vninode, VXLAN_VNI_STATS_RX_ERRORS, 0);
         goto drop;
     }
 
@@ -21387,8 +22237,7 @@ int vxlan_rcv(struct sock *sk, struct sk_buff *skb)
     if (unlikely(!(vxlan->dev->flags & IFF_UP))) {
         rcu_read_unlock();
         dev_dstats_rx_dropped(vxlan->dev);
-        vxlan_vnifilter_count(vxlan, vni, vninode,
-                      VXLAN_VNI_STATS_RX_DROPS, 0);
+        vxlan_vnifilter_count(vxlan, vni, vninode, VXLAN_VNI_STATS_RX_DROPS, 0);
         reason = SKB_DROP_REASON_DEV_READY;
         goto drop;
     }
@@ -21406,6 +22255,72 @@ drop:
     /* Consume bad packet */
     kfree_skb_reason(skb, reason);
     return 0;
+}
+```
+
+### gro_cells_receive
+
+```c
+int gro_cells_receive(struct gro_cells *gcells, struct sk_buff *skb)
+{
+    struct net_device *dev = skb->dev;
+    bool have_bh_lock = false;
+    struct gro_cell *cell;
+    int res;
+
+    rcu_read_lock();
+    if (unlikely(!(dev->flags & IFF_UP)))
+        goto drop;
+
+    if (!gcells->cells || skb_cloned(skb) || netif_elide_gro(dev)) {
+        res = netif_rx(skb);
+        goto unlock;
+    }
+
+    local_lock_nested_bh(&gcells->cells->bh_lock);
+    have_bh_lock = true;
+    cell = this_cpu_ptr(gcells->cells);
+
+    if (skb_queue_len(&cell->napi_skbs) > READ_ONCE(net_hotdata.max_backlog)) {
+drop:
+        dev_core_stats_rx_dropped_inc(dev);
+        kfree_skb(skb);
+        res = NET_RX_DROP;
+        goto unlock;
+    }
+
+    __skb_queue_tail(&cell->napi_skbs, skb);
+    if (skb_queue_len(&cell->napi_skbs) == 1)
+        napi_schedule(&cell->napi);
+
+    res = NET_RX_SUCCESS;
+
+unlock:
+    if (have_bh_lock)
+        local_unlock_nested_bh(&gcells->cells->bh_lock);
+    rcu_read_unlock();
+    return res;
+}
+
+static int gro_cell_poll(struct napi_struct *napi, int budget)
+{
+    struct gro_cell *cell = container_of(napi, struct gro_cell, napi);
+    struct sk_buff *skb;
+    int work_done = 0;
+
+    while (work_done < budget) {
+        __local_lock_nested_bh(&cell->bh_lock);
+        skb = __skb_dequeue(&cell->napi_skbs);
+        __local_unlock_nested_bh(&cell->bh_lock);
+        if (!skb)
+            break;
+        napi_gro_receive(napi, skb);
+        work_done++;
+    }
+
+    if (work_done < budget)
+        napi_complete_done(napi, work_done);
+    return work_done;
 }
 ```
 
