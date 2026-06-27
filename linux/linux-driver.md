@@ -900,6 +900,44 @@ Get the importer-visible DMA mapping for an attached dma-buf.
 
 # PCI
 
+## pci_bus_type
+
+```c
+static int __init pcie_portdrv_init(void)
+{
+	if (pcie_ports_disabled)
+		return -EACCES;
+
+	pcie_init_services();
+	dmi_check_system(pcie_portdrv_dmi_table);
+
+	return pci_register_driver(&pcie_portdriver);
+}
+device_initcall(pcie_portdrv_init);
+
+static int __init pci_driver_init(void)
+{
+	int ret;
+
+	pci_probe_wq = alloc_workqueue("sync_wq", WQ_PERCPU, 0);
+	if (!pci_probe_wq)
+		return -ENOMEM;
+
+	ret = bus_register(&pci_bus_type);
+	if (ret)
+		return ret;
+
+#ifdef CONFIG_PCIEPORTBUS
+	ret = bus_register(&pcie_port_bus_type);
+	if (ret)
+		return ret;
+#endif
+	dma_debug_add_bus(&pci_bus_type);
+	return 0;
+}
+postcore_initcall(pci_driver_init);
+```
+
 ## pci_scan_single_device
 
 ```sh
