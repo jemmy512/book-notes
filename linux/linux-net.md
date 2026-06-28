@@ -4089,6 +4089,10 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 
 ---
 
+![](../images/kernel/net-read-write-flow.drawio.svg)
+
+---
+
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
 
 ---
@@ -5542,12 +5546,14 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
     sent_pkts = 0;
 
+/* 1. Setup / AccECN beacon */
     tcp_mstamp_refresh(tp);
 
     /* AccECN option beacon depends on mstamp, it may change mss */
     if (tcp_ecn_mode_accecn(tp) && tcp_accecn_option_beacon_check(sk))
         mss_now = tcp_current_mss(sk);
 
+/* 2. MTU probing (optional) */
     if (!push_one) {
         /* Do MTU probing. */
         result = tcp_mtu_probe(sk);
@@ -5558,6 +5564,7 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
         }
     }
 
+/* 3. Main send loop */
     max_segs = tcp_tso_segs(sk, mss_now);
     while ((skb = tcp_send_head(sk))) {
         unsigned int limit;
@@ -5660,6 +5667,7 @@ repair:
             break;
     }
 
+/* 4. Post-loop bookkeeping */
     if (is_rwnd_limited)
         tcp_chrono_start(sk, TCP_CHRONO_RWND_LIMITED);
     else
@@ -5958,14 +5966,16 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
     u64 prior_wstamp;
     int err;
 
+/* 1. Pacing timestamp */
     BUG_ON(!skb || !tcp_skb_pcount(skb));
     tp = tcp_sk(sk);
     prior_wstamp = tp->tcp_wstamp_ns;
     tp->tcp_wstamp_ns = max(tp->tcp_wstamp_ns, tp->tcp_clock_cache);
     skb_set_delivery_time(skb, tp->tcp_wstamp_ns, SKB_CLOCK_MONOTONIC);
+
+/* 2. Clone/copy for retransmits */
     if (clone_it) {
         oskb = skb;
-
         tcp_skb_tsorted_save(oskb) {
             if (unlikely(skb_cloned(oskb)))
                 skb = pskb_copy(oskb, gfp_mask);
@@ -5984,6 +5994,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
     tcb = TCP_SKB_CB(skb);
     memset(&opts.cleared, 0, sizeof(opts.cleared));
 
+/* 3. Options negotiation */
     tcp_get_current_key(sk, &key);
     if (unlikely(tcb->tcp_flags & TCPHDR_SYN)) {
         tcp_options_size = tcp_syn_options(sk, skb, &opts, &key);
@@ -6001,6 +6012,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
     }
     tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
 
+/* 4. TX queue selection (ooo_okay) */
     /* We set skb->ooo_okay to one if this packet can select
      * a different TX queue than prior packets of this flow,
      * to avoid self inflicted reorders.
@@ -6022,6 +6034,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
      * Packets not looped back do not care about pfmemalloc. */
     skb->pfmemalloc = 0;
 
+/* 5. Prepend TCP header */
     __skb_push(skb, tcp_header_size) {
         /* head   data                tail         end
             |      |                   |            |
@@ -6055,7 +6068,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
         skb->dst_pending_confirm = val;
     }
 
-    /* Build TCP header and checksum it. */
+/* 6. Build TCP header and checksum it. */
     th = (struct tcphdr *)skb->data;
     th->source          = inet->inet_sport;
     th->dest            = inet->inet_dport;
@@ -6078,6 +6091,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
         }
     }
 
+/* 7. Window and ECN */
     skb_shinfo(skb)->gso_type = sk->sk_gso_type;
     if (likely(!(tcb->tcp_flags & TCPHDR_SYN))) {
         th->window      = htons(tcp_select_window(sk));
@@ -6088,6 +6102,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
         th->window    = htons(min(tp->rcv_wnd, 65535U));
     }
 
+/* 8. TCP options, auth, BPF */
     tcp_options_write(th, tp, NULL, &opts, &key);
 
     if (tcp_key_is_md5(&key)) {
@@ -6109,6 +6124,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
     /* BPF prog is the last one writing header option */
     bpf_skops_write_hdr_opt(sk, skb, NULL, NULL, 0, &opts);
 
+/* 9. Checksum */
 #if IS_ENABLED(CONFIG_IPV6)
     if (likely(icsk->icsk_af_ops->net_header_len == sizeof(struct ipv6hdr)))
         tcp_v6_send_check(sk, skb);
@@ -6126,6 +6142,7 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
             }
         }
 
+/* 10. Stats and GSO metadata */
     if (likely(tcb->tcp_flags & TCPHDR_ACK))
         tcp_event_ack_sent(sk, rcv_nxt);
 
@@ -6154,10 +6171,12 @@ int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
             skb->skb_mstamp_ns += (u64)tp->tcp_tx_delay * NSEC_PER_USEC;
     }
 
+/* 11. Hand off to IP layer */
     err = INDIRECT_CALL_INET(icsk->icsk_af_ops->queue_xmit,
                  inet6_csk_xmit, ip_queue_xmit,
                  sk, skb, &inet->cork.fl);
 
+/* 12. Post-send */
     if (unlikely(err > 0)) {
         tcp_enter_cwr(sk);
         err = net_xmit_eval(err);
@@ -6582,36 +6601,51 @@ int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 /* ipv4_dst_ops.output */
 int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-    struct net_device *dev = skb_dst(skb)->dev;
+    struct net_device *dev, *indev = skb->dev;
+    int ret_val;
+
+    rcu_read_lock();
+    dev = skb_dst_dev_rcu(skb);
     skb->dev = dev;
     skb->protocol = htons(ETH_P_IP);
 
-    return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
-        net, sk, skb, NULL, dev,
-        ip_finish_output,
-        !(IPCB(skb)->flags & IPSKB_REROUTED));
+    ret_val = NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
+                net, sk, skb, indev, dev,
+                ip_finish_output,
+                !(IPCB(skb)->flags & IPSKB_REROUTED));
+    rcu_read_unlock();
+    return ret_val;
 }
 
-int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-    unsigned int mtu;
     int ret;
 
     ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb);
-    if (ret) {
-        kfree_skb(skb);
+    switch (ret) {
+    case NET_XMIT_SUCCESS:
+        return __ip_finish_output(net, sk, skb);
+    case NET_XMIT_CN:
+        return __ip_finish_output(net, sk, skb) ? : ret;
+    default:
+        kfree_skb_reason(skb, SKB_DROP_REASON_BPF_CGROUP_EGRESS);
         return ret;
     }
+}
 
-    #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
+int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+    unsigned int mtu;
+
+#if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
     /* Policy lookup after SNAT yielded a new policy */
     if (skb_dst(skb)->xfrm) {
         IPCB(skb)->flags |= IPSKB_REROUTED;
         return dst_output(net, sk, skb);
     }
-    #endif
+#endif
     mtu = ip_skb_dst_mtu(sk, skb);
-    if (skb_is_gso(skb)) /* support gso: skb_shinfo(skb)->gso_size */
+    if (skb_is_gso(skb))
         return ip_finish_output_gso(net, sk, skb, mtu);
 
     if (skb->len > mtu || IPCB(skb)->frag_max_size)
@@ -8891,6 +8925,7 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
     bool again = false;
     struct Qdisc *q;
 
+/* 1: Sanity checks and early timestamps */
     skb_reset_mac_header(skb);
     skb_assert_len(skb);
 
@@ -8903,12 +8938,15 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
         kfree_skb_reason(skb, reason);`
         return -EINVAL;
     }
+
+/* 2: Lock context + priority update */
     /* Disable soft irqs for various locks below. Also
      * stops preemption for RCU. */
     rcu_read_lock_bh();
 
     skb_update_prio(skb);
 
+/* 3: Egress hooks (netfilter + TC/BPF) */
     tcx_set_ingress(skb, false);
 #ifdef CONFIG_NET_EGRESS
     if (static_branch_unlikely(&egress_needed_key)) {
@@ -8937,9 +8975,11 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
     else
         skb_dst_force(skb);
 
+/* 4: TX queue selection + dst handling */
     if (!txq)
         txq = netdev_core_pick_tx(dev, skb, sb_dev);
 
+/* 5: Two-path split — qdisc vs. no-qdisc */
     q = rcu_dereference_bh(txq->qdisc);
 
     trace_net_dev_queue(skb);
@@ -8948,6 +8988,7 @@ int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
         goto out;
     }
 
+/* 6: No-qdisc direct path */
     /* The device has no queue. Common case for software devices:
      * loopback, all the sorts of tunnels...
 
@@ -9371,6 +9412,72 @@ egress_verdict:
 }
 ```
 
+#### tcx_run
+
+```c
+static __always_inline enum tcx_action_base
+tcx_run(const struct bpf_mprog_entry *entry, struct sk_buff *skb,
+    const bool needs_mac)
+{
+    const struct bpf_mprog_fp *fp;
+    const struct bpf_prog *prog;
+    int ret = TCX_NEXT;
+
+    if (needs_mac)
+        __skb_push(skb, skb->mac_len);
+    bpf_mprog_foreach_prog(entry, fp, prog) {
+        bpf_compute_data_pointers(skb);
+        ret = bpf_prog_run(prog, skb);
+        if (ret != TCX_NEXT)
+            break;
+    }
+    if (needs_mac)
+        __skb_pull(skb, skb->mac_len);
+    return tcx_action_code(skb, ret);
+}
+
+static __always_inline u32 bpf_prog_run(const struct bpf_prog *prog, const void *ctx)
+{
+    return __bpf_prog_run(prog, ctx, bpf_dispatcher_nop_func);
+}
+
+u32 __bpf_prog_run(const struct bpf_prog *prog,
+                      const void *ctx,
+                      bpf_dispatcher_fn dfunc)
+{
+    u32 ret;
+
+    cant_migrate();
+    if (static_branch_unlikely(&bpf_stats_enabled_key)) {
+        struct bpf_prog_stats *stats;
+        u64 duration, start = sched_clock();
+        unsigned long flags;
+
+        ret = dfunc(ctx, prog->insnsi, prog->bpf_func);
+
+        duration = sched_clock() - start;
+        if (likely(prog->stats)) {
+            stats = this_cpu_ptr(prog->stats);
+            flags = u64_stats_update_begin_irqsave(&stats->syncp);
+            u64_stats_inc(&stats->cnt);
+            u64_stats_add(&stats->nsecs, duration);
+            u64_stats_update_end_irqrestore(&stats->syncp, flags);
+        }
+    } else {
+        ret = dfunc(ctx, prog->insnsi, prog->bpf_func);
+    }
+    return ret;
+}
+
+unsigned int bpf_dispatcher_nop_func(
+    const void *ctx,
+    const struct bpf_insn *insnsi,
+    bpf_func_t bpf_func)
+{
+    return bpf_func(ctx, insnsi);
+}
+```
+
 #### tc_run
 
 ```c
@@ -9627,6 +9734,78 @@ int tc_classify(struct sk_buff *skb, const struct tcf_proto *tp,
 
 skip:
     return tp->classify(skb, tp, res);
+}
+```
+
+### netdev_core_pick_tx
+
+```c
+skb arrives on RX queue N
+  └─ driver: skb_record_rx_queue(skb, N)    → queue_mapping = N+1
+
+packet processed, reply generated
+  └─ netdev_core_pick_tx()
+       1. sk->sk_tx_queue_mapping cached?   → use it
+       2. XPS map (rxq→txq or cpu→txq)?     → use it
+       3. skb_rx_queue_recorded()?          → map RX queue → TX queue
+       4. flow hash                         → skb_get_hash()
+       └─ skb_set_queue_mapping(skb, index) → queue_mapping = TX index
+
+driver reads skb_get_queue_mapping()        → picks hardware TX ring
+```
+
+```c
+struct netdev_queue *netdev_core_pick_tx(struct net_device *dev,
+                     struct sk_buff *skb,
+                     struct net_device *sb_dev)
+{
+    int queue_index = 0;
+
+#ifdef CONFIG_XPS
+    u32 sender_cpu = skb->sender_cpu - 1;
+
+    if (sender_cpu >= (u32)NR_CPUS)
+        skb->sender_cpu = raw_smp_processor_id() + 1;
+#endif
+
+    if (dev->real_num_tx_queues != 1) {
+        const struct net_device_ops *ops = dev->netdev_ops;
+
+        if (ops->ndo_select_queue)
+            queue_index = ops->ndo_select_queue(dev, skb, sb_dev);
+        else
+            queue_index = netdev_pick_tx(dev, skb, sb_dev);
+
+        queue_index = netdev_cap_txqueue(dev, queue_index);
+    }
+
+    skb_set_queue_mapping(skb, queue_index);
+    return netdev_get_tx_queue(dev, queue_index);
+}
+
+u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
+             struct net_device *sb_dev)
+{
+    struct sock *sk = skb->sk;
+    int queue_index = sk_tx_queue_get(sk);
+
+    sb_dev = sb_dev ? : dev;
+
+    if (queue_index < 0 || skb->ooo_okay ||
+        queue_index >= dev->real_num_tx_queues) {
+        int new_index = get_xps_queue(dev, sb_dev, skb);
+
+        if (new_index < 0)
+            new_index = skb_tx_hash(dev, sb_dev, skb);
+
+        if (sk && sk_fullsock(sk) &&
+            rcu_access_pointer(sk->sk_dst_cache))
+            sk_tx_queue_set(sk, new_index);
+
+        queue_index = new_index;
+    }
+
+    return queue_index;
 }
 ```
 
@@ -10054,6 +10233,10 @@ ixgbe_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 | Process Queue | Linked list | Per CPU | Threaded deferred processing | NAPI thread |
 
 ![](../images/kernel/net-read-write-route-bridge.svg)
+
+---
+
+![](../images/kernel/net-read-write-flow.drawio.svg)
 
 ---
 
@@ -14052,25 +14235,25 @@ lookup:
 
 process:
     if (static_branch_unlikely(&ip4_min_ttl)) {
-		/* min_ttl can be changed concurrently from do_ip_setsockopt() */
-		if (unlikely(iph->ttl < READ_ONCE(inet_sk(sk)->min_ttl))) {
-			__NET_INC_STATS(net, LINUX_MIB_TCPMINTTLDROP);
-			drop_reason = SKB_DROP_REASON_TCP_MINTTL;
-			goto discard_and_relse;
-		}
-	}
+        /* min_ttl can be changed concurrently from do_ip_setsockopt() */
+        if (unlikely(iph->ttl < READ_ONCE(inet_sk(sk)->min_ttl))) {
+            __NET_INC_STATS(net, LINUX_MIB_TCPMINTTLDROP);
+            drop_reason = SKB_DROP_REASON_TCP_MINTTL;
+            goto discard_and_relse;
+        }
+    }
 
-	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb)) {
-		drop_reason = SKB_DROP_REASON_XFRM_POLICY;
-		goto discard_and_relse;
-	}
+    if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb)) {
+        drop_reason = SKB_DROP_REASON_XFRM_POLICY;
+        goto discard_and_relse;
+    }
 
-	drop_reason = tcp_inbound_hash(sk, NULL, skb, &iph->saddr, &iph->daddr,
-				       AF_INET, dif, sdif);
-	if (drop_reason)
-		goto discard_and_relse;
+    drop_reason = tcp_inbound_hash(sk, NULL, skb, &iph->saddr, &iph->daddr,
+                       AF_INET, dif, sdif);
+    if (drop_reason)
+        goto discard_and_relse;
 
-	nf_reset_ct(skb);
+    nf_reset_ct(skb);
 
     if (tcp_filter(sk, skb))
         goto discard_and_relse;
@@ -14171,13 +14354,13 @@ do_time_wait:
         }
 
         drop_reason = psp_twsk_rx_policy_check(inet_twsk(sk), skb);
-		if (drop_reason)
-			break;
+        if (drop_reason)
+            break;
     }
         /* to ACK */
         fallthrough;
     case TCP_TW_ACK:
-	case TCP_TW_ACK_OOW:
+    case TCP_TW_ACK_OOW:
         tcp_v4_timewait_ack(sk, skb);
         break;
     case TCP_TW_RST:
@@ -14283,8 +14466,12 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
                 goto reset;
             return 0;
         }
-    } else
-        sock_rps_save_rxhash(sk, skb);
+    } else {
+        sock_rps_save_rxhash(sk, skb) {
+            if (unlikely(READ_ONCE(sk->sk_rxhash) != skb->hash))
+                WRITE_ONCE(sk->sk_rxhash, skb->hash);
+        }
+    }
 
     reason = tcp_rcv_state_process(sk, skb);
     if (reason)
@@ -14539,11 +14726,11 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
             return -reason;  /* send one RST */
 
         /* accept old ack during closing */
-		if ((int)reason < 0) {
-			tcp_send_challenge_ack(sk, false);
-			reason = -reason;
-			goto discard;
-		}
+        if ((int)reason < 0) {
+            tcp_send_challenge_ack(sk, false);
+            reason = -reason;
+            goto discard;
+        }
     }
 
     switch (sk->sk_state) {
@@ -14553,21 +14740,21 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
             tcp_synack_rtt_meas(sk, req);
 
         if (tp->rx_opt.tstamp_ok)
-			tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
+            tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
 
         if (req) {
-			tcp_rcv_synrecv_state_fastopen(sk);
-		} else {
-			tcp_try_undo_spurious_syn(sk);
-			tp->retrans_stamp = 0;
-			tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB, skb);
-			WRITE_ONCE(tp->copied_seq, tp->rcv_nxt);
-		}
+            tcp_rcv_synrecv_state_fastopen(sk);
+        } else {
+            tcp_try_undo_spurious_syn(sk);
+            tp->retrans_stamp = 0;
+            tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB, skb);
+            WRITE_ONCE(tp->copied_seq, tp->rcv_nxt);
+        }
 
         tcp_ao_established(sk);
-		smp_mb();
-		tcp_set_state(sk, TCP_ESTABLISHED);
-		sk->sk_state_change(sk);
+        smp_mb();
+        tcp_set_state(sk, TCP_ESTABLISHED);
+        sk->sk_state_change(sk);
 
         /* Note, that this wakeup is only for marginal crossed SYN case.
         * Passively open sockets are not waked up, because
@@ -14580,26 +14767,26 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
 
         if (!inet_csk(sk)->icsk_ca_ops->cong_control)
-			tcp_update_pacing_rate(sk);
+            tcp_update_pacing_rate(sk);
 
         /* Prevent spurious tcp_cwnd_restart() on first data packet */
         tp->lsndtime = tcp_jiffies32;
 
         tcp_initialize_rcv_mss(sk);
-		if (tcp_ecn_mode_accecn(tp))
-			tcp_accecn_third_ack(sk, skb, tp->syn_ect_snt);
-		tcp_fast_path_on(tp);
-		if (sk->sk_shutdown & SEND_SHUTDOWN)
-			tcp_shutdown(sk, SEND_SHUTDOWN);
+        if (tcp_ecn_mode_accecn(tp))
+            tcp_accecn_third_ack(sk, skb, tp->syn_ect_snt);
+        tcp_fast_path_on(tp);
+        if (sk->sk_shutdown & SEND_SHUTDOWN)
+            tcp_shutdown(sk, SEND_SHUTDOWN);
 
     case TCP_FIN_WAIT1: {
         int tmo;
 
         if (req)
-			tcp_rcv_synrecv_state_fastopen(sk);
+            tcp_rcv_synrecv_state_fastopen(sk);
 
-		if (tp->snd_una != tp->write_seq)
-			break;
+        if (tp->snd_una != tp->write_seq)
+            break;
 
         tcp_set_state(sk, TCP_FIN_WAIT2);
         sk->sk_shutdown |= SEND_SHUTDOWN;
@@ -14627,20 +14814,19 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         }
 
         tmo = tcp_fin_time(sk);
-		if (tmo > TCP_TIMEWAIT_LEN) {
-			tcp_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
-		} else if (th->fin || sock_owned_by_user(sk)) {
-			/* Bad case. We could lose such FIN otherwise.
-			 * It is not a big problem, but it looks confusing
-			 * and not so rare event. We still can lose it now,
-			 * if it spins in bh_lock_sock(), but it is really
-			 * marginal case.
-			 */
-			tcp_reset_keepalive_timer(sk, tmo);
-		} else {
-			tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
-			goto consume;
-		}
+        if (tmo > TCP_TIMEWAIT_LEN) {
+            tcp_reset_keepalive_timer(sk, tmo - TCP_TIMEWAIT_LEN);
+        } else if (th->fin || sock_owned_by_user(sk)) {
+            /* Bad case. We could lose such FIN otherwise.
+             * It is not a big problem, but it looks confusing
+             * and not so rare event. We still can lose it now,
+             * if it spins in bh_lock_sock(), but it is really
+             * marginal case. */
+            tcp_reset_keepalive_timer(sk, tmo);
+        } else {
+            tcp_time_wait(sk, TCP_FIN_WAIT2, tmo);
+            goto consume;
+        }
         break;
     }
 
@@ -14669,14 +14855,13 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
     case TCP_CLOSING:
     case TCP_LAST_ACK:
         if (!before(TCP_SKB_CB(skb)->seq, tp->rcv_nxt)) {
-			/* If a subflow has been reset, the packet should not
-			 * continue to be processed, drop the packet.
-			 */
-			if (sk_is_mptcp(sk) && !mptcp_incoming_options(sk, skb))
-				goto discard;
-			break;
-		}
-		fallthrough;
+            /* If a subflow has been reset, the packet should not
+             * continue to be processed, drop the packet. */
+            if (sk_is_mptcp(sk) && !mptcp_incoming_options(sk, skb))
+                goto discard;
+            break;
+        }
+        fallthrough;
     case TCP_FIN_WAIT1:
     case TCP_FIN_WAIT2:
         /* RFC 793 says to queue data in these states,
@@ -14706,7 +14891,7 @@ discard:
         tcp_drop(sk, skb);
     }
 consume:
-	__kfree_skb(skb);
+    __kfree_skb(skb);
     return 0;
 }
 ```
@@ -15111,6 +15296,17 @@ void tcp_ofo_queue(struct sock *sk)
 ```
 
 ### tcp_timewait_state_process
+
+
+### udp layer rx
+
+```c
+net_hotdata.udp_protocol = (struct net_protocol) {
+    .handler        = udp_rcv,
+    .err_handler    = udp_err,
+    .no_policy      = 1,
+};
+```
 
 ## vfs layer rx
 
@@ -28170,280 +28366,348 @@ fs_initcall(inet_init);
 
 int __init inet_init(void)
 {
-  struct inet_protosw *q;
-  struct list_head *r;
-  int rc = -EINVAL;
+    struct inet_protosw *q;
+    struct list_head *r;
+    int rc;
 
-  sock_skb_cb_check_size(sizeof(struct inet_skb_parm));
+    sock_skb_cb_check_size(sizeof(struct inet_skb_parm));
 
-  rc = proto_register(&tcp_prot, 1);
-  rc = proto_register(&udp_prot, 1);
-  rc = proto_register(&raw_prot, 1);
-  rc = proto_register(&ping_prot, 1);
+    raw_hashinfo_init(&raw_v4_hashinfo);
 
-  (void)sock_register(&inet_family_ops);
+    rc = proto_register(&tcp_prot, 1);
+    if (rc)
+        goto out;
+
+    rc = proto_register(&udp_prot, 1);
+    if (rc)
+        goto out_unregister_tcp_proto;
+
+    rc = proto_register(&raw_prot, 1);
+    if (rc)
+        goto out_unregister_udp_proto;
+
+    rc = proto_register(&ping_prot, 1);
+    if (rc)
+        goto out_unregister_raw_proto;
+
+    /*    Tell SOCKET that we are alive... */
+
+    (void)sock_register(&inet_family_ops);
 
 #ifdef CONFIG_SYSCTL
-  ip_static_sysctl_init();
+    ip_static_sysctl_init();
 #endif
 
-  inet_add_protocol(&tcp_protocol, IPPROTO_TCP);
-  inet_add_protocol(&udp_protocol, IPPROTO_UDP);
-  inet_add_protocol(&icmp_protocol, IPPROTO_ICMP);
-  inet_add_protocol(&igmp_protocol, IPPROTO_IGMP);
+    /*    Add all the base protocols. */
 
-  /* Register the socket-side information for inet_create. */
-  for (r = &inetsw[0]; r < &inetsw[SOCK_MAX]; ++r)
-    INIT_LIST_HEAD(r);
+    if (inet_add_protocol(&icmp_protocol, IPPROTO_ICMP) < 0)
+        pr_crit("%s: Cannot add ICMP protocol\n", __func__);
 
-  for (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
-    inet_register_protosw(q);
+    net_hotdata.udp_protocol = (struct net_protocol) {
+        .handler        = udp_rcv,
+        .err_handler    = udp_err,
+        .no_policy      = 1,
+    };
+    if (inet_add_protocol(&net_hotdata.udp_protocol, IPPROTO_UDP) < 0)
+        pr_crit("%s: Cannot add UDP protocol\n", __func__);
 
-  arp_init();
+    net_hotdata.tcp_protocol = (struct net_protocol) {
+        .handler        = tcp_v4_rcv,
+        .err_handler    = tcp_v4_err,
+        .no_policy      = 1,
+        .icmp_strict_tag_validation = 1,
+    };
+    if (inet_add_protocol(&net_hotdata.tcp_protocol, IPPROTO_TCP) < 0)
+        pr_crit("%s: Cannot add TCP protocol\n", __func__);
+#ifdef CONFIG_IP_MULTICAST
+    if (inet_add_protocol(&igmp_protocol, IPPROTO_IGMP) < 0)
+        pr_crit("%s: Cannot add IGMP protocol\n", __func__);
+#endif
 
-  ip_init();
+    /* Register the socket-side information for inet_create. */
+    for (r = &inetsw[0]; r < &inetsw[SOCK_MAX]; ++r)
+        INIT_LIST_HEAD(r);
 
-  /* Setup TCP slab cache for open requests. */
-  tcp_init();
+    for (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
+        inet_register_protosw(q);
 
-  /* Setup UDP memory threshold */
-  udp_init();
+    /*    Set the ARP module up */
 
-  /* Add UDP-Lite (RFC 3828) */
-  udplite4_register();
+    arp_init();
 
-  ping_init();
+    /*    Set the IP module up */
 
-  if (icmp_init() < 0)
-    panic("Failed to create the ICMP control socket.\n");
+    ip_init();
 
-  /* Initialise the multicast router */
+    /* Initialise per-cpu ipv4 mibs */
+    if (init_ipv4_mibs())
+        panic("%s: Cannot init ipv4 mibs\n", __func__);
+
+    /* Setup TCP slab cache for open requests. */
+    tcp_init();
+
+    /* Setup UDP memory threshold */
+    udp_init();
+
+    raw_init();
+
+    ping_init();
+
+    /*    Set the ICMP layer up */
+
+    if (icmp_init() < 0)
+        panic("Failed to create the ICMP control socket.\n");
+
+    /*    Initialise the multicast router */
 #if defined(CONFIG_IP_MROUTE)
-  if (ip_mr_init())
-    pr_crit("%s: Cannot init ipv4 mroute\n", __func__);
+    if (ip_mr_init())
+        pr_crit("%s: Cannot init ipv4 mroute\n", __func__);
 #endif
 
-  if (init_inet_pernet_ops())
-    pr_crit("%s: Cannot init ipv4 inet pernet ops\n", __func__);
+    if (init_inet_pernet_ops())
+        pr_crit("%s: Cannot init ipv4 inet pernet ops\n", __func__);
 
-  /* Initialise per-cpu ipv4 mibs */
-  if (init_ipv4_mibs())
-    pr_crit("%s: Cannot init ipv4 mibs\n", __func__);
+    ipv4_proc_init();
 
-  ipv4_proc_init();
+    ipfrag_init();
 
-  ipfrag_init();
+    dev_add_pack(&ip_packet_type);
 
-  dev_add_pack(&ip_packet_type);
+    ip_tunnel_core_init();
 
-  ip_tunnel_core_init();
+    rc = 0;
+out:
+    return rc;
+out_unregister_raw_proto:
+    proto_unregister(&raw_prot);
+out_unregister_udp_proto:
+    proto_unregister(&udp_prot);
+out_unregister_tcp_proto:
+    proto_unregister(&tcp_prot);
+    goto out;
 }
+```
 
+## tcp_init
+
+```c
 void __init tcp_init(void)
 {
-  int max_rshare, max_wshare, cnt;
-  unsigned long limit;
-  unsigned int i;
+    int max_rshare, max_wshare, cnt;
+    unsigned long limit;
+    unsigned int i;
 
-  percpu_counter_init(&tcp_sockets_allocated, 0, GFP_KERNEL);
-  percpu_counter_init(&tcp_orphan_count, 0, GFP_KERNEL);
+    BUILD_BUG_ON(TCP_MIN_SND_MSS <= MAX_TCP_OPTION_SPACE);
+    BUILD_BUG_ON(sizeof(struct tcp_skb_cb) >
+             sizeof_field(struct sk_buff, cb));
 
-  inet_hashinfo_init(&tcp_hashinfo);
-  inet_hashinfo2_init(
-    &tcp_hashinfo,
-    "tcp_listen_portaddr_hash",
-    thash_entries, 21,  /* one slot per 2 MB*/
-    0, 64 * 1024
-  );
+    tcp_struct_check();
 
-  tcp_hashinfo.bind_bucket_cachep = kmem_cache_create(
-    "tcp_bind_bucket",
-    sizeof(struct inet_bind_bucket),
-    0,
-    SLAB_HWCACHE_ALIGN|SLAB_PANIC,
-    NULL
-  );
+    percpu_counter_init(&tcp_sockets_allocated, 0, GFP_KERNEL);
 
-  /* Size and allocate the main established and bind bucket
-   * hash tables.
-   *
-   * The methodology is similar to that of the buffer cache. */
-  tcp_hashinfo.ehash = alloc_large_system_hash(
-    "TCP established",
-    sizeof(struct inet_ehash_bucket),
-    thash_entries,
-    17, /* one slot per 128 KB of memory */
-    0,
-    NULL,
-    &tcp_hashinfo.ehash_mask,
-    0,
-    thash_entries ? 0 : 512 * 1024
-  );
-  for (i = 0; i <= tcp_hashinfo.ehash_mask; i++)
-    INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].chain, i);
+    timer_setup(&tcp_orphan_timer, tcp_orphan_update, TIMER_DEFERRABLE);
+    mod_timer(&tcp_orphan_timer, jiffies + TCP_ORPHAN_TIMER_PERIOD);
 
-  if (inet_ehash_locks_alloc(&tcp_hashinfo))
-    panic("TCP: failed to alloc ehash_locks");
-  tcp_hashinfo.bhash = alloc_large_system_hash(
-    "TCP bind",
-    sizeof(struct inet_bind_hashbucket),
-    tcp_hashinfo.ehash_mask + 1,
-    17, /* one slot per 128 KB of memory */
-    0,
-    &tcp_hashinfo.bhash_size,
-    NULL,
-    0,
-    64 * 1024
-  );
-  tcp_hashinfo.bhash_size = 1U << tcp_hashinfo.bhash_size;
-  for (i = 0; i < tcp_hashinfo.bhash_size; i++) {
-    spin_lock_init(&tcp_hashinfo.bhash[i].lock);
-    INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
-  }
+    inet_hashinfo2_init(&tcp_hashinfo, "tcp_listen_portaddr_hash",
+                thash_entries, 21,  /* one slot per 2 MB*/
+                0, 64 * 1024);
+    tcp_hashinfo.bind_bucket_cachep =
+        kmem_cache_create("tcp_bind_bucket",
+                  sizeof(struct inet_bind_bucket), 0,
+                  SLAB_HWCACHE_ALIGN | SLAB_PANIC |
+                  SLAB_ACCOUNT,
+                  NULL);
+    tcp_hashinfo.bind2_bucket_cachep =
+        kmem_cache_create("tcp_bind2_bucket",
+                  sizeof(struct inet_bind2_bucket), 0,
+                  SLAB_HWCACHE_ALIGN | SLAB_PANIC |
+                  SLAB_ACCOUNT,
+                  NULL);
 
+    /* Size and allocate the main established and bind bucket
+     * hash tables.
+     *
+     * The methodology is similar to that of the buffer cache. */
+    tcp_hashinfo.ehash =
+        alloc_large_system_hash("TCP established",
+                    sizeof(struct inet_ehash_bucket),
+                    thash_entries,
+                    17, /* one slot per 128 KB of memory */
+                    0,
+                    NULL,
+                    &tcp_hashinfo.ehash_mask,
+                    0,
+                    thash_entries ? 0 : 512 * 1024);
+    for (i = 0; i <= tcp_hashinfo.ehash_mask; i++)
+        INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].chain, i);
 
-  cnt = tcp_hashinfo.ehash_mask + 1;
-  sysctl_tcp_max_orphans = cnt / 2;
+    if (inet_ehash_locks_alloc(&tcp_hashinfo))
+        panic("TCP: failed to alloc ehash_locks");
+    tcp_hashinfo.bhash =
+        alloc_large_system_hash("TCP bind",
+                    2 * sizeof(struct inet_bind_hashbucket),
+                    tcp_hashinfo.ehash_mask + 1,
+                    17, /* one slot per 128 KB of memory */
+                    0,
+                    &tcp_hashinfo.bhash_size,
+                    NULL,
+                    0,
+                    64 * 1024);
+    tcp_hashinfo.bhash_size = 1U << tcp_hashinfo.bhash_size;
+    tcp_hashinfo.bhash2 = tcp_hashinfo.bhash + tcp_hashinfo.bhash_size;
+    for (i = 0; i < tcp_hashinfo.bhash_size; i++) {
+        spin_lock_init(&tcp_hashinfo.bhash[i].lock);
+        INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
+        spin_lock_init(&tcp_hashinfo.bhash2[i].lock);
+        INIT_HLIST_HEAD(&tcp_hashinfo.bhash2[i].chain);
+    }
 
-  tcp_init_mem();
-  /* Set per-socket limits to no more than 1/128 the pressure threshold */
-  limit = nr_free_buffer_pages() << (PAGE_SHIFT - 7);
-  max_wshare = min(4UL*1024*1024, limit);
-  max_rshare = min(6UL*1024*1024, limit);
+    tcp_hashinfo.pernet = false;
 
-  init_net.ipv4.sysctl_tcp_wmem[0] = SK_MEM_QUANTUM;
-  init_net.ipv4.sysctl_tcp_wmem[1] = 16*1024;
-  init_net.ipv4.sysctl_tcp_wmem[2] = max(64*1024, max_wshare);
+    cnt = tcp_hashinfo.ehash_mask + 1;
+    sysctl_tcp_max_orphans = cnt / 2;
 
-  init_net.ipv4.sysctl_tcp_rmem[0] = SK_MEM_QUANTUM;
-  init_net.ipv4.sysctl_tcp_rmem[1] = 131072;
-  init_net.ipv4.sysctl_tcp_rmem[2] = max(131072, max_rshare);
+    tcp_init_mem();
+    /* Set per-socket limits to no more than 1/128 the pressure threshold */
+    limit = nr_free_buffer_pages() << (PAGE_SHIFT - 7);
+    max_wshare = min(4UL*1024*1024, limit);
+    max_rshare = min(32UL*1024*1024, limit);
 
-  tcp_v4_init();
-  tcp_metrics_init();
-  tcp_register_congestion_control(&tcp_reno);
-  tcp_tasklet_init();
-  mptcp_init();
+    init_net.ipv4.sysctl_tcp_wmem[0] = PAGE_SIZE;
+    init_net.ipv4.sysctl_tcp_wmem[1] = 16*1024;
+    init_net.ipv4.sysctl_tcp_wmem[2] = max(64*1024, max_wshare);
+
+    init_net.ipv4.sysctl_tcp_rmem[0] = PAGE_SIZE;
+    init_net.ipv4.sysctl_tcp_rmem[1] = 131072;
+    init_net.ipv4.sysctl_tcp_rmem[2] = max(131072, max_rshare);
+
+    pr_info("Hash tables configured (established %u bind %u)\n",
+        tcp_hashinfo.ehash_mask + 1, tcp_hashinfo.bhash_size);
+
+    tcp_v4_init();
+    tcp_metrics_init();
+    BUG_ON(tcp_register_congestion_control(&tcp_reno) != 0);
+    tcp_tsq_work_init();
+    mptcp_init();
 }
 
 struct pernet_operations __net_initdata tcp_sk_ops = {
-  .init         = tcp_sk_init,
-  .exit         = tcp_sk_exit,
-  .exit_batch   = tcp_sk_exit_batch,
+    .init         = tcp_sk_init,
+    .exit         = tcp_sk_exit,
+    .exit_batch   = tcp_sk_exit_batch,
 };
 
 void __init tcp_v4_init(void)
 {
-  if (register_pernet_subsys(&tcp_sk_ops))
-    panic("Failed to create the TCP control socket.\n");
+    if (register_pernet_subsys(&tcp_sk_ops))
+        panic("Failed to create the TCP control socket.\n");
 }
 
 int __net_init tcp_sk_init(struct net *net)
 {
-  int res, cpu, cnt;
+    net->ipv4.sysctl_tcp_ecn = TCP_ECN_IN_ECN_OUT_NOECN;
+    net->ipv4.sysctl_tcp_ecn_option = TCP_ACCECN_OPTION_FULL;
+    net->ipv4.sysctl_tcp_ecn_option_beacon = TCP_ACCECN_OPTION_BEACON;
+    net->ipv4.sysctl_tcp_ecn_fallback = 1;
 
-  net->ipv4.tcp_sk = alloc_percpu(struct sock *);
-  if (!net->ipv4.tcp_sk)
-    return -ENOMEM;
+    net->ipv4.sysctl_tcp_base_mss = TCP_BASE_MSS;
+    net->ipv4.sysctl_tcp_min_snd_mss = TCP_MIN_SND_MSS;
+    net->ipv4.sysctl_tcp_probe_threshold = TCP_PROBE_THRESHOLD;
+    net->ipv4.sysctl_tcp_probe_interval = TCP_PROBE_INTERVAL;
+    net->ipv4.sysctl_tcp_mtu_probe_floor = TCP_MIN_SND_MSS;
 
-  for_each_possible_cpu(cpu) {
-    struct sock *sk;
+    net->ipv4.sysctl_tcp_keepalive_time = TCP_KEEPALIVE_TIME;
+    net->ipv4.sysctl_tcp_keepalive_probes = TCP_KEEPALIVE_PROBES;
+    net->ipv4.sysctl_tcp_keepalive_intvl = TCP_KEEPALIVE_INTVL;
 
-    res = inet_ctl_sock_create(&sk, PF_INET, SOCK_RAW, IPPROTO_TCP, net);
-    if (res)
-      goto fail;
-    sock_set_flag(sk, SOCK_USE_WRITE_QUEUE);
+    net->ipv4.sysctl_tcp_syn_retries = TCP_SYN_RETRIES;
+    net->ipv4.sysctl_tcp_synack_retries = TCP_SYNACK_RETRIES;
+    net->ipv4.sysctl_tcp_syncookies = 1;
+    net->ipv4.sysctl_tcp_reordering = TCP_FASTRETRANS_THRESH;
+    net->ipv4.sysctl_tcp_retries1 = TCP_RETR1;
+    net->ipv4.sysctl_tcp_retries2 = TCP_RETR2;
+    net->ipv4.sysctl_tcp_orphan_retries = 0;
+    net->ipv4.sysctl_tcp_fin_timeout = TCP_FIN_TIMEOUT;
+    net->ipv4.sysctl_tcp_notsent_lowat = UINT_MAX;
+    net->ipv4.sysctl_tcp_tw_reuse = 2;
+    net->ipv4.sysctl_tcp_tw_reuse_delay = 1 * MSEC_PER_SEC;
+    net->ipv4.sysctl_tcp_no_ssthresh_metrics_save = 1;
 
-    /* Please enforce IP_DF and IPID==0 for RST and
-     * ACK sent in SYN-RECV and TIME-WAIT state. */
-    inet_sk(sk)->pmtudisc = IP_PMTUDISC_DO;
+    refcount_set(&net->ipv4.tcp_death_row.tw_refcount, 1);
+    tcp_set_hashinfo(net);
 
-    *per_cpu_ptr(net->ipv4.tcp_sk, cpu) = sk;
-  }
+    net->ipv4.sysctl_tcp_sack = 1;
+    net->ipv4.sysctl_tcp_window_scaling = 1;
+    net->ipv4.sysctl_tcp_timestamps = 1;
+    net->ipv4.sysctl_tcp_early_retrans = 3;
+    net->ipv4.sysctl_tcp_recovery = TCP_RACK_LOSS_DETECTION;
+    net->ipv4.sysctl_tcp_slow_start_after_idle = 1; /* By default, RFC2861 behavior.  */
+    net->ipv4.sysctl_tcp_retrans_collapse = 1;
+    net->ipv4.sysctl_tcp_max_reordering = 300;
+    net->ipv4.sysctl_tcp_dsack = 1;
+    net->ipv4.sysctl_tcp_app_win = 31;
+    net->ipv4.sysctl_tcp_adv_win_scale = 1;
+    net->ipv4.sysctl_tcp_frto = 2;
+    net->ipv4.sysctl_tcp_moderate_rcvbuf = 1;
+    net->ipv4.sysctl_tcp_rcvbuf_low_rtt = USEC_PER_MSEC;
+    /* This limits the percentage of the congestion window which we
+     * will allow a single TSO frame to consume.  Building TSO frames
+     * which are too large can cause TCP streams to be bursty. */
+    net->ipv4.sysctl_tcp_tso_win_divisor = 3;
+    /* Default TSQ limit of 4 MB */
+    net->ipv4.sysctl_tcp_limit_output_bytes = 4 << 20;
 
-  net->ipv4.sysctl_tcp_ecn = 2;
-  net->ipv4.sysctl_tcp_ecn_fallback = 1;
+    /* rfc5961 challenge ack rate limiting, per net-ns, disabled by default. */
+    net->ipv4.sysctl_tcp_challenge_ack_limit = INT_MAX;
 
-  net->ipv4.sysctl_tcp_base_mss = TCP_BASE_MSS;
-  net->ipv4.sysctl_tcp_min_snd_mss = TCP_MIN_SND_MSS;
-  net->ipv4.sysctl_tcp_probe_threshold = TCP_PROBE_THRESHOLD;
-  net->ipv4.sysctl_tcp_probe_interval = TCP_PROBE_INTERVAL;
+    net->ipv4.sysctl_tcp_min_tso_segs = 2;
+    net->ipv4.sysctl_tcp_tso_rtt_log = 9;  /* 2^9 = 512 usec */
+    net->ipv4.sysctl_tcp_min_rtt_wlen = 300;
+    net->ipv4.sysctl_tcp_autocorking = 1;
+    net->ipv4.sysctl_tcp_invalid_ratelimit = HZ/2;
+    net->ipv4.sysctl_tcp_pacing_ss_ratio = 200;
+    net->ipv4.sysctl_tcp_pacing_ca_ratio = 120;
+    if (net != &init_net) {
+        memcpy(net->ipv4.sysctl_tcp_rmem,
+               init_net.ipv4.sysctl_tcp_rmem,
+               sizeof(init_net.ipv4.sysctl_tcp_rmem));
+        memcpy(net->ipv4.sysctl_tcp_wmem,
+               init_net.ipv4.sysctl_tcp_wmem,
+               sizeof(init_net.ipv4.sysctl_tcp_wmem));
+    }
+    net->ipv4.sysctl_tcp_comp_sack_delay_ns = NSEC_PER_MSEC;
+    net->ipv4.sysctl_tcp_comp_sack_slack_ns = 10 * NSEC_PER_USEC;
+    net->ipv4.sysctl_tcp_comp_sack_nr = 44;
+    net->ipv4.sysctl_tcp_comp_sack_rtt_percent = 33;
+    net->ipv4.sysctl_tcp_backlog_ack_defer = 1;
+    net->ipv4.sysctl_tcp_fastopen = TFO_CLIENT_ENABLE;
+    net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 0;
+    atomic_set(&net->ipv4.tfo_active_disable_times, 0);
 
-  net->ipv4.sysctl_tcp_keepalive_time = TCP_KEEPALIVE_TIME;
-  net->ipv4.sysctl_tcp_keepalive_probes = TCP_KEEPALIVE_PROBES;
-  net->ipv4.sysctl_tcp_keepalive_intvl = TCP_KEEPALIVE_INTVL;
+    /* Set default values for PLB */
+    net->ipv4.sysctl_tcp_plb_enabled = 0; /* Disabled by default */
+    net->ipv4.sysctl_tcp_plb_idle_rehash_rounds = 3;
+    net->ipv4.sysctl_tcp_plb_rehash_rounds = 12;
+    net->ipv4.sysctl_tcp_plb_suspend_rto_sec = 60;
+    /* Default congestion threshold for PLB to mark a round is 50% */
+    net->ipv4.sysctl_tcp_plb_cong_thresh = (1 << TCP_PLB_SCALE) / 2;
 
-  net->ipv4.sysctl_tcp_syn_retries = TCP_SYN_RETRIES;
-  net->ipv4.sysctl_tcp_synack_retries = TCP_SYNACK_RETRIES;
-  net->ipv4.sysctl_tcp_syncookies = 1;
-  net->ipv4.sysctl_tcp_reordering = TCP_FASTRETRANS_THRESH;
-  net->ipv4.sysctl_tcp_retries1 = TCP_RETR1;
-  net->ipv4.sysctl_tcp_retries2 = TCP_RETR2;
-  net->ipv4.sysctl_tcp_orphan_retries = 0;
-  net->ipv4.sysctl_tcp_fin_timeout = TCP_FIN_TIMEOUT;
-  net->ipv4.sysctl_tcp_notsent_lowat = UINT_MAX;
-  net->ipv4.sysctl_tcp_tw_reuse = 2;
+    /* Reno is always built in */
+    if (!net_eq(net, &init_net) &&
+        bpf_try_module_get(init_net.ipv4.tcp_congestion_control,
+                   init_net.ipv4.tcp_congestion_control->owner))
+        net->ipv4.tcp_congestion_control = init_net.ipv4.tcp_congestion_control;
+    else
+        net->ipv4.tcp_congestion_control = &tcp_reno;
 
-  cnt = tcp_hashinfo.ehash_mask + 1;
-  net->ipv4.tcp_death_row.sysctl_max_tw_buckets = (cnt + 1) / 2;
-  net->ipv4.tcp_death_row.hashinfo = &tcp_hashinfo;
+    net->ipv4.sysctl_tcp_syn_linear_timeouts = 4;
+    net->ipv4.sysctl_tcp_shrink_window = 0;
 
-  net->ipv4.sysctl_max_syn_backlog = max(128, cnt / 256);
-  net->ipv4.sysctl_tcp_sack = 1;
-  net->ipv4.sysctl_tcp_window_scaling = 1;
-  net->ipv4.sysctl_tcp_timestamps = 1;
-  net->ipv4.sysctl_tcp_early_retrans = 3;
-  net->ipv4.sysctl_tcp_recovery = TCP_RACK_LOSS_DETECTION;
-  net->ipv4.sysctl_tcp_slow_start_after_idle = 1; /* By default, RFC2861 behavior.  */
-  net->ipv4.sysctl_tcp_retrans_collapse = 1;
-  net->ipv4.sysctl_tcp_max_reordering = 300;
-  net->ipv4.sysctl_tcp_dsack = 1;
-  net->ipv4.sysctl_tcp_app_win = 31;
-  net->ipv4.sysctl_tcp_adv_win_scale = 1;
-  net->ipv4.sysctl_tcp_frto = 2;
-  net->ipv4.sysctl_tcp_moderate_rcvbuf = 1;
-  /* This limits the percentage of the congestion window which we
-   * will allow a single TSO frame to consume.  Building TSO frames
-   * which are too large can cause TCP streams to be bursty. */
-  net->ipv4.sysctl_tcp_tso_win_divisor = 3;
-  /* Default TSQ limit of four TSO segments */
-  net->ipv4.sysctl_tcp_limit_output_bytes = 262144;
-  /* rfc5961 challenge ack rate limiting */
-  net->ipv4.sysctl_tcp_challenge_ack_limit = 1000;
-  net->ipv4.sysctl_tcp_min_tso_segs = 2;
-  net->ipv4.sysctl_tcp_min_rtt_wlen = 300;
-  net->ipv4.sysctl_tcp_autocorking = 1;
-  net->ipv4.sysctl_tcp_invalid_ratelimit = HZ/2;
-  net->ipv4.sysctl_tcp_pacing_ss_ratio = 200;
-  net->ipv4.sysctl_tcp_pacing_ca_ratio = 120;
+    net->ipv4.sysctl_tcp_pingpong_thresh = 1;
+    net->ipv4.sysctl_tcp_rto_min_us = jiffies_to_usecs(TCP_RTO_MIN);
+    net->ipv4.sysctl_tcp_rto_max_ms = TCP_RTO_MAX_SEC * MSEC_PER_SEC;
 
-  if (net != &init_net) {
-    memcpy(net->ipv4.sysctl_tcp_rmem,
-           init_net.ipv4.sysctl_tcp_rmem,
-           sizeof(init_net.ipv4.sysctl_tcp_rmem));
-    memcpy(net->ipv4.sysctl_tcp_wmem,
-           init_net.ipv4.sysctl_tcp_wmem,
-           sizeof(init_net.ipv4.sysctl_tcp_wmem));
-  }
-  net->ipv4.sysctl_tcp_comp_sack_delay_ns = NSEC_PER_MSEC;
-  net->ipv4.sysctl_tcp_comp_sack_nr = 44;
-  net->ipv4.sysctl_tcp_fastopen = TFO_CLIENT_ENABLE;
-  spin_lock_init(&net->ipv4.tcp_fastopen_ctx_lock);
-  net->ipv4.sysctl_tcp_fastopen_blackhole_timeout = 60 * 60;
-  atomic_set(&net->ipv4.tfo_active_disable_times, 0);
-
-  /* Reno is always built in */
-  if (!net_eq(net, &init_net) &&
-      try_module_get(init_net.ipv4.tcp_congestion_control->owner))
-    net->ipv4.tcp_congestion_control = init_net.ipv4.tcp_congestion_control;
-  else
-    net->ipv4.tcp_congestion_control = &tcp_reno;
-
-  return 0;
-fail:
-  tcp_sk_exit(net);
-
-  return res;
+    return 0;
 }
 ```
 
