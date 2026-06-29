@@ -204,31 +204,38 @@ struct tcp_sock {
 
 /* INET connection oriented sock */
 struct inet_connection_sock {
-  struct inet_sock            icsk_inet;
-  struct inet_bind_bucket     *icsk_bind_hash;   /* Bind node */
-  struct request_sock_queue   icsk_accept_queue; /* FIFO of established children */
-  struct tcp_congestion_ops           *icsk_ca_ops;
-  struct inet_connection_sock_af_ops  *icsk_af_ops; /* Operations which are AF_INET{4,6} specific */
+    struct inet_sock            icsk_inet;
+    struct inet_bind_bucket     *icsk_bind_hash;   /* Bind node */
+    struct request_sock_queue   icsk_accept_queue; /* FIFO of established children */
+    struct tcp_congestion_ops           *icsk_ca_ops;
+    struct inet_connection_sock_af_ops  *icsk_af_ops; /* Operations which are AF_INET{4,6} specific */
 
-  struct timer_list           sk_timer;
-  struct timer_list           icsk_retransmit_timer;
-  struct timer_list           icsk_delack_timer;
+    struct timer_list           sk_timer;
+    struct timer_list           icsk_retransmit_timer;
+    struct timer_list           icsk_delack_timer;
 
-  __u32                       icsk_rto;
+    __u32                       icsk_rto;
 };
 
 struct request_sock_queue {
-  spinlock_t            rskq_lock;
-  u8                    rskq_defer_accept;
+    spinlock_t            rskq_lock;
+    u8                    rskq_defer_accept;
 
-  u32                   synflood_warned;
-  atomic_t              qlen; /* half connect queue len */
-  atomic_t              young;
+    u32                   synflood_warned;
+/* ======= SYN Queue (a.k.a. Incomplete Connection Queue) ======*/
+    /* /proc/sys/net/ipv4/tcp_max_syn_backlog
+     * total half-open + established-not-yet-accepted*/
+    atomic_t              qlen;
+    /* not-yet-retransmitted */
+    atomic_t              young;
 
-  struct request_sock  *rskq_accept_head;
-  struct request_sock  *rskq_accept_tail;
-  struct fastopen_queue  fastopenq;
-  /* Check max_qlen != 0 to determine if TFO is enabled. */
+/* ======= Accept Queue (a.k.a. Complete Connection Queue) ======*/
+    struct request_sock  *rskq_accept_head;
+    struct request_sock  *rskq_accept_tail;
+
+/* ======= TFO Queue (TCP Fast Open) ======*/
+    struct fastopen_queue  fastopenq;
+    /* Check max_qlen != 0 to determine if TFO is enabled. */
 };
 
 /* representation of INET sockets */
@@ -2590,18 +2597,26 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 /* 1. parse tcp options */
     tmp_opt.saw_tstamp = 0;
+    tmp_opt.accecn = 0;
     if (th->doff > (sizeof(struct tcphdr)>>2)) {
         tcp_parse_options(sock_net(sk), skb, &tmp_opt, 0, NULL);
 
         if (tmp_opt.saw_tstamp) {
             tmp_opt.ts_recent = req->ts_recent;
-            if (tmp_opt.rcv_tsecr)
-                tmp_opt.rcv_tsecr -= tcp_rsk(req)->ts_off;
-            /* We do not store true stamp, but it is not required,
-            * it can be estimated (approximately)
-            * from another data. */
-            tmp_opt.ts_recent_stamp = ktime_get_seconds() - ((TCP_TIMEOUT_INIT/HZ)<<req->num_timeout);
-            paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
+			if (tmp_opt.rcv_tsecr) {
+				if (inet_rsk(req)->tstamp_ok && !fastopen)
+					tsecr_reject = !between(tmp_opt.rcv_tsecr,
+							tcp_rsk(req)->snt_tsval_first,
+							READ_ONCE(tcp_rsk(req)->snt_tsval_last));
+				tmp_opt.rcv_tsecr -= tcp_rsk(req)->ts_off;
+			}
+			/* We do not store true stamp, but it is not required,
+			 * it can be estimated (approximately)
+			 * from another data.
+			 */
+			tmp_opt.ts_recent_stamp = ktime_get_seconds() -
+				tcp_reqsk_timeout(req) / HZ;
+			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
         }
     }
 
@@ -2977,7 +2992,6 @@ sock *inet_csk_complete_hashdance(struct sock *sk, struct sock *child,
 
 # accept
 
-
 ```c
 accpet() {
     __sys_accept4() {
@@ -3191,49 +3205,62 @@ void finish_wait(
 
 # accept queue
 
-Overview of Socket Hash Tables:
-1. inet_bind_hashbucket (Bind Hash Table)
-    * Purpose: Tracks sockets bound to specific local ports (e.g., via bind()).
-    * Key: Local port number.
-    * Prevents port conflicts (e.g., multiple sockets binding to the same port unless SO_REUSEADDR is set).
-
-2. inet_listen_hashbucket (Listening Hash Table)
-    * Key: Local port number.
-    * Hash Function: Hashed via inet_lhashfn() (port-based hash).
-    * Usage:
-        * Looked up during incoming connection requests to find the listening socket.
-        * Supports SO_REUSEPORT, allowing multiple listeners on the same port.
-
-3. inet_ehash_bucket (Established Hash Table)
-    * Key: 4-tuple (source IP, source port, destination IP, destination port).
-    * Usage:
-        * Used to match incoming packets to existing connections.
-        * Time-wait sockets are also stored here to handle lingering packets after closure.
-
-4. twchain (Time-Wait Hash Table) (Optional)
-    * Purpose: In some kernel configurations, time-wait sockets are separated into a dedicated hash table.
-    * Structure: Similar to ehash, using hlist_nulls_head.
-    * Key: Same 4-tuple as ehash.
-    * Usage: Reduces contention in ehash by isolating time-wait entries.
-
 ```c
-struct inet_hashinfo {
-    /* Established Hash Table */
-    struct inet_ehash_bucket  *ehash;
-    spinlock_t                *ehash_locks;
-    unsigned int              ehash_mask;
-    unsigned int              ehash_locks_mask;
+Client SYN arrives
+       │
+       ▼
+__inet_lookup_skb()
+  ├─ ehash?  → existing established socket (data path)
+  └─ lhash2? → TCP_LISTEN socket
+                    │
+                    ▼
+              tcp_conn_request()
+              allocate request_sock  ──────► SYN queue (ehash + qlen counter)
+              send SYN-ACK
+                    │
+              Client ACK arrives
+                    │
+              tcp_check_req()
+              create full child sock ──────► ehash (TCP_ESTABLISHED)
+              enqueue to accept queue ─────► rskq_accept_head/tail (sk_ack_backlog++)
+                    │
+              Application calls accept()
+                    │
+              reqsk_queue_remove() ─────────► dequeue from accept queue
+              return child sock to app
 
-    /* Bind Hash Table */
+
+struct inet_hashinfo {
+    /* 1. Established Hash Table, key: 4-tuple (src ip/port, dst ip/port) */
+    struct inet_ehash_bucket        *ehash;
+    spinlock_t                      *ehash_locks;
+    unsigned int                    ehash_mask;
+    unsigned int                    ehash_locks_mask;
+
+    /* 2. Bind Hash Table, key: local port */
     struct kmem_cache               *bind_bucket_cachep;
     struct inet_bind_hashbucket     *bhash;
+
+    struct kmem_cache        *bind2_bucket_cachep;
+    /* 3. Bind Hash Table, key: local port + local address */
+    struct inet_bind_hashbucket    *bhash2;
+    unsigned int            bhash_size;
     unsigned int                    bhash_size;
 
-    /* Listening Hash Table */
+    /* 4. Listening Hash Table, key: local port + local address */
     unsigned int                    lhash2_mask;
     struct inet_listen_hashbucket   *lhash2;
 };
 ```
+
+| Queue / Table | Structure | Scope | State covered | Limit |
+|---|---|---|---|---|
+| `ehash` | hash table | global | `ESTABLISHED`…`CLOSE` + `NEW_SYN_RECV` | unbounded |
+| `lhash2` | hash table | global | `LISTEN` | unbounded |
+| `bhash`/`bhash2` | hash table | global | any (bound ports) | unbounded |
+| SYN queue | `qlen` counter + `ehash` entries | per-listener | `TCP_NEW_SYN_RECV` | `tcp_max_syn_backlog` |
+| Accept queue | `rskq_accept_head` FIFO | per-listener | fully established, not yet `accept()`ed | `listen()` backlog |
+| TFO queue | `fastopenq` | per-listener | `TCP_SYN_RECV` + data | `fastopenq.max_qlen` |
 
 ## inet_csk_reqsk_queue_hash_add
 
@@ -14650,42 +14677,46 @@ discard:
 ### tcp_rcv_state_process
 
 ```c
-int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
+enum skb_drop_reason
+tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 {
     struct tcp_sock *tp = tcp_sk(sk);
     struct inet_connection_sock *icsk = inet_csk(sk);
     const struct tcphdr *th = tcp_hdr(skb);
     struct request_sock *req;
     int queued = 0;
-    bool acceptable;
+    SKB_DR(reason);
 
     switch (sk->sk_state) {
     case TCP_CLOSE:
+        SKB_DR_SET(reason, TCP_CLOSE);
         goto discard;
 
     case TCP_LISTEN:
         if (th->ack)
-            return 1;
+            return SKB_DROP_REASON_TCP_FLAGS;
 
-        if (th->rst)
+        if (th->rst) {
+            SKB_DR_SET(reason, TCP_RESET);
             goto discard;
-
+        }
         if (th->syn) {
-            if (th->fin)
+            if (th->fin) {
+                SKB_DR_SET(reason, TCP_FLAGS);
                 goto discard;
+            }
             /* It is possible that we process SYN packets from backlog,
              * so we need to make sure to disable BH and RCU right there. */
             rcu_read_lock();
             local_bh_disable();
-            acceptable = icsk->icsk_af_ops->conn_request(sk, skb) >= 0;
+            icsk->icsk_af_ops->conn_request(sk, skb);
             local_bh_enable();
             rcu_read_unlock();
 
-            if (!acceptable)
-                return 1;
             consume_skb(skb);
             return 0;
         }
+        SKB_DR_SET(reason, TCP_FLAGS);
         goto discard;
 
     case TCP_SYN_SENT:
@@ -14704,27 +14735,38 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 
     tcp_mstamp_refresh(tp);
     tp->rx_opt.saw_tstamp = 0;
-    req = tp->fastopen_rsk;
+    req = rcu_dereference_protected(tp->fastopen_rsk,
+                    lockdep_sock_is_held(sk));
     if (req) {
         bool req_stolen;
-        if (!tcp_check_req(sk, skb, req, true, &req_stolen))
+
+        WARN_ON_ONCE(sk->sk_state != TCP_SYN_RECV &&
+            sk->sk_state != TCP_FIN_WAIT1);
+
+        SKB_DR_SET(reason, TCP_FASTOPEN);
+        if (!tcp_check_req(sk, skb, req, true, &req_stolen, &reason))
             goto discard;
     }
 
-    if (!th->ack && !th->rst && !th->syn)
+    if (!th->ack && !th->rst && !th->syn) {
+        SKB_DR_SET(reason, TCP_FLAGS);
         goto discard;
-
-    /* Step 1 2 3 4 */
+    }
     if (!tcp_validate_incoming(sk, skb, th, 0))
         return 0;
 
-    /* Step 5: check the ACK field */
-    reason = tcp_ack(sk, skb, FLAG_SLOWPATH | FLAG_UPDATE_TS_RECENT | FLAG_NO_CHALLENGE_ACK) > 0;
+    /* step 5: check the ACK field */
+    reason = tcp_ack(sk, skb, FLAG_SLOWPATH |
+                  FLAG_UPDATE_TS_RECENT |
+                  FLAG_NO_CHALLENGE_ACK);
 
-    if (reason <= 0) {
-        if (sk->sk_state == TCP_SYN_RECV)
-            return -reason;  /* send one RST */
-
+    if ((int)reason <= 0) {
+        if (sk->sk_state == TCP_SYN_RECV) {
+            /* send one RST */
+            if (!reason)
+                return SKB_DROP_REASON_TCP_OLD_ACK;
+            return -reason;
+        }
         /* accept old ack during closing */
         if ((int)reason < 0) {
             tcp_send_challenge_ack(sk, false);
@@ -14732,10 +14774,10 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
             goto discard;
         }
     }
-
+    SKB_DR_SET(reason, NOT_SPECIFIED);
     switch (sk->sk_state) {
     case TCP_SYN_RECV:
-        tp->delivered++; /* SYN-ACK delivery isn't tracked in tcp_ack */
+        WRITE_ONCE(tp->delivered, tp->delivered + 1); /* SYN-ACK delivery isn't tracked in tcp_ack */
         if (!tp->srtt_us)
             tcp_synack_rtt_meas(sk, req);
 
@@ -14747,22 +14789,22 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         } else {
             tcp_try_undo_spurious_syn(sk);
             tp->retrans_stamp = 0;
-            tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB, skb);
+            tcp_init_transfer(sk, BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB,
+                      skb);
             WRITE_ONCE(tp->copied_seq, tp->rcv_nxt);
         }
-
         tcp_ao_established(sk);
         smp_mb();
         tcp_set_state(sk, TCP_ESTABLISHED);
         sk->sk_state_change(sk);
 
         /* Note, that this wakeup is only for marginal crossed SYN case.
-        * Passively open sockets are not waked up, because
-        * sk->sk_sleep == NULL and sk->sk_socket == NULL. */
+         * Passively open sockets are not waked up, because
+         * sk->sk_sleep == NULL and sk->sk_socket == NULL. */
         if (sk->sk_socket)
             sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
 
-        tp->snd_una = TCP_SKB_CB(skb)->ack_seq;
+        WRITE_ONCE(tp->snd_una, TCP_SKB_CB(skb)->ack_seq);
         tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale;
         tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
 
@@ -14779,6 +14821,8 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         if (sk->sk_shutdown & SEND_SHUTDOWN)
             tcp_shutdown(sk, SEND_SHUTDOWN);
 
+        break;
+
     case TCP_FIN_WAIT1: {
         int tmo;
 
@@ -14789,7 +14833,7 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
             break;
 
         tcp_set_state(sk, TCP_FIN_WAIT2);
-        sk->sk_shutdown |= SEND_SHUTDOWN;
+        WRITE_ONCE(sk->sk_shutdown, sk->sk_shutdown | SEND_SHUTDOWN);
 
         sk_dst_confirm(sk);
 
@@ -14799,18 +14843,19 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
             break;
         }
 
-        if (tp->linger2 < 0) {
+        if (READ_ONCE(tp->linger2) < 0) {
             tcp_done(sk);
-            return 1;
+            NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
+            return SKB_DROP_REASON_TCP_ABORT_ON_DATA;
         }
-        if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq
-            && after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt))
-        {
+        if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq &&
+            after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) {
             /* Receive out of order FIN after close() */
             if (tp->syn_fastopen && th->fin)
                 tcp_fastopen_active_disable(sk);
             tcp_done(sk);
-            return 1;
+            NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
+            return SKB_DROP_REASON_TCP_ABORT_ON_DATA;
         }
 
         tmo = tcp_fin_time(sk);
@@ -14846,10 +14891,10 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
         break;
     }
 
-    /* Step 6: check the URG bit */
+    /* step 6: check the URG bit */
     tcp_urg(sk, skb, th);
 
-    /* Step 7: process the segment text */
+    /* step 7: process the segment text */
     switch (sk->sk_state) {
     case TCP_CLOSE_WAIT:
     case TCP_CLOSING:
@@ -14865,15 +14910,17 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
     case TCP_FIN_WAIT1:
     case TCP_FIN_WAIT2:
         /* RFC 793 says to queue data in these states,
-        * RFC 1122 says we MUST send a reset.
-        * BSD 4.4 also does reset. */
+         * RFC 1122 says we MUST send a reset.
+         * BSD 4.4 also does reset. */
         if (sk->sk_shutdown & RCV_SHUTDOWN) {
-            if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq && after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) {
-                tcp_reset(sk);
-                return 1;
+            if (TCP_SKB_CB(skb)->end_seq != TCP_SKB_CB(skb)->seq &&
+                after(TCP_SKB_CB(skb)->end_seq - th->fin, tp->rcv_nxt)) {
+                NET_INC_STATS(sock_net(sk), LINUX_MIB_TCPABORTONDATA);
+                tcp_reset(sk, skb);
+                return SKB_DROP_REASON_TCP_ABORT_ON_DATA;
             }
         }
-        /* Fall through */
+        fallthrough;
     case TCP_ESTABLISHED:
         tcp_data_queue(sk, skb);
         queued = 1;
@@ -14888,8 +14935,10 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb)
 
     if (!queued) {
 discard:
-        tcp_drop(sk, skb);
+        tcp_drop_reason(sk, skb, reason);
     }
+    return 0;
+
 consume:
     __kfree_skb(skb);
     return 0;
@@ -19681,6 +19730,20 @@ struct dst_ops ipv4_dst_ops = {
 * **How it works**: It forwards traffic based on MAC addresses, enabling communication between interfaces attached to it.
 
 
+| Subsystem | Device that gets the handler | Handler function | rx_handler_data |
+|---|---|---|---|
+| Linux bridge | each bridge member port (e.g. eth0 enslaved to br0) | br_handle_frame | struct net_bridge_port * |
+| Bonding | each bonding slave (e.g. eth0 in bond0) | bond_handle_frame | struct slave * |
+| Team | each team port | team_handle_frame | struct team_port * |
+| macvlan / macvtap | the lower real device (e.g. eth0 backing macvlan0) | macvlan_handle_frame | struct macvlan_port * |
+| ipvlan / ipvtap | the lower real device | ipvlan_handle_frame | struct ipvl_port * |
+| Open vSwitch | any port added to an OVS bridge | netdev_frame_hook | struct vport * |
+| MACsec | the lower real device | macsec_handle_frame | struct macsec_dev * |
+| HSR (High-availability Seamless Redundancy) | each HSR slave | hsr_handle_frame | struct hsr_port * |
+| failover | the primary/standby device | (failover handler) | struct failover_dev_info * |
+| rmnet (Qualcomm data) | the underlying modem netdev | rmnet_rx_handler | struct rmnet_port * |
+| iwlwifi MEI | the wifi NIC (Intel ME co-existence) | (mei handler) | — |
+
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
 
 ```c
@@ -19738,7 +19801,46 @@ struct dst_ops ipv4_dst_ops = {
      Physical Network  (192.168.3.0/24)
 ```
 
-```c
+```sh
+# ── 1. Create network namespaces (simulate containers) ──────────────────────
+ip netns add container1
+ip netns add container2
+
+# ── 2. Create bridge and assign host-side IP ────────────────────────────────
+ip link add br0 type bridge
+ip link set br0 up
+ip addr add 192.168.9.1/24 dev br0
+
+# ── 3. veth pair for container1 ─────────────────────────────────────────────
+ip link add veth1 type veth peer name veth1-cont
+ip link set veth1 master br0
+ip link set veth1 up
+
+ip link set veth1-cont netns container1
+ip netns exec container1 ip link set veth1-cont name eth0
+ip netns exec container1 ip addr add 192.168.9.2/24 dev eth0
+ip netns exec container1 ip link set eth0 up
+ip netns exec container1 ip link set lo up
+ip netns exec container1 ip route add default via 192.168.9.1
+
+# ── 4. veth pair for container2 ─────────────────────────────────────────────
+ip link add veth2 type veth peer name veth2-cont
+ip link set veth2 master br0
+ip link set veth2 up
+
+ip link set veth2-cont netns container2
+ip netns exec container2 ip link set veth2-cont name eth0
+ip netns exec container2 ip addr add 192.168.9.3/24 dev eth0
+ip netns exec container2 ip link set eth0 up
+ip netns exec container2 ip link set lo up
+ip netns exec container2 ip route add default via 192.168.9.1
+
+# ── 5. Enable IP forwarding (host routes between 9.0/24 and 3.0/24) ─────────
+echo 1 > /proc/sys/net/ipv4/ip_forward
+
+# ── 6. NAT so containers can reach the physical network via eth0 ─────────────
+iptables -t nat -A POSTROUTING -s 192.168.9.0/24 -o eth0 -j MASQUERADE
+
 +----------------------------------------------------------------+-----------------------------------------+-----------------------------------------+
 |                          Host                                  |              Container 1                |              Container 2                |
 |                                                                |                                         |                                         |
@@ -19990,13 +20092,13 @@ int br_add_if(struct net_bridge *br, struct net_device *dev,
     if (err)
         goto err3;
 
-    ret = br_get_rx_handler(dev) {
+    handler = br_get_rx_handler(dev) {
         if (netdev_uses_dsa(dev))
             return br_handle_frame_dummy;
 
         return br_handle_frame;
     }
-    err = netdev_rx_handler_register(dev, ret, p) {
+    err = netdev_rx_handler_register(dev, handler, p) {
         if (netdev_is_rx_handler_busy(dev))
             return -EBUSY;
 
@@ -20049,8 +20151,7 @@ int br_add_if(struct net_bridge *br, struct net_device *dev,
     if (br->dev->addr_assign_type != NET_ADDR_SET) {
         /* Ask for permission to use this MAC address now, even if we
          * don't end up choosing it below. */
-        err = netif_pre_changeaddr_notify(br->dev, dev->dev_addr,
-                          extack);
+        err = netif_pre_changeaddr_notify(br->dev, dev->dev_addr, extack);
         if (err)
             goto err6;
     }
@@ -20104,28 +20205,25 @@ err2:
 err1:
     return err;
 }
-
-int netdev_rx_handler_register(struct net_device *dev,
-             rx_handler_func_t *rx_handler,
-             void *rx_handler_data)
-{
-  if (netdev_is_rx_handler_busy(dev))
-    return -EBUSY;
-
-  if (dev->priv_flags & IFF_NO_RX_HANDLER)
-    return -EINVAL;
-
-  /* Note: rx_handler_data must be set before rx_handler */
-  rcu_assign_pointer(dev->rx_handler_data, rx_handler_data);
-  rcu_assign_pointer(dev->rx_handler, rx_handler);
-
-  return 0;
-}
 ```
 
 ## br_handle_frame
 
 ```c
+netif_receive_skb()
+  └─ __netif_receive_skb_core()
+       └─ rx_handler: br_handle_frame()
+            ├─ [loopback / bad src] → drop/pass
+            ├─ [link-local dest]    → br_handle_local_finish() → MAC learn, pass to stack
+            ├─ [custom frame type]  → br_process_frame_type()
+            └─ [normal frame]       → nf_hook_bridge_pre()
+                                         └─ br_handle_frame_finish()
+                                              ├─ br_fdb_update()       (MAC learning)
+                                              ├─ br_forward()          (unicast)
+                                              ├─ br_flood()            (unknown unicast/broadcast)
+                                              ├─ br_multicast_flood()  (multicast)
+                                              └─ br_pass_frame_up()    (deliver to bridge device itself)
+
 rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
 {
     enum skb_drop_reason reason = SKB_DROP_REASON_NOT_SPECIFIED;
@@ -20133,14 +20231,17 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
     struct sk_buff *skb = *pskb;
     const unsigned char *dest = eth_hdr(skb)->h_dest;
 
+/* 1. Loopback Bypass */
     if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
         return RX_HANDLER_PASS;
 
+/* 2. Source MAC Validation */
     if (!is_valid_ether_addr(eth_hdr(skb)->h_source)) {
         reason = SKB_DROP_REASON_MAC_INVALID_SOURCE;
         goto drop;
     }
 
+/* 3. Copy-on-Write Check */
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (!skb)
         return RX_HANDLER_CONSUMED;
@@ -20148,22 +20249,24 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
     memset(skb->cb, 0, sizeof(struct br_input_skb_cb));
     br_tc_skb_miss_set(skb, false);
 
+/* 4. Control Block and VLAN Tunnel Initialization */
     p = br_port_get_rcu(skb->dev);
     if (test_bit(BR_VLAN_TUNNEL_BIT, &p->flags))
         br_handle_ingress_vlan_tunnel(skb, p, nbp_vlan_group_rcu(p));
 
+/* 5. Link-Local / IEEE 802.1D Reserved Address Handling */
     if (unlikely(is_link_local_ether_addr(dest))) {
         u16 fwd_mask = p->br->group_fwd_mask_required;
 
         /* See IEEE 802.1D Table 7-10 Reserved addresses
          *
-         * Assignment                 Value
-         * Bridge Group Address        01-80-C2-00-00-00
-         * (MAC Control) 802.3        01-80-C2-00-00-01
-         * (Link Aggregation) 802.3    01-80-C2-00-00-02
-         * 802.1X PAE address        01-80-C2-00-00-03
+         * Assignment                   Value
+         * Bridge Group Address         01-80-C2-00-00-00
+         * (MAC Control) 802.3          01-80-C2-00-00-01
+         * (Link Aggregation) 802.3     01-80-C2-00-00-02
+         * 802.1X PAE address           01-80-C2-00-00-03
          *
-         * 802.1AB LLDP         01-80-C2-00-00-0E
+         * 802.1AB LLDP                 01-80-C2-00-00-0E
          *
          * Others reserved for future standardization */
         fwd_mask |= p->group_fwd_mask;
@@ -20171,8 +20274,7 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
         case 0x00:    /* Bridge Group Address */
             /* If STP is turned off,
                then must forward to keep loop detection */
-            if (p->br->stp_enabled == BR_NO_STP ||
-                fwd_mask & (1u << dest[5]))
+            if (p->br->stp_enabled == BR_NO_STP || fwd_mask & (1u << dest[5]))
                 goto forward;
             *pskb = skb;
             __br_handle_local_finish(skb);
@@ -20212,9 +20314,11 @@ rx_handler_result_t br_handle_frame(struct sk_buff **pskb)
         }
     }
 
+/* 6. Custom Frame Type Dispatch */
     if (unlikely(br_process_frame_type(p, skb)))
         return RX_HANDLER_PASS;
 
+/* 7. STP State Gating and Final Forwarding */
 forward:
     if (br_mst_is_enabled(p))
         goto defer_stp_filtering;
@@ -20304,6 +20408,7 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
     u16 vid = 0;
     u8 state;
 
+/* 1. Port and STP State Resolution */
     if (!p)
         goto drop;
 
@@ -20320,11 +20425,13 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
         state = p->state;
     }
 
+/* 2. VLAN Ingress Admission */
     brmctx = &p->br->multicast_ctx;
     pmctx = &p->multicast_ctx;
     if (!br_allowed_ingress(p->br, nbp_vlan_group_rcu(p), skb, &vid, &state, &vlan))
         goto out;
 
+/* 3. Port Security / MAC-Auth Bypass (MAB) */
     if (test_bit(BR_PORT_LOCKED_BIT, &p->flags)) {
         struct net_bridge_fdb_entry *fdb_src =
             br_fdb_find_rcu(br, eth_hdr(skb)->h_source, vid);
@@ -20347,12 +20454,14 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
         }
     }
 
+/* 4. Switchdev Mark and MAC Learning */
     nbp_switchdev_frame_mark(p, skb);
 
     /* insert into forwarding database after filtering to avoid spoofing */
     if (test_bit(BR_LEARNING_BIT, &p->flags))
         br_fdb_update(br, p, eth_hdr(skb)->h_source, vid, 0);
 
+/* 5.  Packet Type Classification */
     promisc = !!(br->dev->flags & IFF_PROMISC);
     local_rcv = promisc;
 
@@ -20368,11 +20477,13 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
         }
     }
 
+/* 6. Learning-Only State Drop */
     if (state == BR_STATE_LEARNING) {
         reason = SKB_DROP_REASON_BRIDGE_INGRESS_STP_STATE;
         goto drop;
     }
 
+/* 7. ARP/NDP Proxy/Suppress */
     BR_INPUT_SKB_CB(skb)->brdev = br->dev;
     BR_INPUT_SKB_CB(skb)->src_port_isolated = test_bit(BR_ISOLATED_BIT, &p->flags);
 
@@ -20391,6 +20502,7 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
                 br_do_suppress_nd(skb, br, vid, p, msg);
     }
 
+/* 8. Forwarding Decision */
     switch (pkt_type) {
     case BR_PKT_MULTICAST:
         mdst = br_mdb_entry_skb_get(brmctx, skb, vid);
@@ -20436,6 +20548,7 @@ int br_handle_frame_finish(struct net *net, struct sock *sk, struct sk_buff *skb
             br_multicast_flood(mdst, skb, brmctx, local_rcv, false);
     }
 
+/* 9. Local Delivery */
     if (local_rcv)
         return br_pass_frame_up(skb, promisc);
 
