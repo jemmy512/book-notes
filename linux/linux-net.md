@@ -570,9 +570,13 @@ struct inode *sock_alloc_inode(struct super_block *sb)
 }
 
 enum sock_type {
-  SOCK_STREAM = 1,
-  SOCK_DGRAM  = 2,
-  SOCK_RAW    = 3,
+    SOCK_DGRAM          = 1,
+    SOCK_STREAM         = 2,
+    SOCK_RAW            = 3,
+    SOCK_RDM            = 4,
+    SOCK_SEQPACKET      = 5,
+    SOCK_DCCP           = 6,
+    SOCK_PACKET         = 10,
 };
 
 /* Supported address families. */
@@ -2603,20 +2607,19 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
         if (tmp_opt.saw_tstamp) {
             tmp_opt.ts_recent = req->ts_recent;
-			if (tmp_opt.rcv_tsecr) {
-				if (inet_rsk(req)->tstamp_ok && !fastopen)
-					tsecr_reject = !between(tmp_opt.rcv_tsecr,
-							tcp_rsk(req)->snt_tsval_first,
-							READ_ONCE(tcp_rsk(req)->snt_tsval_last));
-				tmp_opt.rcv_tsecr -= tcp_rsk(req)->ts_off;
-			}
-			/* We do not store true stamp, but it is not required,
-			 * it can be estimated (approximately)
-			 * from another data.
-			 */
-			tmp_opt.ts_recent_stamp = ktime_get_seconds() -
-				tcp_reqsk_timeout(req) / HZ;
-			paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
+            if (tmp_opt.rcv_tsecr) {
+                if (inet_rsk(req)->tstamp_ok && !fastopen)
+                    tsecr_reject = !between(tmp_opt.rcv_tsecr,
+                            tcp_rsk(req)->snt_tsval_first,
+                            READ_ONCE(tcp_rsk(req)->snt_tsval_last));
+                tmp_opt.rcv_tsecr -= tcp_rsk(req)->ts_off;
+            }
+            /* We do not store true stamp, but it is not required,
+             * it can be estimated (approximately)
+             * from another data. */
+            tmp_opt.ts_recent_stamp = ktime_get_seconds() -
+                tcp_reqsk_timeout(req) / HZ;
+            paws_reject = tcp_paws_reject(&tmp_opt, th->rst);
         }
     }
 
@@ -3902,100 +3905,211 @@ void *__kmalloc_track_caller(size_t size, gfp_t gfpflags, unsigned long caller)
 ```
 
 ## skb_clone
-```c
 
-/* Duplicate an &sk_buff. The new one is not owned by a socket. Both
- * copies share the same packet data but not structure. The new
- * buffer has a reference count of 1. If the allocation fails the
- * function returns %NULL otherwise the new buffer is returned.
- *
- * If this function is called from an interrupt gfp_mask() must be
- * %GFP_ATOMIC */
+```c
 struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 {
-  struct sk_buff_fclones *fclones =
-    container_of(skb, struct sk_buff_fclones, skb1);
-  struct sk_buff *n;
+    struct sk_buff_fclones *fclones =
+        container_of(skb, struct sk_buff_fclones, skb1);
+    struct sk_buff *n;
 
-  if (skb_orphan_frags(skb, gfp_mask))
-    return NULL;
+    if (skb_orphan_frags(skb, gfp_mask))
+        return NULL;
 
-  if (skb->fclone == SKB_FCLONE_ORIG &&
-      refcount_read(&fclones->fclone_ref) == 1) {
-    n = &fclones->skb2;
-    refcount_set(&fclones->fclone_ref, 2);
-  } else {
-    if (skb_pfmemalloc(skb))
-      gfp_mask |= __GFP_MEMALLOC;
+    if (skb->fclone == SKB_FCLONE_ORIG &&
+        refcount_read(&fclones->fclone_ref) == 1) {
+        n = &fclones->skb2;
+        refcount_set(&fclones->fclone_ref, 2);
+        n->fclone = SKB_FCLONE_CLONE;
+    } else {
+        if (skb_pfmemalloc(skb))
+            gfp_mask |= __GFP_MEMALLOC;
 
-    n = kmem_cache_alloc(skbuff_head_cache, gfp_mask);
-    if (!n)
-      return NULL;
+        n = kmem_cache_alloc(net_hotdata.skbuff_cache, gfp_mask);
+        if (!n)
+            return NULL;
 
-    n->fclone = SKB_FCLONE_UNAVAILABLE;
-  }
+        n->fclone = SKB_FCLONE_UNAVAILABLE;
+    }
 
-  return __skb_clone(n, skb);
+    return __skb_clone(n, skb);
 }
 
-struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
+static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 {
 #define C(x) n->x = skb->x
 
-  n->next = n->prev = NULL;
-  n->sk = NULL;
-  __copy_skb_header(n, skb);
+    n->next = n->prev = NULL;
+    n->sk = NULL;
+    __copy_skb_header(n, skb);
 
-  C(len);
-  C(data_len);
-  C(mac_len);
-  n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
-  n->cloned = 1;
-  n->nohdr = 0;
-  n->peeked = 0;
-  C(pfmemalloc);
-  n->destructor = NULL;
-  C(tail);
-  C(end);
-  C(head);
-  C(head_frag);
-  C(data);
-  C(truesize);
-  refcount_set(&n->users, 1);
+    C(len);
+    C(data_len);
+    C(mac_len);
+    n->hdr_len = skb->nohdr ? skb_headroom(skb) : skb->hdr_len;
+    n->cloned = 1;
+    n->nohdr = 0;
+    n->peeked = 0;
+    C(pfmemalloc);
+    C(pp_recycle);
+    n->destructor = NULL;
+    C(tail);
+    C(end);
+    C(head);
+    C(head_frag);
+    C(data);
+    C(truesize);
+    refcount_set(&n->users, 1);
 
-  atomic_inc(&(skb_shinfo(skb)->dataref));
-  skb->cloned = 1;
+    atomic_inc(&(skb_shinfo(skb)->dataref));
+    skb->cloned = 1;
 
-  return n;
+    return n;
 #undef C
 }
 ```
 
+## alloc_skb_fclone
+
 ```c
-tcp_stream_alloc_skb()
-  size = ALIGN(size, 4)
-  skb = alloc_skb_fclone()
-    __alloc_skb()
-      struct kmem_cache* cache = (flags & SKB_ALLOC_FCLONE) ? skbuff_fclone_cache : skbuff_head_cache;
-      skb = kmem_cache_alloc_node(cache) /* Get the HEAD */
-      data = kmalloc_reserve()
-        __kmalloc_reserve()
-          kmalloc_node_track_caller()
-            struct kmem_cache *s = (size > KMALLOC_MAX_CACHE_SIZE)
-              ? kmalloc_large(size, gfpflags)
-              : kmalloc_slab()
-            slab_alloc(s, gfpflags, caller)
+struct sk_buff *alloc_skb_fclone(unsigned int size,
+                           gfp_t priority)
+{
+    return __alloc_skb(size, priority, SKB_ALLOC_FCLONE, NUMA_NO_NODE);
+}
 
-      skb->head = data;
-      skb->data = data;
-      skb->tail = skb->data;
-      skb->end = skb->tail + size;
-      skb->mac_header = (typeof(skb->mac_header))~0U;
-      skb->transport_header = (typeof(skb->transport_header))~0U;
+struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
+                int flags, int node)
+{
+    struct sk_buff *skb = NULL;
+    struct kmem_cache *cache;
+    u8 *data;
 
-  skb_reserve(skb, sk->sk_prot->max_header)
-    skb->data += len;
-    skb->tail += len;
+    if (sk_memalloc_socks() && (flags & SKB_ALLOC_RX))
+        gfp_mask |= __GFP_MEMALLOC;
+
+    if (flags & SKB_ALLOC_FCLONE) {
+        cache = net_hotdata.skbuff_fclone_cache;
+        goto fallback;
+    }
+    cache = net_hotdata.skbuff_cache;
+    if (unlikely(node != NUMA_NO_NODE && node != numa_mem_id()))
+        goto fallback;
+
+    if (flags & SKB_ALLOC_NAPI) {
+        skb = napi_skb_cache_get(true);
+        if (unlikely(!skb))
+            return NULL;
+    } else if (!in_hardirq() && !irqs_disabled()) {
+        local_bh_disable();
+        skb = napi_skb_cache_get(false);
+        local_bh_enable();
+    }
+
+    if (!skb) {
+fallback:
+        skb = kmem_cache_alloc_node(cache, gfp_mask & ~GFP_DMA, node);
+        if (unlikely(!skb))
+            return NULL;
+    }
+    skbuff_clear(skb);
+
+    /* We do our best to align skb_shared_info on a separate cache
+     * line. It usually works because kmalloc(X > SMP_CACHE_BYTES) gives
+     * aligned memory blocks, unless SLUB/SLAB debug is enabled.
+     * Both skb->head and skb_shared_info are cache line aligned. */
+    data = kmalloc_reserve(&size, gfp_mask, node, skb);
+    if (unlikely(!data))
+        goto nodata;
+
+    /* kmalloc_size_roundup() might give us more room than requested.
+     * Put skb_shared_info exactly at the end of allocated zone,
+     * to allow max possible filling before reallocation. */
+    __finalize_skb_around(skb, data, size) {
+        struct skb_shared_info *shinfo;
+
+        size -= SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+
+        /* Assumes caller memset cleared SKB */
+        skb->truesize = SKB_TRUESIZE(size);
+        refcount_set(&skb->users, 1);
+        skb->head = data;
+        skb->data = data;
+        skb_reset_tail_pointer(skb);
+        skb_set_end_offset(skb, size);
+        skb->mac_header = (typeof(skb->mac_header))~0U;
+        skb->transport_header = (typeof(skb->transport_header))~0U;
+        skb->alloc_cpu = raw_smp_processor_id();
+        /* make sure we initialize shinfo sequentially */
+        shinfo = skb_shinfo(skb);
+        memset(shinfo, 0, offsetof(struct skb_shared_info, dataref));
+        atomic_set(&shinfo->dataref, 1);
+
+        skb_set_kcov_handle(skb, kcov_common_handle());
+    }
+
+    if (flags & SKB_ALLOC_FCLONE) {
+        struct sk_buff_fclones *fclones;
+
+        fclones = container_of(skb, struct sk_buff_fclones, skb1);
+
+        /* skb->fclone is a 2bits field.
+         * Replace expensive RMW (skb->fclone = SKB_FCLONE_ORIG)
+         * with a single OR. */
+        BUILD_BUG_ON(SKB_FCLONE_UNAVAILABLE != 0);
+        DEBUG_NET_WARN_ON_ONCE(skb->fclone != SKB_FCLONE_UNAVAILABLE);
+        skb->fclone |= SKB_FCLONE_ORIG;
+
+        refcount_set(&fclones->fclone_ref, 1);
+    }
+
+    return skb;
+
+nodata:
+    kmem_cache_free(cache, skb);
+    return NULL;
+}
+
+void *kmalloc_reserve(unsigned int *size, gfp_t flags, int node,
+                 struct sk_buff *skb)
+{
+    size_t obj_size;
+    void *obj;
+
+    obj_size = SKB_HEAD_ALIGN(*size);
+    if (obj_size <= SKB_SMALL_HEAD_CACHE_SIZE && !(flags & KMALLOC_NOT_NORMAL_BITS)) {
+        obj = kmem_cache_alloc_node(net_hotdata.skb_small_head_cache,
+                flags | __GFP_NOMEMALLOC | __GFP_NOWARN,
+                node);
+        *size = SKB_SMALL_HEAD_CACHE_SIZE;
+        if (likely(obj))
+            goto out;
+        /* Try again but now we are using pfmemalloc reserves */
+        if (skb)
+            skb->pfmemalloc = true;
+        return kmalloc_pfmemalloc(0, flags, node);
+    }
+
+    obj_size = kmalloc_size_roundup(obj_size);
+    /* The following cast might truncate high-order bits of obj_size, this
+     * is harmless because kmalloc(obj_size >= 2^32) will fail anyway. */
+    *size = (unsigned int)obj_size;
+
+    /* Try a regular allocation, when that fails and we're not entitled
+     * to the reserves, fail. */
+    obj = kmalloc_node_track_caller(obj_size,
+                    flags | __GFP_NOMEMALLOC | __GFP_NOWARN,
+                    node);
+    if (likely(obj))
+        goto out;
+
+    /* Try again but now we are using pfmemalloc reserves */
+    if (skb)
+        skb->pfmemalloc = true;
+    obj = kmalloc_pfmemalloc(obj_size, flags, node);
+out:
+    return obj;
+}
 ```
 
 ## kfree_skb_partial
@@ -4103,6 +4217,155 @@ void tcp_tasklet_func(struct tasklet_struct *t)
 
         }
     }
+}
+```
+
+## sk_wmem_schedule
+
+```c
+bool sk_wmem_schedule(struct sock *sk, int size)
+{
+    int delta;
+
+    if (!sk_has_account(sk))
+        return true;
+    delta = size - sk->sk_forward_alloc;
+    return delta <= 0 || __sk_mem_schedule(sk, delta, SK_MEM_SEND);
+}
+
+int __sk_mem_schedule(struct sock *sk, int size, int kind)
+{
+    int ret, amt = sk_mem_pages(size);
+
+    sk_forward_alloc_add(sk, amt << PAGE_SHIFT) {
+        WRITE_ONCE(sk->sk_forward_alloc, sk->sk_forward_alloc + val);
+    }
+    ret = __sk_mem_raise_allocated(sk, size, amt, kind);
+    if (!ret)
+        sk_forward_alloc_add(sk, -(amt << PAGE_SHIFT));
+    return ret;
+}
+
+int __sk_mem_raise_allocated(struct sock *sk, int size, int amt, int kind)
+{
+    bool memcg_enabled = false, charged = false;
+    struct proto *prot = sk->sk_prot;
+    long allocated = 0;
+
+    if (!sk->sk_bypass_prot_mem) {
+        sk_memory_allocated_add(sk, amt) {
+            struct proto *proto = sk->sk_prot;
+
+            val = this_cpu_add_return(*proto->per_cpu_fw_alloc, val);
+
+            if (unlikely(val >= READ_ONCE(net_hotdata.sysctl_mem_pcpu_rsv))) {
+                /* drain to per-proto mem from per-cpu mem */
+                proto_memory_pcpu_drain(proto) {
+                    int val = this_cpu_xchg(*proto->per_cpu_fw_alloc, 0);
+
+                    if (val)
+                        atomic_long_add(val, proto->memory_allocated);
+                }
+            }
+        }
+        allocated = sk_memory_allocated(sk) {
+            return proto_memory_allocated(sk->sk_prot) {
+                return max(0L, atomic_long_read(prot->memory_allocated));
+            }
+        }
+    }
+
+    if (mem_cgroup_sk_enabled(sk)) {
+        memcg_enabled = true;
+        charged = mem_cgroup_sk_charge(sk, amt, gfp_memcg_charge());
+        if (!charged)
+            goto suppress_allocation;
+    }
+
+    if (!allocated)
+        return 1;
+
+    /* Under limit. */
+    if (allocated <= sk_prot_mem_limits(sk, 0)) {
+        sk_leave_memory_pressure(sk);
+        return 1;
+    }
+
+    /* Under pressure. */
+    if (allocated > sk_prot_mem_limits(sk, 1))
+        sk_enter_memory_pressure(sk);
+
+    /* Over hard limit. */
+    if (allocated > sk_prot_mem_limits(sk, 2))
+        goto suppress_allocation;
+
+    /* Guarantee minimum buffer size under pressure (either global
+     * or memcg) to make sure features described in RFC 7323 (TCP
+     * Extensions for High Performance) work properly.
+     *
+     * This rule does NOT stand when exceeds global or memcg's hard
+     * limit, or else a DoS attack can be taken place by spawning
+     * lots of sockets whose usage are under minimum buffer size. */
+    if (kind == SK_MEM_RECV) {
+        if (atomic_read(&sk->sk_rmem_alloc) < sk_get_rmem0(sk, prot))
+            return 1;
+
+    } else { /* SK_MEM_SEND */
+        int wmem0 = sk_get_wmem0(sk, prot);
+
+        if (sk->sk_type == SOCK_STREAM) {
+            if (sk->sk_wmem_queued < wmem0)
+                return 1;
+        } else if (refcount_read(&sk->sk_wmem_alloc) < wmem0) {
+                return 1;
+        }
+    }
+
+    if (sk_has_memory_pressure(sk)) {
+        u64 alloc;
+
+        /* The following 'average' heuristic is within the
+         * scope of global accounting, so it only makes
+         * sense for global memory pressure. */
+        if (!sk_under_global_memory_pressure(sk))
+            return 1;
+
+        /* Try to be fair among all the sockets under global
+         * pressure by allowing the ones that below average
+         * usage to raise. */
+        alloc = sk_sockets_allocated_read_positive(sk);
+        if (sk_prot_mem_limits(sk, 2) > alloc *
+            sk_mem_pages(sk->sk_wmem_queued +
+                 atomic_read(&sk->sk_rmem_alloc) +
+                 sk->sk_forward_alloc))
+            return 1;
+    }
+
+suppress_allocation:
+
+    if (kind == SK_MEM_SEND && sk->sk_type == SOCK_STREAM) {
+        sk_stream_moderate_sndbuf(sk);
+
+        /* Fail only if socket is _under_ its sndbuf.
+         * In this case we cannot block, so that we have to fail. */
+        if (sk->sk_wmem_queued + size >= sk->sk_sndbuf) {
+            /* Force charge with __GFP_NOFAIL */
+            if (memcg_enabled && !charged)
+                mem_cgroup_sk_charge(sk, amt,
+                             gfp_memcg_charge() | __GFP_NOFAIL);
+            return 1;
+        }
+    }
+
+    trace_sock_exceed_buf_limit(sk, prot, allocated, kind);
+
+    if (allocated)
+        sk_memory_allocated_sub(sk, amt);
+
+    if (charged)
+        mem_cgroup_sk_uncharge(sk, amt);
+
+    return 0;
 }
 ```
 
@@ -9997,24 +10260,26 @@ void __qdisc_run(struct Qdisc *q)
 }
 
 /* net_tx_action -> qdisc_run -> __qdisc_run -> */
-int qdisc_restart(struct Qdisc *q, int *packets)
+bool qdisc_restart(struct Qdisc *q, int *packets, int budget)
 {
-    struct netdev_queue *txq;
-    struct net_device *dev;
-    spinlock_t *root_lock;
-    struct sk_buff *skb;
-    bool validate;
+	spinlock_t *root_lock = NULL;
+	struct netdev_queue *txq;
+	struct net_device *dev;
+	struct sk_buff *skb;
+	bool validate;
 
-    /* Dequeue packet */
-    skb = dequeue_skb(q, &validate, packets);
-    if (unlikely(!skb))
-        return 0;
+	/* Dequeue packet */
+	skb = dequeue_skb(q, &validate, packets, budget);
+	if (unlikely(!skb))
+		return false;
 
-    root_lock = qdisc_lock(q);
-    dev = qdisc_dev(q);
-    txq = skb_get_tx_queue(dev, skb);
+	if (!(q->flags & TCQ_F_NOLOCK))
+		root_lock = qdisc_lock(q);
 
-    return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+	dev = qdisc_dev(q);
+	txq = skb_get_tx_queue(dev, skb);
+
+	return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
 }
 
 int sch_direct_xmit(
@@ -25857,6 +26122,7 @@ void kill_fasync_rcu(struct fasync_struct *fa, int sig, int band)
 ```
 
 ## tcp_send_fin
+
 ```c
 void tcp_send_fin(struct sock *sk)
 {
@@ -29043,7 +29309,7 @@ net.core.default_qdisc = fq_codel
 ## Socket Options
 
 Option Name | Description
-- | -
+| - | - |
 SO_SNDBUF, SO_RCVBUF | Send and receive buffer sizes (these can be tuned up to the system limits described earlier; there is also SO_SNDBUFFORCE to override the send limit).
 SO_REUSEPORT | Allows multiple processes or threads to bind to the same port, allowing the kernel to distribute load across them for scalability (since Linux 3.9).
 SO_MAX_PACING_RATE | Sets the maximum pacing rate, in bytes per second (see tc-fq(8)).
