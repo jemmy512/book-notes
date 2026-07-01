@@ -25,7 +25,7 @@
 
 ---
 
-![](../images/kernel/net-read-write-route-bridge.svg)
+![](../images/kernel/net-read-write-arch.drawio.svg)
 
 * Each RX queue is associated with a separate IRQ, which can be routed to a different CPU.
 
@@ -4375,7 +4375,7 @@ suppress_allocation:
 * [How TCP output engine works](http://vger.kernel.org/~davem/tcp_output.html)
 * [[PATCH net-next v14 0/9] Device memory TCP TX](https://lore.kernel.org/20250508004830.4100853-1-almasrymina@google.com/)
 
-![](../images/kernel/net-read-write-route-bridge.svg)
+![](../images/kernel/net-read-write-arch.drawio.svg)
 
 ---
 
@@ -5345,10 +5345,26 @@ new_segment:
 * 3. skb == tcp_send_head(sk) */
 
         if (forced_push(tp)) { /* tp->write_seq > tp->pushed_seq + (tp->max_window >> 1)) */
-            tcp_mark_push(tp, skb);
-            __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH);
-        } else if (skb == tcp_send_head(sk))
-            tcp_push_one(sk, mss_now);
+            tcp_mark_push(tp, skb) {
+                TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
+	            tp->pushed_seq = tp->write_seq;
+            }
+            __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH) {
+                if (unlikely(sk->sk_state == TCP_CLOSE))
+                    return;
+
+                if (tcp_write_xmit(sk, cur_mss, nonagle, 0, sk_gfp_mask(sk, GFP_ATOMIC)))
+                    tcp_check_probe_timer(sk);
+            }
+        } else if (skb == tcp_send_head(sk)) {
+            tcp_push_one(sk, mss_now) {
+                struct sk_buff *skb = tcp_send_head(sk);
+
+                BUG_ON(!skb || skb->len < mss_now);
+
+                tcp_write_xmit(sk, mss_now, TCP_NAGLE_PUSH, 1, sk->sk_allocation);
+            }
+        }
 
         continue;
 
@@ -5824,6 +5840,7 @@ void tcp_push_one(struct sock *sk, unsigned int mss_now)
     tcp_write_xmit(sk, mss_now, TCP_NAGLE_PUSH, 1, sk->sk_allocation);
 }
 
+/* push_one: 0 = normal, 1 = send exactly one segment, 2 = loss probe. */
 bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
                int push_one, gfp_t gfp)
 {
@@ -10524,7 +10541,7 @@ ixgbe_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 | Socket Backlog Queue | Linked list | Per listen socket | Buffer pending connections | accept() |
 | Process Queue | Linked list | Per CPU | Threaded deferred processing | NAPI thread |
 
-![](../images/kernel/net-read-write-route-bridge.svg)
+![](../images/kernel/net-read-write-arch.drawio.svg)
 
 ---
 
