@@ -3969,6 +3969,120 @@ static struct sk_buff *__skb_clone(struct sk_buff *n, struct sk_buff *skb)
 }
 ```
 
+#### skb_copy_ubufs
+
+```c
+int skb_copy_ubufs(struct sk_buff *skb, gfp_t gfp_mask)
+{
+    int num_frags = skb_shinfo(skb)->nr_frags;
+    struct page *page, *head = NULL;
+    int i, order, psize, new_frags;
+    u32 d_off;
+
+    if (skb_shared(skb) || skb_unclone(skb, gfp_mask))
+        return -EINVAL;
+
+    if (!skb_frags_readable(skb))
+        return -EFAULT;
+
+    if (!num_frags)
+        goto release;
+
+    /* We might have to allocate high order pages, so compute what minimum
+     * page order is needed. */
+    order = 0;
+    while ((PAGE_SIZE << order) * MAX_SKB_FRAGS < __skb_pagelen(skb))
+        order++;
+    psize = (PAGE_SIZE << order);
+
+    new_frags = (__skb_pagelen(skb) + psize - 1) >> (PAGE_SHIFT + order);
+    for (i = 0; i < new_frags; i++) {
+        page = alloc_pages(gfp_mask | __GFP_COMP, order);
+        if (!page) {
+            while (head) {
+                struct page *next = (struct page *)page_private(head);
+                put_page(head);
+                head = next;
+            }
+            return -ENOMEM;
+        }
+        set_page_private(page, (unsigned long)head);
+        head = page;
+    }
+
+    page = head;
+    d_off = 0;
+    for (i = 0; i < num_frags; i++) {
+        skb_frag_t *f = &skb_shinfo(skb)->frags[i];
+        u32 p_off, p_len, copied;
+        struct page *p;
+        u8 *vaddr;
+
+        skb_frag_foreach_page(f, skb_frag_off(f), skb_frag_size(f), p, p_off, p_len, copied) {
+            u32 copy, done = 0;
+            vaddr = kmap_atomic(p);
+
+            while (done < p_len) {
+                if (d_off == psize) {
+                    d_off = 0;
+                    page = (struct page *)page_private(page);
+                }
+                copy = min_t(u32, psize - d_off, p_len - done);
+                memcpy(page_address(page) + d_off, vaddr + p_off + done, copy);
+                done += copy;
+                d_off += copy;
+            }
+            kunmap_atomic(vaddr);
+        }
+    }
+
+    /* skb frags release userspace buffers */
+    for (i = 0; i < num_frags; i++) {
+        skb_frag_unref(skb, i) {
+            struct skb_shared_info *shinfo = skb_shinfo(skb);
+
+            if (!skb_zcopy_managed(skb)) {
+                __skb_frag_unref(&shinfo->frags[f], skb->pp_recycle) {
+                    skb_page_unref(skb_frag_netmem(frag), recycle) {
+                        #ifdef CONFIG_PAGE_POOL
+                            if (recycle && napi_pp_put_page(netmem))
+                                return;
+                        #endif
+                            put_netmem(netmem) {
+                                if (netmem_is_net_iov(netmem))
+                                    __put_netmem(netmem);
+                                else {
+                                    put_page(netmem_to_page(netmem)) {
+                                        struct folio *folio = page_folio(page);
+
+                                        if (folio_test_slab(folio) || folio_test_large_kmalloc(folio))
+                                            return;
+
+                                        folio_put(folio);
+                                    }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+    /* skb frags point to kernel buffers */
+    for (i = 0; i < new_frags - 1; i++) {
+        __skb_fill_netmem_desc(skb, i, page_to_netmem(head), 0, psize);
+        head = (struct page *)page_private(head);
+    }
+    __skb_fill_netmem_desc(skb, new_frags - 1, page_to_netmem(head), 0,
+                   d_off);
+    skb_shinfo(skb)->nr_frags = new_frags;
+
+release:
+    skb_zcopy_clear(skb, false);
+    return 0;
+}
+```
+
 ## alloc_skb_fclone
 
 ```c
@@ -4384,10 +4498,6 @@ suppress_allocation:
 ---
 
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
-
----
-
-<img src='../images/kernel/net-write.svg'/>
 
 ## call-graph-write
 
@@ -5347,7 +5457,7 @@ new_segment:
         if (forced_push(tp)) { /* tp->write_seq > tp->pushed_seq + (tp->max_window >> 1)) */
             tcp_mark_push(tp, skb) {
                 TCP_SKB_CB(skb)->tcp_flags |= TCPHDR_PSH;
-	            tp->pushed_seq = tp->write_seq;
+                tp->pushed_seq = tp->write_seq;
             }
             __tcp_push_pending_frames(sk, mss_now, TCP_NAGLE_PUSH) {
                 if (unlikely(sk->sk_state == TCP_CLOSE))
@@ -5432,26 +5542,178 @@ out:
     }
 
 out_nopush:
-    sock_zerocopy_put(uarg);
+    /* msg->msg_ubuf is pinned by the caller so we don't take extra refs */
+    if (uarg && !msg->msg_ubuf) {
+        net_zcopy_put(uarg) {
+            if (uarg)
+                uarg->ops->complete(NULL, uarg, true);
+        }
+    }
+    if (binding)
+        net_devmem_dmabuf_binding_put(binding);
     return copied + copied_syn;
 
 do_error:
-    skb = tcp_write_queue_tail(sk);
-do_fault:
-    tcp_remove_empty_skb(sk, skb);
+    tcp_remove_empty_skb(sk) {
+        struct sk_buff *skb = tcp_write_queue_tail(sk);
+
+        if (skb && TCP_SKB_CB(skb)->seq == TCP_SKB_CB(skb)->end_seq) {
+            tcp_unlink_write_queue(skb, sk);
+            if (tcp_write_queue_empty(sk))
+                tcp_chrono_stop(sk, TCP_CHRONO_BUSY);
+
+            tcp_wmem_free_skb(sk, skb) {
+                sk_wmem_queued_add(sk, -skb->truesize);
+                if (!skb_zcopy_pure(skb))
+                    sk_mem_uncharge(sk, skb->truesize);
+                else
+                    sk_mem_uncharge(sk, SKB_TRUESIZE(skb_end_offset(skb)));
+                __kfree_skb(skb);
+            }
+        }
+    }
 
     if (copied + copied_syn)
         goto out;
+
 out_err:
-    sock_zerocopy_put_abort(uarg);
+    /* msg->msg_ubuf is pinned by the caller so we don't take extra refs */
+    if (uarg && !msg->msg_ubuf)
+        net_zcopy_put_abort(uarg, true);
     err = sk_stream_error(sk, flags, err);
     /* make sure we wake any epoll edge trigger waiter */
     if (unlikely(tcp_rtx_and_write_queues_empty(sk) && err == -EAGAIN)) {
-        sk->sk_write_space(sk);
+        READ_ONCE(sk->sk_write_space)(sk);
         tcp_chrono_stop(sk, TCP_CHRONO_SNDBUF_LIMITED);
     }
+    if (binding)
+        net_devmem_dmabuf_binding_put(binding);
 
     return err;
+}
+```
+
+#### msg_zerocopy_realloc
+
+```c
+struct ubuf_info_msgzc {
+    struct ubuf_info        ubuf;
+
+    union {
+        struct {
+            unsigned long   desc;
+            void            *ctx;
+        };
+        struct {
+            u32             id;
+            u16             len;
+            u16             zerocopy:1;
+            u32             bytelen;
+        };
+    };
+
+    struct mmpin {
+        struct user_struct  *user;
+        unsigned int        num_pg;
+    } mmp;
+};
+
+struct ubuf_info {
+    const struct ubuf_info_ops      *ops;
+    refcount_t                      refcnt;
+    u8                              flags;
+};
+
+struct ubuf_info_ops {
+    void (*complete)(struct sk_buff *, struct ubuf_info *, bool zerocopy_success);
+    /* has to be compatible with skb_zcopy_set() */
+    int (*link_skb)(struct sk_buff *skb, struct ubuf_info *uarg);
+};
+
+const struct ubuf_info_ops msg_zerocopy_ubuf_ops = {
+    .complete           = msg_zerocopy_complete,
+};
+```
+
+```c
+struct ubuf_info *msg_zerocopy_realloc(struct sock *sk, size_t size,
+                       struct ubuf_info *uarg, bool devmem)
+{
+    if (uarg) {
+        struct ubuf_info_msgzc *uarg_zc;
+        const u32 byte_limit = 1 << 19;        /* limit to a few TSO */
+        u32 bytelen, next;
+
+        /* there might be non MSG_ZEROCOPY users */
+        if (uarg->ops != &msg_zerocopy_ubuf_ops)
+            return NULL;
+
+        /* realloc only when socket is locked (TCP, UDP cork),
+         * so uarg->len and sk_zckey access is serialized */
+        if (!sock_owned_by_user(sk)) {
+            WARN_ON_ONCE(1);
+            return NULL;
+        }
+
+        uarg_zc = uarg_to_msgzc(uarg);
+        bytelen = uarg_zc->bytelen + size;
+        if (uarg_zc->len == USHRT_MAX - 1 || bytelen > byte_limit) {
+            /* TCP can create new skb to attach new uarg */
+            if (sk->sk_type == SOCK_STREAM)
+                goto new_alloc;
+            return NULL;
+        }
+
+        next = (u32)atomic_read(&sk->sk_zckey);
+        if ((u32)(uarg_zc->id + uarg_zc->len) == next) {
+            if (likely(!devmem) && mm_account_pinned_pages(&uarg_zc->mmp, size))
+                return NULL;
+            uarg_zc->len++;
+            uarg_zc->bytelen = bytelen;
+            atomic_set(&sk->sk_zckey, ++next);
+
+            /* no extra ref when appending to datagram (MSG_MORE) */
+            if (sk->sk_type == SOCK_STREAM)
+                net_zcopy_get(uarg);
+
+            return uarg;
+        }
+    }
+
+new_alloc:
+    return msg_zerocopy_alloc(sk, size, devmem);
+}
+
+struct ubuf_info *msg_zerocopy_alloc(struct sock *sk, size_t size, bool devmem)
+{
+    struct ubuf_info_msgzc *uarg;
+    struct sk_buff *skb;
+
+    WARN_ON_ONCE(!in_task());
+
+    skb = sock_omalloc(sk, 0, GFP_KERNEL);
+    if (!skb)
+        return NULL;
+
+    BUILD_BUG_ON(sizeof(*uarg) > sizeof(skb->cb));
+    uarg = (void *)skb->cb;
+    uarg->mmp.user = NULL;
+
+    if (likely(!devmem) && mm_account_pinned_pages(&uarg->mmp, size)) {
+        kfree_skb(skb);
+        return NULL;
+    }
+
+    uarg->ubuf.ops = &msg_zerocopy_ubuf_ops;
+    uarg->id = ((u32)atomic_inc_return(&sk->sk_zckey)) - 1;
+    uarg->len = 1;
+    uarg->bytelen = size;
+    uarg->zerocopy = 1;
+    uarg->ubuf.flags = SKBFL_ZEROCOPY_FRAG | SKBFL_DONT_ORPHAN;
+    refcount_set(&uarg->ubuf.refcnt, 1);
+    sock_hold(sk);
+
+    return &uarg->ubuf;
 }
 ```
 
@@ -5517,7 +5779,11 @@ int skb_zerocopy_iter_stream(struct sock *sk, struct sk_buff *skb,
         if (err)
             return err;
     } else {
-        struct ubuf_info *orig_uarg = skb_zcopy(skb);
+        struct ubuf_info *orig_uarg = skb_zcopy(skb) {
+            bool is_zcopy = skb && skb_shinfo(skb)->flags & SKBFL_ZEROCOPY_ENABLE;
+
+            return is_zcopy ? skb_uarg(skb) : NULL;
+        }
 
         /* An skb can only point to one uarg. This edge case happens
          * when TCP appends to an skb, but zerocopy_realloc triggered
@@ -5862,7 +6128,6 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
 /* 2. MTU probing (optional) */
     if (!push_one) {
-        /* Do MTU probing. */
         result = tcp_mtu_probe(sk);
         if (!result) {
             return false;
@@ -5889,7 +6154,26 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
         if (tcp_pacing_check(sk))
             break;
 
-        cwnd_quota = tcp_cwnd_test(tp);
+        cwnd_quota = tcp_cwnd_test(tp) {
+            u32 in_flight, cwnd, halfcwnd;
+
+            in_flight = tcp_packets_in_flight(tp) {
+                return tp->packets_out - tcp_left_out(tp) {
+                    return tp->sacked_out + tp->lost_out;
+                }
+                + tp->retrans_out;
+            }
+            cwnd = tcp_snd_cwnd(tp) {
+                return tp->snd_cwnd;
+            }
+            if (in_flight >= cwnd)
+                return 0;
+
+            /* For better scheduling, ensure we have at least
+             * 2 GSO packets in flight. */
+            halfcwnd = max(cwnd >> 1, 1U);
+            return min(halfcwnd, cwnd - in_flight);
+        }
         if (!cwnd_quota) {
             if (push_one == 2)
                 /* Force out a loss probe pkt. */
@@ -5904,7 +6188,17 @@ bool tcp_write_xmit(struct sock *sk, unsigned int mss_now, int nonagle,
 
         tso_segs = tcp_set_skb_tso_segs(skb, mss_now);
 
-        if (unlikely(!tcp_snd_wnd_test(tp, skb, mss_now))) {
+        ret = tcp_snd_wnd_test(tp, skb, mss_now) {
+            u32 end_seq = TCP_SKB_CB(skb)->end_seq;
+
+            if (skb->len > cur_mss)
+                end_seq = TCP_SKB_CB(skb)->seq + cur_mss;
+
+            return !after(end_seq, tcp_wnd_end(tp) {
+                return tp->snd_una + tp->snd_wnd;
+            });
+        }
+        if (unlikely(!ret)) {
             is_rwnd_limited = true;
             break;
         }
@@ -10279,24 +10573,24 @@ void __qdisc_run(struct Qdisc *q)
 /* net_tx_action -> qdisc_run -> __qdisc_run -> */
 bool qdisc_restart(struct Qdisc *q, int *packets, int budget)
 {
-	spinlock_t *root_lock = NULL;
-	struct netdev_queue *txq;
-	struct net_device *dev;
-	struct sk_buff *skb;
-	bool validate;
+    spinlock_t *root_lock = NULL;
+    struct netdev_queue *txq;
+    struct net_device *dev;
+    struct sk_buff *skb;
+    bool validate;
 
-	/* Dequeue packet */
-	skb = dequeue_skb(q, &validate, packets, budget);
-	if (unlikely(!skb))
-		return false;
+    /* Dequeue packet */
+    skb = dequeue_skb(q, &validate, packets, budget);
+    if (unlikely(!skb))
+        return false;
 
-	if (!(q->flags & TCQ_F_NOLOCK))
-		root_lock = qdisc_lock(q);
+    if (!(q->flags & TCQ_F_NOLOCK))
+        root_lock = qdisc_lock(q);
 
-	dev = qdisc_dev(q);
-	txq = skb_get_tx_queue(dev, skb);
+    dev = qdisc_dev(q);
+    txq = skb_get_tx_queue(dev, skb);
 
-	return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
+    return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
 }
 
 int sch_direct_xmit(
@@ -10550,12 +10844,6 @@ ixgbe_xmit_frame(struct sk_buff *skb, struct net_device *netdev)
 ---
 
 <img src='../images/kernel/net-filter-3.png' style='max-height:850px'/>
-
-<img src='../images/kernel/net-read-flow.png' style='max-height:850px'/>
-
----
-
-<img src='../images/kernel/net-read.svg'/>
 
 ## call-graph-read
 
@@ -13173,25 +13461,11 @@ int tcp4_gro_complete(struct sk_buff *skb, int thoff)
 
 ## dev layer rx
 
-RPS config:
-```sh
-ethtool -n <interface> # Check RSS indirection table
-echo "0xf" > /sys/class/net/<interface>/queues/rx-<N>/rps_cpus # RPS to CPU0-3
-echo "2048" > /sys/class/net/<interface>/queues/rx-<N>/rps_flow_cnt # RFS flows
-echo "4096" > /proc/sys/net/<interface>/rps_sock_flow_entries # Global RFS table
-
-static struct rx_queue_attribute rps_cpus_attribute __ro_after_init
-    = __ATTR(rps_cpus, 0644, show_rps_map, store_rps_map);
-
-static struct rx_queue_attribute rps_dev_flow_table_cnt_attribute __ro_after_init
-    = __ATTR(rps_flow_cnt, 0644,
-        show_rps_dev_flow_table_cnt, store_rps_dev_flow_table_cnt);
-```
-
 ### netif_receive_skb
 
 ```c
-
+/* netif_receive_xxx: NAPI driver
+ * netif_rx_xxx: non-NAPI driver */
 int netif_receive_skb(struct sk_buff *skb)
 {
     int ret;
@@ -13248,13 +13522,14 @@ int netif_receive_skb_internal(struct sk_buff *skb)
             noreclaim_flag = memalloc_noreclaim_save() {
                 return memalloc_flags_save(PF_MEMALLOC) {
                     unsigned oldflags = ~current->flags & flags;
-           F          return oldflags;
+                    current->flags |= flags;
+                    return oldflags;
                 }
             }
             ret = __netif_receive_skb_one_core(skb, true);
             memalloc_noreclaim_restore(noreclaim_flag);
         } else {
-            ret = __netif_receive_skb_one_core(skb, false) {
+            ret = __netif_receive_skb_one_core(skb, false/*pfmemalloc*/) {
                 struct net_device *orig_dev = skb->dev;
                 struct packet_type *pt_prev = NULL;
                 int ret;
@@ -13690,6 +13965,42 @@ bool skb_flow_limit(struct sk_buff *skb, unsigned int qlen,
             |                                 |
             |---------- get_rps_cpu() --------|
                        reconciles both
+```
+
+```sh
+ethtool -n <interface> # Check RSS indirection table
+echo "0xf" > /sys/class/net/eth0/queues/rx-<N>/rps_cpus # RPS to CPU0-3
+echo "2048" > /sys/class/net/eth0/queues/rx-<N>/rps_flow_cnt # RFS flows
+echo "4096" > /proc/sys/net/eth0/rps_sock_flow_entries # Global RFS table
+
+static struct rx_queue_attribute rps_cpus_attribute __ro_after_init
+    = __ATTR(rps_cpus, 0644, show_rps_map, store_rps_map);
+
+static struct rx_queue_attribute rps_dev_flow_table_cnt_attribute __ro_after_init
+    = __ATTR(rps_flow_cnt, 0644,
+        show_rps_dev_flow_table_cnt, store_rps_dev_flow_table_cnt);
+```
+
+```sh
+# steer every RX queue to CPU 0
+for q in /sys/class/net/eth0/queues/rx-*; do
+    echo 1 | sudo tee "$q/rps_cpus" >/dev/null
+done
+
+# check
+grep . /sys/class/net/eth0/queues/rx-*/rps_cpus
+
+# Global socket flow table (power of 2)
+echo 32768 | sudo tee /proc/sys/net/core/rps_sock_flow_entries
+
+# Per-queue flow count = 32768 / 16 = 2048, on every rx queue
+for q in /sys/class/net/eth0/queues/rx-*; do
+    echo 2048 | sudo tee "$q/rps_flow_cnt" >/dev/null
+done
+
+# Verify
+cat /proc/sys/net/core/rps_sock_flow_entries
+grep . /sys/class/net/eth0/queues/rx-*/rps_flow_cnt
 ```
 
 ```c
@@ -14184,13 +14495,15 @@ int ip_rcv_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
     struct net_device *dev = skb->dev;
     int ret;
 
-    ret = ip_rcv_finish_core(net, sk, skb, dev, NULL);
-    if (ret != NET_RX_DROP) {
-        ret = dst_input(skb) {
-            return skb_dst(skb)->input(skb);
-        }
-    }
+    /* if ingress device is enslaved to an L3 master device pass the
+     * skb to its handler for processing */
+    skb = l3mdev_ip_rcv(skb);
+    if (!skb)
+        return NET_RX_SUCCESS;
 
+    ret = ip_rcv_finish_core(net, skb, dev, NULL);
+    if (ret != NET_RX_DROP)
+        ret = dst_input(skb);
     return ret;
 }
 
@@ -14319,26 +14632,21 @@ drop_error:
 /* see at rt_dst_alloc(), rt.dst.input -> */
 int ip_local_deliver(struct sk_buff *skb)
 {
-  struct net *net = dev_net(skb->dev);
+    struct net *net = dev_net(skb->dev);
 
-  if (ip_is_fragment(ip_hdr(skb))) {
-    if (ip_defrag(net, skb, IP_DEFRAG_LOCAL_DELIVER))
-      return 0;
-  }
+    if (ip_is_fragment(ip_hdr(skb))) {
+        if (ip_defrag(net, skb, IP_DEFRAG_LOCAL_DELIVER))
+            return 0;
+    }
 
-  return NF_HOOK(NFPROTO_IPV4, NF_INET_LOCAL_IN,
-           net, NULL, skb, skb->dev, NULL,
-           ip_local_deliver_finish);
+    return NF_HOOK(NFPROTO_IPV4, NF_INET_LOCAL_IN,
+               net, NULL, skb, skb->dev, NULL,
+               ip_local_deliver_finish);
 }
 
-int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
+static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-    ret = skb_orphan_frags_rx(skb, GFP_ATOMIC) {
-        if (likely(!skb_zcopy(skb)))
-            return 0;
-        return skb_copy_ubufs(skb, gfp_mask);
-    }
-    if (unlikely(ret)) {
+    if (unlikely(skb_orphan_frags_rx(skb, GFP_ATOMIC))) {
         __IP_INC_STATS(net, IPSTATS_MIB_INDISCARDS);
         kfree_skb_reason(skb, SKB_DROP_REASON_NOMEM);
         return 0;
