@@ -21112,6 +21112,476 @@ struct dst_ops ipv4_dst_ops = {
 };
 ```
 
+# nat
+
+```c
+Packet
+  │
+  ▼
+[PRE_ROUTING / POST_ROUTING hook]
+  │
+  ▼
+nf_nat_inet_fn()
+  │
+  ├─ NEW packet ──→ get_unique_tuple()
+  │                    ├─ reuse existing src map?
+  │                    ├─ pick best IP from range
+  │                    └─ find free port
+  │               → nf_nat_setup_info()
+  │                    ├─ alter ct reply tuple  ← NAT "record"
+  │                    ├─ set IPS_SRC/DST_NAT
+  │                    └─ insert into nf_nat_bysource hash
+  │
+  └─ all packets ─→ nf_nat_packet()
+                       └─ nf_nat_manip_pkt()
+                            └─ rewrite IP+L4 headers + checksums
+```
+
+```c
+static const struct nf_hook_ops nf_nat_ipv4_ops[] = {
+    /* Before packet filtering, change destination */
+    {
+        .hook       = nf_nat_ipv4_pre_routing() {
+            nf_nat_ipv4_fn(priv, skb, state);
+        },
+        .pf         = NFPROTO_IPV4,
+        .hooknum    = NF_INET_PRE_ROUTING,
+        .priority   = NF_IP_PRI_NAT_DST,
+    },
+    /* After packet filtering, change source */
+    {
+        .hook       = nf_nat_ipv4_out() {
+                    nf_nat_ipv4_fn(priv, skb, state);
+        },
+        .pf         = NFPROTO_IPV4,
+        .hooknum    = NF_INET_POST_ROUTING,
+        .priority   = NF_IP_PRI_NAT_SRC,
+    },
+    /* Before packet filtering, change destination */
+    {
+        .hook       = nf_nat_ipv4_local_fn() {
+                    nf_nat_ipv4_fn(priv, skb, state);
+        },
+        .pf         = NFPROTO_IPV4,
+        .hooknum    = NF_INET_LOCAL_OUT,
+        .priority   = NF_IP_PRI_NAT_DST,
+    },
+    /* After packet filtering, change source */
+    {
+        .hook       = nf_nat_ipv4_local_in() {
+                    nf_nat_ipv4_fn(priv, skb, state);
+        },
+        .pf         = NFPROTO_IPV4,
+        .hooknum    = NF_INET_LOCAL_IN,
+        .priority   = NF_IP_PRI_NAT_SRC,
+    },
+};
+
+static unsigned int nf_nat_ipv4_fn(void *priv, struct sk_buff *skb,
+           const struct nf_hook_state *state)
+{
+    struct nf_conn *ct;
+    enum ip_conntrack_info ctinfo;
+
+    ct = nf_ct_get(skb, &ctinfo) {
+        unsigned long nfct = skb_get_nfct(skb) {
+            return skb->_nfct;
+        }
+
+        *ctinfo = nfct & NFCT_INFOMASK;
+        return (struct nf_conn *)(nfct & NFCT_PTRMASK);
+    }
+    if (!ct)
+        return NF_ACCEPT;
+
+    if (ctinfo == IP_CT_RELATED || ctinfo == IP_CT_RELATED_REPLY) {
+        if (ip_hdr(skb)->protocol == IPPROTO_ICMP) {
+            if (!nf_nat_icmp_reply_translation(skb, ct, ctinfo, state->hook))
+                return NF_DROP;
+            else
+                return NF_ACCEPT;
+        }
+    }
+
+    return nf_nat_inet_fn(priv, skb, state);
+}
+
+unsigned int
+nf_nat_inet_fn(void *priv, struct sk_buff *skb,
+           const struct nf_hook_state *state)
+{
+    struct nf_conn *ct;
+    enum ip_conntrack_info ctinfo;
+    struct nf_conn_nat *nat;
+    /* maniptype == SRC for postrouting. */
+    enum nf_nat_manip_type maniptype = HOOK2MANIP(state->hook);
+
+    ct = nf_ct_get(skb, &ctinfo);
+    /* Can't track?  It's not due to stress, or conntrack would
+     * have dropped it.  Hence it's the user's responsibilty to
+     * packet filter it out, or implement conntrack/NAT for that
+     * protocol. 8) --RR */
+    if (!ct || in_vrf_postrouting(state))
+        return NF_ACCEPT;
+
+    nat = nfct_nat(ct) {
+        return nf_ct_ext_find(ct, NF_CT_EXT_NAT) {
+            struct nf_ct_ext *ext = ct->ext;
+
+            if (!ext || !__nf_ct_ext_exist(ext, id) {
+                return !!ext->offset[id];
+            }) {
+                return NULL;
+            }
+
+            return (void *)ct->ext + ct->ext->offset[id];
+        }
+    }
+
+    switch (ctinfo) {
+    case IP_CT_RELATED:
+    case IP_CT_RELATED_REPLY:
+        /* Only ICMPs can be IP_CT_IS_REPLY.  Fallthrough */
+    case IP_CT_NEW:
+        /* Seen it before?  This can happen for loopback, retrans,
+         * or local packets. */
+        if (!nf_nat_initialized(ct, maniptype)) {
+            struct nf_nat_lookup_hook_priv *lpriv = priv;
+            struct nf_hook_entries *e = rcu_dereference(lpriv->entries);
+            unsigned int ret;
+            int i;
+
+            if (!e)
+                goto null_bind;
+
+            for (i = 0; i < e->num_hook_entries; i++) {
+                ret = e->hooks[i].hook(e->hooks[i].priv, skb, state);
+                if (ret != NF_ACCEPT)
+                    return ret;
+                if (nf_nat_initialized(ct, maniptype))
+                    goto do_nat;
+            }
+null_bind:
+            ret = nf_nat_alloc_null_binding(ct, state->hook) {
+                return __nf_nat_alloc_null_binding(ct, HOOK2MANIP(hooknum)) {
+                    /* Force range to this IP; let proto decide mapping for
+                    * per-proto parts (hence not IP_NAT_RANGE_PROTO_SPECIFIED).
+                    * Use reply in case it's already been mangled (eg local packet). */
+                    union nf_inet_addr ip = (manip == NF_NAT_MANIP_SRC
+                        ? ct->tuplehash[IP_CT_DIR_REPLY].tuple.dst.u3
+                        : ct->tuplehash[IP_CT_DIR_REPLY].tuple.src.u3);
+                    struct nf_nat_range2 range = {
+                        .flags          = NF_NAT_RANGE_MAP_IPS,
+                        .min_addr       = ip,
+                        .max_addr       = ip,
+                    };
+
+                    return nf_nat_setup_info(ct, &range, manip);
+                }
+            }
+            if (ret != NF_ACCEPT)
+                return ret;
+        } else {
+            if (nf_nat_oif_changed(state->hook, ctinfo, nat, state->out))
+                goto oif_changed;
+        }
+        break;
+    default:
+        /* ESTABLISHED */
+        WARN_ON(ctinfo != IP_CT_ESTABLISHED &&
+            ctinfo != IP_CT_ESTABLISHED_REPLY);
+        if (nf_nat_oif_changed(state->hook, ctinfo, nat, state->out))
+            goto oif_changed;
+    }
+do_nat:
+    return nf_nat_packet(ct, ctinfo, state->hook, skb);
+
+oif_changed:
+    nf_ct_kill_acct(ct, ctinfo, skb);
+    return NF_DROP;
+}
+
+unsigned int
+nf_nat_setup_info(struct nf_conn *ct,
+          const struct nf_nat_range2 *range,
+          enum nf_nat_manip_type maniptype)
+{
+    struct net *net = nf_ct_net(ct);
+    struct nf_conntrack_tuple curr_tuple, new_tuple;
+
+    /* Can't setup nat info for confirmed ct. */
+    if (nf_ct_is_confirmed(ct))
+        return NF_ACCEPT;
+
+    WARN_ON(maniptype != NF_NAT_MANIP_SRC &&
+        maniptype != NF_NAT_MANIP_DST);
+
+    if (WARN_ON(nf_nat_initialized(ct, maniptype)))
+        return NF_DROP;
+
+    /* What we've got will look like inverse of reply. Normally
+     * this is what is in the conntrack, except for prior
+     * manipulations (future optimization: if num_manips == 0,
+     * orig_tp = ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple) */
+    nf_ct_invert_tuple(&curr_tuple, &ct->tuplehash[IP_CT_DIR_REPLY].tuple);
+
+    get_unique_tuple(&new_tuple, &curr_tuple, range, ct, maniptype);
+
+    if (!nf_ct_tuple_equal(&new_tuple, &curr_tuple)) {
+        struct nf_conntrack_tuple reply;
+
+        /* Alter conntrack table so will recognize replies. */
+        nf_ct_invert_tuple(&reply, &new_tuple);
+        nf_conntrack_alter_reply(ct, &reply) {
+            /* Must be unconfirmed, so not in hash table yet */
+            if (WARN_ON(nf_ct_is_confirmed(ct)))
+                return;
+
+            ct->tuplehash[IP_CT_DIR_REPLY].tuple = *newreply;
+        }
+
+        /* Non-atomic: we own this at the moment. */
+        if (maniptype == NF_NAT_MANIP_SRC)
+            ct->status |= IPS_SRC_NAT;
+        else
+            ct->status |= IPS_DST_NAT;
+
+        if (nfct_help(ct) && !nfct_seqadj(ct))
+            if (!nfct_seqadj_ext_add(ct))
+                return NF_DROP;
+    }
+
+    if (maniptype == NF_NAT_MANIP_SRC) {
+        unsigned int srchash;
+        spinlock_t *lock;
+
+        srchash = hash_by_src(net, nf_ct_zone(ct), &ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple);
+        lock = &nf_nat_locks[srchash % CONNTRACK_LOCKS];
+        spin_lock_bh(lock);
+        hlist_add_head_rcu(&ct->nat_bysource, &nf_nat_bysource[srchash]);
+        spin_unlock_bh(lock);
+    }
+
+    /* It's done. */
+    if (maniptype == NF_NAT_MANIP_DST)
+        ct->status |= IPS_DST_NAT_DONE;
+    else
+        ct->status |= IPS_SRC_NAT_DONE;
+
+    return NF_ACCEPT;
+}
+```
+
+## get_unique_tuple
+
+```c
+static void
+get_unique_tuple(struct nf_conntrack_tuple *tuple,
+         const struct nf_conntrack_tuple *orig_tuple,
+         const struct nf_nat_range2 *range,
+         struct nf_conn *ct,
+         enum nf_nat_manip_type maniptype)
+{
+    const struct nf_conntrack_zone *zone;
+    struct net *net = nf_ct_net(ct);
+
+    zone = nf_ct_zone(ct);
+
+    /* 1) If this srcip/proto/src-proto-part is currently mapped,
+     * and that same mapping gives a unique tuple within the given
+     * range, use that.
+     *
+     * This is only required for source (ie. NAT/masq) mappings.
+     * So far, we don't do local source mappings, so multiple
+     * manips not an issue. */
+    if (maniptype == NF_NAT_MANIP_SRC &&
+        !(range->flags & NF_NAT_RANGE_PROTO_RANDOM_ALL)) {
+        /* try the original tuple first */
+        if (nf_in_range(orig_tuple, range)) {
+            if (!nf_nat_used_tuple_new(orig_tuple, ct)) {
+                *tuple = *orig_tuple;
+                return;
+            }
+        } else if (find_appropriate_src(net, zone, orig_tuple, tuple, range)) {
+            pr_debug("get_unique_tuple: Found current src map\n");
+            if (!nf_nat_used_tuple(tuple, ct))
+                return;
+        }
+    }
+
+    /* 2) Select the least-used IP/proto combination in the given range */
+    *tuple = *orig_tuple;
+    find_best_ips_proto(zone, tuple, range, ct, maniptype);
+
+    /* 3) The per-protocol part of the manip is made to map into
+     * the range to make a unique tuple. */
+
+    /* Only bother mapping if it's not already in range and unique */
+    if (!(range->flags & NF_NAT_RANGE_PROTO_RANDOM_ALL)) {
+        if (range->flags & NF_NAT_RANGE_PROTO_SPECIFIED) {
+            if (!(range->flags & NF_NAT_RANGE_PROTO_OFFSET) &&
+                l4proto_in_range(tuple, maniptype,
+                         &range->min_proto,
+                         &range->max_proto) &&
+                (range->min_proto.all == range->max_proto.all ||
+                 !nf_nat_used_tuple(tuple, ct)))
+                return;
+        } else if (!nf_nat_used_tuple(tuple, ct)) {
+            return;
+        }
+    }
+
+    /* Last chance: get protocol to try to obtain unique tuple. */
+    nf_nat_l4proto_unique_tuple(tuple, range, maniptype, ct);
+}
+```
+
+## nf_nat_packet
+
+```c
+unsigned int nf_nat_packet(struct nf_conn *ct,
+               enum ip_conntrack_info ctinfo,
+               unsigned int hooknum,
+               struct sk_buff *skb)
+{
+    enum nf_nat_manip_type mtype = HOOK2MANIP(hooknum);
+    enum ip_conntrack_dir dir = CTINFO2DIR(ctinfo);
+    unsigned int verdict = NF_ACCEPT;
+    unsigned long statusbit;
+
+    if (mtype == NF_NAT_MANIP_SRC)
+        statusbit = IPS_SRC_NAT;
+    else
+        statusbit = IPS_DST_NAT;
+
+    /* Invert if this is reply dir. */
+    if (dir == IP_CT_DIR_REPLY)
+        statusbit ^= IPS_NAT_MASK;
+
+    /* Non-atomic: these bits don't change. */
+    if (ct->status & statusbit) {
+        verdict = nf_nat_manip_pkt(skb, ct, mtype, dir) {
+            struct nf_conntrack_tuple target;
+
+            /* We are aiming to look like inverse of other direction. */
+            nf_ct_invert_tuple(&target, &ct->tuplehash[!dir].tuple);
+
+            switch (target.src.l3num) {
+            case NFPROTO_IPV6:
+                if (nf_nat_ipv6_manip_pkt(skb, 0, &target, mtype))
+                    return NF_ACCEPT;
+                break;
+            case NFPROTO_IPV4:
+                if (nf_nat_ipv4_manip_pkt(skb, 0, &target, mtype))
+                    return NF_ACCEPT;
+                break;
+            default:
+                WARN_ON_ONCE(1);
+                break;
+            }
+
+            return NF_DROP;
+        }
+    }
+
+    return verdict;
+}
+
+bool nf_nat_ipv4_manip_pkt(struct sk_buff *skb,
+                  unsigned int iphdroff,
+                  const struct nf_conntrack_tuple *target,
+                  enum nf_nat_manip_type maniptype)
+{
+    struct iphdr *iph;
+    unsigned int hdroff;
+
+    if (skb_ensure_writable(skb, iphdroff + sizeof(*iph)))
+        return false;
+
+    iph = (void *)skb->data + iphdroff;
+    hdroff = iphdroff + iph->ihl * 4;
+
+    if (!l4proto_manip_pkt(skb, iphdroff, hdroff, target, maniptype))
+        return false;
+    iph = (void *)skb->data + iphdroff;
+
+    if (maniptype == NF_NAT_MANIP_SRC) {
+        csum_replace4(&iph->check, iph->saddr, target->src.u3.ip);
+        iph->saddr = target->src.u3.ip;
+    } else {
+        csum_replace4(&iph->check, iph->daddr, target->dst.u3.ip);
+        iph->daddr = target->dst.u3.ip;
+    }
+    return true;
+}
+
+bool l4proto_manip_pkt(struct sk_buff *skb,
+                  unsigned int iphdroff, unsigned int hdroff,
+                  const struct nf_conntrack_tuple *tuple,
+                  enum nf_nat_manip_type maniptype)
+{
+    switch (tuple->dst.protonum) {
+    case IPPROTO_TCP:
+        return tcp_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    case IPPROTO_UDP:
+        return udp_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    case IPPROTO_SCTP:
+        return sctp_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    case IPPROTO_ICMP:
+        return icmp_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    case IPPROTO_ICMPV6:
+        return icmpv6_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    case IPPROTO_GRE:
+        return gre_manip_pkt(skb, iphdroff, hdroff, tuple, maniptype);
+    }
+
+    /* If we don't know protocol -- no error, pass it unmodified. */
+    return true;
+}
+
+bool
+tcp_manip_pkt(struct sk_buff *skb,
+          unsigned int iphdroff, unsigned int hdroff,
+          const struct nf_conntrack_tuple *tuple,
+          enum nf_nat_manip_type maniptype)
+{
+    struct tcphdr *hdr;
+    __be16 *portptr, newport, oldport;
+    int hdrsize = 8; /* TCP connection tracking guarantees this much */
+
+    /* this could be a inner header returned in icmp packet; in such
+       cases we cannot update the checksum field since it is outside of
+       the 8 bytes of transport layer headers we are guaranteed */
+    if (skb->len >= hdroff + sizeof(struct tcphdr))
+        hdrsize = sizeof(struct tcphdr);
+
+    if (skb_ensure_writable(skb, hdroff + hdrsize))
+        return false;
+
+    hdr = (struct tcphdr *)(skb->data + hdroff);
+
+    if (maniptype == NF_NAT_MANIP_SRC) {
+        /* Get rid of src port */
+        newport = tuple->src.u.tcp.port;
+        portptr = &hdr->source;
+    } else {
+        /* Get rid of dst port */
+        newport = tuple->dst.u.tcp.port;
+        portptr = &hdr->dest;
+    }
+
+    oldport = *portptr;
+    *portptr = newport;
+
+    if (hdrsize < sizeof(*hdr))
+        return true;
+
+    nf_csum_update(skb, iphdroff, &hdr->check, tuple, maniptype);
+    inet_proto_csum_replace2(&hdr->check, skb, oldport, newport, false);
+    return true;
+}
+```
+
 # bridge
 
 <img src='../images/kernel/net-bridge.svg' style='max-height:850px'/>
