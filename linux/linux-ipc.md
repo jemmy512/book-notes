@@ -1146,7 +1146,7 @@ ret:
 }
 ```
 
-* [try_to_wake_up](#ttwu)
+* [try_to_wake_up](./linux-proc.md#try_to_wake_up)
 
 ## arch_do_signal_or_restart
 
@@ -1293,223 +1293,33 @@ static void __exit_to_user_mode_prepare(struct pt_regs *regs, u32 cached_flags)
 
 static void arch_do_signal_or_restart(struct pt_regs *regs)
 {
-    unsigned long continue_addr = 0, restart_addr = 0;
-    int retval = 0;
     struct ksignal ksig;
-    bool syscall = in_syscall(regs) {
-        return regs->syscallno != NO_SYSCALL;
+
+    if (get_signal(&ksig)) {
+        handle_signal(&ksig, regs);
+        return;
     }
 
-    /* If we were from a system call, check for system call restarting... */
-    if (syscall) {
-        continue_addr = regs->pc;
-        restart_addr = continue_addr - (compat_thumb_mode(regs) ? 2 : 4);
-        retval = regs->regs[0];
-
-        /* Avoid additional syscall restarting via ret_to_user. */
-        forget_syscall(regs);
-
-        /* Prepare for system call restart. We do this here so that a
-         * debugger will see the already changed PC. */
-        switch (retval) {
+    /* Did we come from a system call? */
+    if (syscall_get_nr(current, regs) != -1) {
+        /* Restart the system call - no handlers present */
+        switch (syscall_get_error(current, regs)) {
         case -ERESTARTNOHAND:
         case -ERESTARTSYS:
         case -ERESTARTNOINTR:
+            regs->ax = regs->orig_ax;
+            regs->ip -= 2;
+            break;
+
         case -ERESTART_RESTARTBLOCK:
-            regs->regs[0] = regs->orig_x0;
-            regs->pc = restart_addr;
+            regs->ax = get_nr_restart_syscall(regs);
+            regs->ip -= 2;
             break;
         }
     }
 
-    if (get_signal(&ksig)) {
-        if (regs->pc == restart_addr
-            && (retval == -ERESTARTNOHAND
-                || retval == -ERESTART_RESTARTBLOCK
-                || (retval == -ERESTARTSYS && !(ksig.ka.sa.sa_flags & SA_RESTART)))) {
-
-            syscall_set_return_value(current, regs, -EINTR, 0);
-            regs->pc = continue_addr;
-        }
-
-        handle_signal(struct ksignal *ksig, struct pt_regs *regs) {
-            sigset_t *oldset = sigmask_to_save();
-            int usig = ksig->sig;
-
-            if (syscall_get_nr(current, regs) >= 0) {
-                switch (syscall_get_error(current, regs)) {
-                case -ERESTART_RESTARTBLOCK:
-                case -ERESTARTNOHAND:
-                    regs->ax = -EINTR;
-                    break;
-                case -ERESTARTSYS:
-                    if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
-                        regs->ax = -EINTR;
-                        break;
-                    }
-                    /* fallthrough */
-                case -ERESTARTNOINTR:
-                    regs->ax = regs->orig_ax;
-                    regs->ip -= 2;
-                    break;
-                }
-            }
-
-            ret = setup_rt_frame(usig, ksig, oldset, regs) {
-                struct rt_sigframe_user_layout user;
-                struct rt_sigframe __user *frame;
-                int err = 0;
-
-                fpsimd_signal_preserve_current_state();
-
-                ret = get_sigframe(&user, ksig, regs) {
-                    unsigned long sp, sp_top;
-                    int err;
-
-                    init_user_layout(user);
-                    err = setup_sigframe_layout(user, false);
-                    if (err)
-                        return err;
-
-                    sp = sp_top = sigsp(regs->sp, ksig) {
-                        /* ss: signal stack */
-                        if (unlikely((ksig->ka.sa.sa_flags & SA_ONSTACK)) && ! sas_ss_flags(sp)) {
-                            #ifdef CONFIG_STACK_GROWSUP
-                                return current->sas_ss_sp;
-                            #else
-                                return current->sas_ss_sp + current->sas_ss_size;
-                            #endif
-                        }
-                        return sp;
-                    }
-
-                    sp = round_down(sp - sizeof(struct frame_record), 16);
-                    user->next_frame = (struct frame_record __user *)sp;
-
-                    /* alloc sig frame on stack */
-                    sp = round_down(sp, 16) - sigframe_size(user);
-                    user->sigframe = (struct rt_sigframe __user *)sp;
-
-                    if (!access_ok(user->sigframe, sp_top - sp))
-                        return -EFAULT;
-
-                    return 0;
-                }
-                if (ret) {
-                    return 1;
-                }
-
-                frame = user.sigframe;
-
-                __put_user_error(0, &frame->uc.uc_flags, err);
-                __put_user_error(NULL, &frame->uc.uc_link, err);
-
-                err |= __save_altstack(&frame->uc.uc_stack, regs->sp);
-
-                err |= setup_sigframe(&user, regs, set) {
-                    int i, err = 0;
-                    struct rt_sigframe __user *sf = user->sigframe;
-
-                    /* set up the stack frame for unwinding */
-                    __put_user_error(regs->regs[29], &user->next_frame->fp, err);
-                    __put_user_error(regs->regs[30], &user->next_frame->lr, err);
-
-                    for (i = 0; i < 31; i++) {
-                        __put_user_error(regs->regs[i], &sf->uc.uc_mcontext.regs[i], err);
-                    }
-                    __put_user_error(regs->sp, &sf->uc.uc_mcontext.sp, err);
-                    __put_user_error(regs->pc, &sf->uc.uc_mcontext.pc, err);
-                    __put_user_error(regs->pstate, &sf->uc.uc_mcontext.pstate, err);
-
-                    __put_user_error(current->thread.fault_address, &sf->uc.uc_mcontext.fault_address, err);
-
-                    err |= __copy_to_user(&sf->uc.uc_sigmask, set, sizeof(*set));
-
-                    /* set the "end" magic */
-                    if (err == 0) {
-                        struct _aarch64_ctx __user *end =
-                            apply_user_offset(user, user->end_offset);
-
-                        __put_user_error(0, &end->magic, err);
-                        __put_user_error(0, &end->size, err);
-                    }
-
-                    return err;
-                }
-
-                if (err == 0) {
-                    setup_return(regs, &ksig->ka, &user, usig) {
-                        __sigrestore_t sigtramp;
-
-                        regs->regs[0] = usig;
-                        regs->sp = (unsigned long)user->sigframe;
-                        regs->regs[29] = (unsigned long)&user->next_frame->fp;
-                        regs->pc = (unsigned long)ka->sa.sa_handler;
-
-                        if (system_supports_bti()) {
-                            regs->pstate &= ~PSR_BTYPE_MASK;
-                            regs->pstate |= PSR_BTYPE_C;
-                        }
-
-                        /* TCO (Tag Check Override) always cleared for signal handlers */
-                        regs->pstate &= ~PSR_TCO_BIT;
-
-                        /* Signal handlers are invoked with ZA and streaming mode disabled */
-                        if (system_supports_sme()) {
-                            if (current->thread.svcr & SVCR_SM_MASK) {
-                                memset(&current->thread.uw.fpsimd_state, 0,
-                                    sizeof(current->thread.uw.fpsimd_state));
-                                current->thread.fp_type = FP_STATE_FPSIMD;
-                            }
-
-                            current->thread.svcr &= ~(SVCR_ZA_MASK |
-                                        SVCR_SM_MASK);
-                            sme_smstop();
-                        }
-
-                        if (ka->sa.sa_flags & SA_RESTORER) {
-                            sigtramp = ka->sa.sa_restorer;
-                        } else {
-                            sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp) {
-                                SYM_CODE_START(__kernel_rt_sigreturn)
-                                    mov    x8, #__NR_rt_sigreturn /* call rt_sigreturn */
-                                    svc    #0
-                                SYM_CODE_END(__kernel_rt_sigreturn)
-                            }
-                        }
-
-                        regs->regs[30] = (unsigned long)sigtramp;
-                    }
-
-                    if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
-                        err |= copy_siginfo_to_user(&frame->info, &ksig->info);
-                        regs->regs[1] = (unsigned long)&frame->info;
-                        regs->regs[2] = (unsigned long)&frame->uc;
-                    }
-                }
-
-                return err;
-            }
-            failed = (ret < 0);
-
-            signal_setup_done(failed, ksig, stepping) {
-                if (failed)
-                    force_sigsegv(ksig->sig);
-                else
-                    signal_delivered(ksig, stepping);
-            }
-        }
-        return;
-    }
-
-    /* Handle restarting a different system call. As above, if a debugger
-     * has chosen to restart at a different PC, ignore the restart. */
-    if (syscall && regs->pc == restart_addr) {
-        if (retval == -ERESTART_RESTARTBLOCK)
-            setup_restart_syscall(regs);
-        user_rewind_single_step(current);
-    }
-
+    /* If there's no signal to deliver, we just put the saved sigmask
+     * back. */
     restore_saved_sigmask();
 }
 ```
@@ -1529,6 +1339,15 @@ bool get_signal(struct ksignal *ksig)
 
     if (!task_sigpending(current))
         return false;
+
+    if (unlikely(uprobe_deny_signal()))
+        return false;
+
+    /* Do this once, we can't return to user-mode if freezing() == T.
+     * do_signal_stop() and ptrace_stop() set TASK_STOPPED/TASK_TRACED
+     * and the freezer handles those states via TASK_FROZEN, thus they
+     * do not need another check after return. */
+    try_to_freeze();
 
 relock:
     spin_lock_irq(&sighand->siglock);
@@ -1567,7 +1386,12 @@ relock:
             clear_siginfo(&ksig->info);
             ksig->info.si_signo = signr = SIGKILL;
             sigdelset(&current->pending.signal, SIGKILL);
-            recalc_sigpending();
+            recalc_sigpending() {
+                if (!recalc_sigpending_tsk(current) && !freezing(current)) {
+                    if (unlikely(test_thread_flag(TIF_SIGPENDING)))
+                        clear_thread_flag(TIF_SIGPENDING);
+                }
+            }
             goto fatal;
         }
 
@@ -1587,7 +1411,7 @@ relock:
 
         /* If the task is leaving the frozen state, let's update
          * cgroup counters and reset the frozen bit. */
-        if (unlikely(cgroup_task_frozen(current))) {
+        if (unlikely(cgroup_task_frozen(current))) { /* return task->frozen; */
             spin_unlock_irq(&sighand->siglock);
             cgroup_leave_frozen(false);
             goto relock;
@@ -1654,9 +1478,7 @@ relock:
                 spin_lock_irq(&sighand->siglock);
             }
 
-            ret = do_signal_stop(ksig->info.si_signo) {
-
-            }
+            ret = do_signal_stop(ksig->info.si_signo);
             if (likely(ret)) {
                 /* It released the siglock.  */
                 goto relock;
@@ -1683,7 +1505,7 @@ relock:
              * thread getting here, it set group_exit_code
              * first and our do_group_exit call below will use
              * that value and ignore the one we pass it. */
-            do_coredump(&ksig->info);
+            vfs_coredump(&ksig->info);
         }
 
         /* PF_USER_WORKER threads will catch and exit on fatal signals
@@ -1736,15 +1558,344 @@ relock:
         /* NOTREACHED */
     }
     spin_unlock_irq(&sighand->siglock);
-out:
+
     ksig->sig = signr;
 
-    if (!(ksig->ka.sa.sa_flags & SA_EXPOSE_TAGBITS))
-        hide_si_addr_tag_bits(ksig);
-
-    return ksig->sig > 0;
+	if (signr && !(ksig->ka.sa.sa_flags & SA_EXPOSE_TAGBITS))
+		hide_si_addr_tag_bits(ksig);
+out:
+	return signr > 0;
 }
 ```
+
+### handle_signal
+
+```c
+static void handle_signal(struct ksignal *ksig, struct pt_regs *regs) {
+    sigset_t *oldset = sigmask_to_save();
+    int usig = ksig->sig;
+    int ret;
+
+    rseq_signal_deliver(ksig, regs);
+
+    /* Set up the stack frame */
+    if (is_compat_task()) {
+        if (ksig->ka.sa.sa_flags & SA_SIGINFO)
+            ret = compat_setup_rt_frame(usig, ksig, oldset, regs);
+        else
+            ret = compat_setup_frame(usig, ksig, oldset, regs);
+    } else {
+        ret = setup_rt_frame(usig, ksig, oldset, regs);
+    }
+
+    /* Check that the resulting registers are actually sane. */
+    ret |= !valid_user_regs(&regs->user_regs, current);
+
+    signal_setup_done(ret, ksig, test_thread_flag(TIF_SINGLESTEP)) {
+        if (failed)
+            force_sigsegv(ksig->sig);
+        else
+            signal_delivered(ksig, stepping);
+    }
+}
+
+int setup_rt_frame(int usig, struct ksignal *ksig, sigset_t *set,
+              struct pt_regs *regs) {
+    struct rt_sigframe_user_layout user;
+    struct rt_sigframe __user *frame;
+    int err = 0;
+
+    fpsimd_signal_preserve_current_state();
+
+    ret = get_sigframe(&user, ksig, regs) {
+        unsigned long sp, sp_top;
+        int err;
+
+        init_user_layout(user);
+        err = setup_sigframe_layout(user, false);
+        if (err)
+            return err;
+
+        sp = sp_top = sigsp(regs->sp, ksig) {
+            /* ss: signal stack */
+            if (unlikely((ksig->ka.sa.sa_flags & SA_ONSTACK)) && ! sas_ss_flags(sp)) {
+                #ifdef CONFIG_STACK_GROWSUP
+                    return current->sas_ss_sp;
+                #else
+                    return current->sas_ss_sp + current->sas_ss_size;
+                #endif
+            }
+            return sp;
+        }
+
+        sp = round_down(sp - sizeof(struct frame_record), 16);
+        user->next_frame = (struct frame_record __user *)sp;
+
+        /* alloc sig frame on stack */
+        sp = round_down(sp, 16) - sigframe_size(user);
+        user->sigframe = (struct rt_sigframe __user *)sp;
+
+        if (!access_ok(user->sigframe, sp_top - sp))
+            return -EFAULT;
+
+        return 0;
+    }
+    if (ret) {
+        return 1;
+    }
+
+    save_reset_user_access_state(&ua_state);
+    frame = user.sigframe;
+
+    __put_user_error(0, &frame->uc.uc_flags, err);
+    __put_user_error(NULL, &frame->uc.uc_link, err);
+
+    err |= __save_altstack(&frame->uc.uc_stack, regs->sp);
+
+    err |= setup_sigframe(&user, regs, set) {
+        int i, err = 0;
+        struct rt_sigframe __user *sf = user->sigframe;
+
+        /* set up the stack frame for unwinding */
+        __put_user_error(regs->regs[29], &user->next_frame->fp, err);
+        __put_user_error(regs->regs[30], &user->next_frame->lr, err);
+
+        for (i = 0; i < 31; i++) {
+            __put_user_error(regs->regs[i], &sf->uc.uc_mcontext.regs[i], err);
+        }
+        __put_user_error(regs->sp, &sf->uc.uc_mcontext.sp, err);
+        __put_user_error(regs->pc, &sf->uc.uc_mcontext.pc, err);
+        __put_user_error(regs->pstate, &sf->uc.uc_mcontext.pstate, err);
+
+        __put_user_error(current->thread.fault_address, &sf->uc.uc_mcontext.fault_address, err);
+
+        err |= __copy_to_user(&sf->uc.uc_sigmask, set, sizeof(*set));
+
+        /* set the "end" magic */
+        if (err == 0) {
+            struct _aarch64_ctx __user *end =
+                apply_user_offset(user, user->end_offset);
+
+            __put_user_error(0, &end->magic, err);
+            __put_user_error(0, &end->size, err);
+        }
+
+        return err;
+    }
+
+    if (ksig->ka.sa.sa_flags & SA_SIGINFO)
+        err |= copy_siginfo_to_user(&frame->info, &ksig->info);
+
+    if (err == 0) {
+        setup_return(regs, &ksig->ka, &user, usig) {
+            __sigrestore_t sigtramp;
+            int err;
+
+            if (ksig->ka.sa.sa_flags & SA_RESTORER) {
+                sigtramp = ksig->ka.sa.sa_restorer;
+            } else {
+                sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp)  {
+                    SYM_CODE_START(__kernel_rt_sigreturn)
+                        mov    x8, #__NR_rt_sigreturn /* call rt_sigreturn */
+                        svc    #0
+                    SYM_CODE_END(__kernel_rt_sigreturn)
+                }
+            }
+
+            err = gcs_signal_entry(sigtramp, ksig);
+            if (err)
+                return err;
+
+            regs->regs[0] = usig;
+            if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
+                regs->regs[1] = (unsigned long)&user->sigframe->info;
+                regs->regs[2] = (unsigned long)&user->sigframe->uc;
+            }
+            regs->sp = (unsigned long)user->sigframe;
+            regs->regs[29] = (unsigned long)&user->next_frame->fp;
+            regs->regs[30] = (unsigned long)sigtramp;
+            regs->pc = (unsigned long)ksig->ka.sa.sa_handler;
+
+            /* Signal delivery is a (wacky) indirect function call in
+            * userspace, so simulate the same setting of BTYPE as a BLR
+            * <register containing the signal handler entry point>.
+            * Signal delivery to a location in a PROT_BTI guarded page
+            * that is not a function entry point will now trigger a
+            * SIGILL in userspace.
+            *
+            * If the signal handler entry point is not in a PROT_BTI
+            * guarded page, this is harmless. */
+            if (system_supports_bti()) {
+                regs->pstate &= ~PSR_BTYPE_MASK;
+                regs->pstate |= PSR_BTYPE_C;
+            }
+
+            /* TCO (Tag Check Override) always cleared for signal handlers */
+            regs->pstate &= ~PSR_TCO_BIT;
+
+            /* Signal handlers are invoked with ZA and streaming mode disabled */
+            if (system_supports_sme()) {
+                task_smstop_sm(current);
+                current->thread.svcr &= ~SVCR_ZA_MASK;
+                write_sysreg_s(0, SYS_TPIDR2_EL0);
+            }
+
+            return 0;
+        }
+    }
+
+    if (err == 0)
+        set_handler_user_access_state();
+    else
+        restore_user_access_state(&ua_state);
+
+    return err;
+}
+```
+
+### ptrace_signal
+
+```c
+int ptrace_signal(int signr, kernel_siginfo_t *info, enum pid_type type)
+{
+    /* We do not check sig_kernel_stop(signr) but set this marker
+     * unconditionally because we do not know whether debugger will
+     * change signr. This flag has no meaning unless we are going
+     * to stop after return from ptrace_stop(). In this case it will
+     * be checked in do_signal_stop(), we should only stop if it was
+     * not cleared by SIGCONT while we were sleeping. See also the
+     * comment in dequeue_signal(). */
+    current->jobctl |= JOBCTL_STOP_DEQUEUED;
+    signr = ptrace_stop(signr, CLD_TRAPPED, 0, info);
+
+    /* We're back.  Did the debugger cancel the sig?  */
+    if (signr == 0)
+        return signr;
+
+    /* Update the siginfo structure if the signal has
+     * changed.  If the debugger wanted something
+     * specific in the siginfo structure then it should
+     * have updated *info via PTRACE_SETSIGINFO. */
+    if (signr != info->si_signo) {
+        clear_siginfo(info);
+        info->si_signo = signr;
+        info->si_errno = 0;
+        info->si_code = SI_USER;
+        rcu_read_lock();
+        info->si_pid = task_pid_vnr(current->parent);
+        info->si_uid = from_kuid_munged(current_user_ns(),
+                        task_uid(current->parent));
+        rcu_read_unlock();
+    }
+
+    /* If the (new) signal is now blocked, requeue it.  */
+    if (sigismember(&current->blocked, signr) ||
+        fatal_signal_pending(current)) {
+        send_signal_locked(signr, info, current, type);
+        signr = 0;
+    }
+
+    return signr;
+}
+```
+
+### do_signal_stop
+
+```c
+bool do_signal_stop(int signr)
+    __releases(&current->sighand->siglock)
+{
+    struct signal_struct *sig = current->signal;
+
+    if (!(current->jobctl & JOBCTL_STOP_PENDING)) {
+        unsigned long gstop = JOBCTL_STOP_PENDING | JOBCTL_STOP_CONSUME;
+        struct task_struct *t;
+
+        /* signr will be recorded in task->jobctl for retries */
+        WARN_ON_ONCE(signr & ~JOBCTL_STOP_SIGMASK);
+
+        if (!likely(current->jobctl & JOBCTL_STOP_DEQUEUED) ||
+            unlikely(sig->flags & SIGNAL_GROUP_EXIT) ||
+            unlikely(sig->group_exec_task))
+            return false;
+        /* There is no group stop already in progress.  We must
+         * initiate one now.
+         *
+         * While ptraced, a task may be resumed while group stop is
+         * still in effect and then receive a stop signal and
+         * initiate another group stop.  This deviates from the
+         * usual behavior as two consecutive stop signals can't
+         * cause two group stops when !ptraced.  That is why we
+         * also check !task_is_stopped(t) below.
+         *
+         * The condition can be distinguished by testing whether
+         * SIGNAL_STOP_STOPPED is already set.  Don't generate
+         * group_exit_code in such case.
+         *
+         * This is not necessary for SIGNAL_STOP_CONTINUED because
+         * an intervening stop signal is required to cause two
+         * continued events regardless of ptrace. */
+        if (!(sig->flags & SIGNAL_STOP_STOPPED))
+            sig->group_exit_code = signr;
+
+        sig->group_stop_count = 0;
+        if (task_set_jobctl_pending(current, signr | gstop))
+            sig->group_stop_count++;
+
+        for_other_threads(current, t) {
+            /* Setting state to TASK_STOPPED for a group
+             * stop is always done with the siglock held,
+             * so this check has no races. */
+            if (!task_is_stopped(t) && task_set_jobctl_pending(t, signr | gstop)) {
+                sig->group_stop_count++;
+                if (likely(!(t->ptrace & PT_SEIZED)))
+                    signal_wake_up(t, 0);
+                else
+                    ptrace_trap_notify(t);
+            }
+        }
+    }
+
+    if (likely(!current->ptrace)) {
+        int notify = 0;
+
+        /* If there are no other threads in the group, or if there
+         * is a group stop in progress and we are the last to stop,
+         * report to the parent. */
+        if (task_participate_group_stop(current))
+            notify = CLD_STOPPED;
+
+        current->jobctl |= JOBCTL_STOPPED;
+        set_special_state(TASK_STOPPED);
+        spin_unlock_irq(&current->sighand->siglock);
+
+        /* Notify the parent of the group stop completion.  Because
+         * we're not holding either the siglock or tasklist_lock
+         * here, ptracer may attach inbetween; however, this is for
+         * group stop and should always be delivered to the real
+         * parent of the group leader.  The new ptracer will get
+         * its notification when this task transitions into
+         * TASK_TRACED. */
+        if (notify) {
+            read_lock(&tasklist_lock);
+            do_notify_parent_cldstop(current, false, notify);
+            read_unlock(&tasklist_lock);
+        }
+
+        /* Now we don't run again until woken by SIGCONT or SIGKILL */
+        cgroup_enter_frozen();
+        schedule();
+        return true;
+    } else {
+        /* While ptraced, group stop is handled by STOP trap.
+         * Schedule it and let the caller deal with it. */
+        task_set_jobctl_pending(current, JOBCTL_TRAP_STOP);
+        return false;
+    }
+}
+```
+
+### vfs_coredump
 
 ## rt_sigreturn
 
