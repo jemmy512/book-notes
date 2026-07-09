@@ -2014,6 +2014,96 @@ static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
 
 #### cgroup_rmdir
 
+```sh
+# Stage 1 — kill_css(): Initiate Destruction
+userspace: rmdir /sys/fs/cgroup/memory/foo
+    │
+    └─ kernfs → cgroup_rmdir()                         cgroup.c:5981
+        └─ cgroup_destroy_locked()                   cgroup.c:5908
+            │
+            ├─ checks: no tasks (populated=0), no online children
+            │
+            ├─ for_each_css(css, ssid, cgrp):
+            │    kill_css(css)                      cgroup.c:5850
+            │      css->flags |= CSS_DYING
+            │      css_get(css)  ← take extra ref to keep alive until css_offline
+            │      percpu_ref_kill_and_confirm(
+            │        &css->refcnt,
+            │        css_killed_ref_fn)   ← fires when killed on ALL CPUs
+            │
+            └─ percpu_ref_kill(&cgrp->self.refcnt)
+
+# Stage 2 — css_offline (mem_cgroup_css_offline): Go Offline
+
+percpu_ref confirmed killed on all CPUs
+    │
+    └─ css_killed_ref_fn()                             cgroup.c:5830
+        atomic_dec_and_test(&css->online_cnt)
+        │
+        └─ INIT_WORK(&css->destroy_work, css_killed_work_fn)
+            queue_work(cgroup_offline_wq, ...)   ← flags=0, NOT WQ_FREEZABLE
+                │
+                └─ css_killed_work_fn()              cgroup.c:5812
+                    cgroup_lock()
+                    do {
+                        offline_css(css)             cgroup.c:5532
+                        │
+                        └─ ss->css_offline(css)
+                                mem_cgroup_css_offline()  ← called HERE
+                                    event cleanup
+                                    page_counter reset
+                                    memcg_offline_kmem()
+                                    wb_memcg_offline()
+                                    drain_all_stock()
+                                    mem_cgroup_id_put()
+                                    ← NO cancel of pgcache_limit_work!
+                                    ← NO clear of allow_pgcache_limit!
+                            css->flags &= ~CSS_ONLINE
+                            css->cgroup->subsys[ss->id] = NULL
+
+                        css_put(css)  ← drop the extra ref from kill_css()
+                            │           ← if this is the LAST ref, triggers:
+                            └─ css_release()  (refcount → 0)
+                    } while (parent && online_cnt reaches 0)
+
+# Stage 3 — css_release: Schedule RCU Callback
+
+css_put(css)  [last reference dropped]
+    └─ percpu_ref → 0
+        └─ css_release()                              cgroup.c:5473
+            INIT_WORK(&css->destroy_work, css_release_work_fn)
+            queue_work(cgroup_release_wq, ...)  ← flags=0, NOT WQ_FREEZABLE
+                │
+                └─ css_release_work_fn()           cgroup.c:5419
+                    list_del_rcu(&css->sibling)  ← removed from cgroup tree
+                    ss->css_released(css)
+                        mem_cgroup_css_released()
+                        invalidate_reclaim_iterators(memcg)
+                    INIT_RCU_WORK(&css->destroy_rwork, css_free_rwork_fn)
+                    queue_rcu_work(cgroup_free_wq, ...)
+                        │
+                        │  ← waits for RCU grace period
+
+# Stage 4 — css_free (mem_cgroup_css_free): Free Memory
+
+[RCU grace period elapsed]
+    │
+    └─ css_free_rwork_fn()                             cgroup.c:5370
+        percpu_ref_exit(&css->refcnt)
+        ss->css_free(css)
+            mem_cgroup_css_free()                   ← called HERE
+                wb_wait_for_completion()
+                vmpressure_cleanup()
+                cancel_work_sync(&memcg->high_work)
+                cancel_delayed_work_sync(                ← line 5761
+                    &memcg->pgcache_limit_work)
+                mem_cgroup_remove_from_trees()
+                free_shrinker_info()
+                mem_cgroup_free(memcg)
+                    └─ kfree(memcg)  ← struct FREED here
+```
+
+
 ```c
 int cgroup_rmdir(struct kernfs_node *kn)
 {
@@ -2125,57 +2215,111 @@ int cgroup_destroy_locked(struct cgroup *cgrp)
 
     return 0;
 };
+```
 
-static void css_killed_ref_fn(struct percpu_ref *ref)
+##### percpu_ref_kill_and_confirm
+
+```c
+void percpu_ref_kill_and_confirm(struct percpu_ref *ref,
+				 percpu_ref_func_t *confirm_kill)
 {
-    struct cgroup_subsys_state *css =
-        container_of(ref, struct cgroup_subsys_state, refcnt);
+	unsigned long flags;
 
-    if (atomic_dec_and_test(&css->online_cnt)) {
-        INIT_WORK(&css->destroy_work, css_killed_work_fn);
-        queue_work(cgroup_offline_wq, &css->destroy_work);
-    }
-}
+	spin_lock_irqsave(&percpu_ref_switch_lock, flags);
 
-static void css_killed_work_fn(struct work_struct *work)
-{
-    struct cgroup_subsys_state *css =
-        container_of(work, struct cgroup_subsys_state, destroy_work);
+	WARN_ONCE(percpu_ref_is_dying(ref),
+		  "%s called more than once on %ps!", __func__,
+		  ref->data->release);
 
-    cgroup_lock();
+	ref->percpu_count_ptr |= __PERCPU_REF_DEAD;
+	__percpu_ref_switch_mode(ref, confirm_kill) {
+        struct percpu_ref_data *data = ref->data;
 
-    do {
-        offline_css(css) {
-            struct cgroup_subsys *ss = css->ss;
+        lockdep_assert_held(&percpu_ref_switch_lock);
 
-            lockdep_assert_held(&cgroup_mutex);
+        /*
+        * If the previous ATOMIC switching hasn't finished yet, wait for
+        * its completion.  If the caller ensures that ATOMIC switching
+        * isn't in progress, this function can be called from any context.
+        */
+        wait_event_lock_irq(percpu_ref_switch_waitq, !data->confirm_switch,
+                    percpu_ref_switch_lock);
 
-            if (!(css->flags & CSS_ONLINE))
-                return;
+        if (data->force_atomic || percpu_ref_is_dying(ref)) {
+            __percpu_ref_switch_to_atomic(ref, confirm_switch);
 
-            if (ss->css_offline)
-                ss->css_offline(css);
+        } else {
+            __percpu_ref_switch_to_percpu(ref) {
+                unsigned long __percpu *percpu_count = percpu_count_ptr(ref);
+                int cpu;
 
-            css->flags &= ~CSS_ONLINE;
-            RCU_INIT_POINTER(css->cgroup->subsys[ss->id], NULL);
+                BUG_ON(!percpu_count);
 
-            wake_up_all(&css->cgroup->offline_waitq);
+                if (!(ref->percpu_count_ptr & __PERCPU_REF_ATOMIC))
+                    return;
 
-            css->cgroup->nr_dying_subsys[ss->id]++;
-            /* Parent css and cgroup cannot be freed until after the freeing
-            * of child css, see css_free_rwork_fn(). */
-            while ((css = css->parent)) {
-                css->nr_descendants--;
-                css->cgroup->nr_dying_subsys[ss->id]++;
+                if (WARN_ON_ONCE(!ref->data->allow_reinit))
+                    return;
+
+                atomic_long_add(PERCPU_COUNT_BIAS, &ref->data->count);
+
+                /*
+                * Restore per-cpu operation.  smp_store_release() is paired
+                * with READ_ONCE() in __ref_is_percpu() and guarantees that the
+                * zeroing is visible to all percpu accesses which can see the
+                * following __PERCPU_REF_ATOMIC clearing.
+                */
+                for_each_possible_cpu(cpu)
+                    *per_cpu_ptr(percpu_count, cpu) = 0;
+
+                smp_store_release(&ref->percpu_count_ptr,
+                        ref->percpu_count_ptr & ~__PERCPU_REF_ATOMIC);
             }
         }
-        css_put(css);
-        /* @css can't go away while we're holding cgroup_mutex */
-        css = css->parent;
-    } while (css && atomic_dec_and_test(&css->online_cnt));
+    }
+	percpu_ref_put(ref);
 
-    cgroup_unlock();
+	spin_unlock_irqrestore(&percpu_ref_switch_lock, flags);
 }
+
+static void __percpu_ref_switch_to_atomic(struct percpu_ref *ref,
+					  percpu_ref_func_t *confirm_switch)
+{
+	if (ref->percpu_count_ptr & __PERCPU_REF_ATOMIC) {
+		if (confirm_switch)
+			confirm_switch(ref);
+		return;
+	}
+
+	/* switching from percpu to atomic */
+	ref->percpu_count_ptr |= __PERCPU_REF_ATOMIC;
+
+	/*
+	 * Non-NULL ->confirm_switch is used to indicate that switching is
+	 * in progress.  Use noop one if unspecified.
+	 */
+	ref->data->confirm_switch = confirm_switch ?:
+		percpu_ref_noop_confirm_switch;
+
+	percpu_ref_get(ref);	/* put after confirmation */
+	call_rcu_hurry(&ref->data->rcu,
+		       percpu_ref_switch_to_atomic_rcu);
+}
+```
+
+##### css_killed_ref_fn
+
+```c
+```
+
+##### css_release_work_fn
+
+```c
+```
+
+##### css_free_rwork_fn
+
+```c
 ```
 
 ## mem_cgroup
