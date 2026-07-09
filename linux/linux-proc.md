@@ -2435,8 +2435,10 @@ void __exit_to_user_mode_prepare(struct pt_regs *regs)
                     if (ti_work & _TIF_PATCH_PENDING)
                         klp_update_patch_state(current);
 
-                    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
+                    if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL)) {
+                        futex_fixup_robust_unlock(regs);
                         arch_do_signal_or_restart(regs);
+                    }
 
                     if (thread_flags & _TIF_NOTIFY_RESUME) {
                         resume_user_mode_work(regs) {
@@ -2462,11 +2464,12 @@ void __exit_to_user_mode_prepare(struct pt_regs *regs)
                     /* Architecture specific TIF work */
                     arch_exit_to_user_mode_work(regs, ti_work);
 
-                    local_irq_disable_exit_to_user() {
-                        local_irq_disable();
-                    }
+                    local_irq_disable();
 
-                    tick_nohz_user_enter_prepare();
+                    tick_nohz_user_enter_prepare() {
+                        if (tick_nohz_full_cpu(smp_processor_id()))
+                            rcu_nocb_flush_deferred_wakeup();
+                    }
 
                     ti_work = read_thread_flags();
                 }
@@ -16456,6 +16459,13 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
          *  - we're serialized against set_special_state() by virtue of
          *    it disabling IRQs (this allows not taking ->pi_lock). */
         WARN_ON_ONCE(p->se.sched_delayed);
+        clear_task_blocked_on(p, NULL) {
+            guard(raw_spinlock_irqsave)(&p->blocked_lock);
+            __clear_task_blocked_on(p, m) {
+                WARN_ON_ONCE(m && p->blocked_on && p->blocked_on != m);
+                p->blocked_on = NULL;
+            }
+        }
         if (!ttwu_state_match(p, state, &success))
             goto out;
 
@@ -16548,8 +16558,7 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
          *
          * to ensure we observe the correct CPU on which the task is currently
          * scheduling. */
-        if (smp_load_acquire(&p->on_cpu) &&
-            ttwu_queue_wakelist(p, task_cpu(p), wake_flags))
+        if (smp_load_acquire(&p->on_cpu) && ttwu_queue_wakelist(p, task_cpu(p), wake_flags))
             break;
 
         /* If the owning (remote) CPU is still in the middle of schedule() with
@@ -16574,19 +16583,7 @@ int try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags)
             })
         }
 
-        cpu = select_task_rq(p, p->wake_cpu, &wake_flags) {
-            if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p)) {
-                cpu = p->sched_class->select_task_rq(p, cpu, *wake_flags);
-                *wake_flags |= WF_RQ_SELECTED;
-            } else {
-                cpu = cpumask_any(p->cpus_ptr);
-            }
-
-            if (unlikely(!is_cpu_allowed(p, cpu)))
-                cpu = select_fallback_rq(task_cpu(p), p);
-
-            return cpu;
-        }
+        cpu = select_task_rq(p, p->wake_cpu, &wake_flags);
         if (task_cpu(p) != cpu) {
             if (p->in_iowait) {
                 delayacct_blkio_end(p);
@@ -16711,6 +16708,122 @@ bool ttwu_queue_cond(struct task_struct *p, int cpu)
         return true;
 
     return false;
+}
+```
+
+## select_task_rq
+
+```c
+int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
+{
+    lockdep_assert_held(&p->pi_lock);
+
+    if (p->nr_cpus_allowed > 1 && !is_migration_disabled(p)) {
+        cpu = p->sched_class->select_task_rq(p, cpu, *wake_flags);
+        *wake_flags |= WF_RQ_SELECTED;
+    } else {
+        cpu = cpumask_any(p->cpus_ptr);
+    }
+
+    /* In order not to call set_task_cpu() on a blocking task we need
+     * to rely on ttwu() to place the task on a valid ->cpus_ptr
+     * CPU.
+     *
+     * Since this is common to all placement strategies, this lives here.
+     *
+     * [ this allows ->select_task() to simply return task_cpu(p) and
+     *   not worry about this generic constraint ] */
+    if (unlikely(!is_cpu_allowed(p, cpu)))
+        cpu = select_fallback_rq(task_cpu(p), p);
+
+    return cpu;
+}
+
+int select_fallback_rq(int cpu, struct task_struct *p)
+{
+    int nid = cpu_to_node(cpu);
+    const struct cpumask *nodemask = NULL;
+    enum { cpuset, possible, fail } state = cpuset;
+    int dest_cpu;
+
+    /* If the node that the CPU is on has been offlined, cpu_to_node()
+     * will return -1. There is no CPU on the node, and we should
+     * select the CPU on the other node. */
+    if (nid != -1) {
+        nodemask = cpumask_of_node(nid);
+
+        /* Look for allowed, online CPU in same node. */
+        for_each_cpu(dest_cpu, nodemask) {
+            if (is_cpu_allowed(p, dest_cpu))
+                return dest_cpu;
+        }
+    }
+
+    for (;;) {
+        /* Any allowed, online CPU? */
+        for_each_cpu(dest_cpu, p->cpus_ptr) {
+            if (!is_cpu_allowed(p, dest_cpu))
+                continue;
+
+            goto out;
+        }
+
+        /* No more Mr. Nice Guy. */
+        switch (state) {
+        case cpuset:
+            if (cpuset_cpus_allowed_fallback(p)) {
+                state = possible;
+                break;
+            }
+            fallthrough;
+        case possible:
+            set_cpus_allowed_force(p, task_cpu_fallback_mask(p));
+            state = fail;
+            break;
+        case fail:
+            BUG();
+            break;
+        }
+    }
+
+out:
+    if (state != cpuset) {
+        /* Don't tell them about moving exiting tasks or
+         * kernel threads (both mm NULL), since they never
+         * leave kernel. */
+        if (p->mm && printk_ratelimit()) {
+            printk_deferred("process %d (%s) no longer affine to cpu%d\n",
+                    task_pid_nr(p), p->comm, cpu);
+        }
+    }
+
+    return dest_cpu;
+}
+
+bool is_cpu_allowed(struct task_struct *p, int cpu)
+{
+    /* When not in the task's cpumask, no point in looking further. */
+    if (!task_allowed_on_cpu(p, cpu))
+        return false;
+
+    /* migrate_disabled() must be allowed to finish. */
+    if (is_migration_disabled(p))
+        return cpu_online(cpu);
+
+    /* Non kernel threads are not allowed during either online or offline. */
+    if (!(p->flags & PF_KTHREAD))
+        return cpu_active(cpu);
+
+    /* KTHREAD_IS_PER_CPU is always allowed. */
+    if (kthread_is_per_cpu(p))
+        return cpu_online(cpu);
+
+    /* Regular kernel threads don't get to stay during offline. */
+    if (cpu_dying(cpu))
+        return false;
+
+    /* But are allowed during online. */
+    return cpu_online(cpu);
 }
 ```
 
@@ -16850,97 +16963,6 @@ ttwu_do_activate(struct rq *rq, struct task_struct *p, int wake_flags,
         p->sched_class->task_woken(rq, p);
         rq_repin_lock(rq, rf);
     }
-}
-```
-
-## select_fallback_rq
-
-```c
-int select_fallback_rq(int cpu, struct task_struct *p)
-{
-    int nid = cpu_to_node(cpu);
-    const struct cpumask *nodemask = NULL;
-    enum { cpuset, possible, fail } state = cpuset;
-    int dest_cpu;
-
-    /* If the node that the CPU is on has been offlined, cpu_to_node()
-     * will return -1. There is no CPU on the node, and we should
-     * select the CPU on the other node. */
-    if (nid != -1) {
-        nodemask = cpumask_of_node(nid);
-
-        /* Look for allowed, online CPU in same node. */
-        for_each_cpu(dest_cpu, nodemask) {
-            if (is_cpu_allowed(p, dest_cpu))
-                return dest_cpu;
-        }
-    }
-
-    for (;;) {
-        /* Any allowed, online CPU? */
-        for_each_cpu(dest_cpu, p->cpus_ptr) {
-            if (!is_cpu_allowed(p, dest_cpu))
-                continue;
-
-            goto out;
-        }
-
-        /* No more Mr. Nice Guy. */
-        switch (state) {
-        case cpuset:
-            if (cpuset_cpus_allowed_fallback(p)) {
-                state = possible;
-                break;
-            }
-            fallthrough;
-        case possible:
-            set_cpus_allowed_force(p, task_cpu_fallback_mask(p));
-            state = fail;
-            break;
-        case fail:
-            BUG();
-            break;
-        }
-    }
-
-out:
-    if (state != cpuset) {
-        /* Don't tell them about moving exiting tasks or
-         * kernel threads (both mm NULL), since they never
-         * leave kernel. */
-        if (p->mm && printk_ratelimit()) {
-            printk_deferred("process %d (%s) no longer affine to cpu%d\n",
-                    task_pid_nr(p), p->comm, cpu);
-        }
-    }
-
-    return dest_cpu;
-}
-
-bool is_cpu_allowed(struct task_struct *p, int cpu)
-{
-    /* When not in the task's cpumask, no point in looking further. */
-    if (!task_allowed_on_cpu(p, cpu))
-        return false;
-
-    /* migrate_disabled() must be allowed to finish. */
-    if (is_migration_disabled(p))
-        return cpu_online(cpu);
-
-    /* Non kernel threads are not allowed during either online or offline. */
-    if (!(p->flags & PF_KTHREAD))
-        return cpu_active(cpu);
-
-    /* KTHREAD_IS_PER_CPU is always allowed. */
-    if (kthread_is_per_cpu(p))
-        return cpu_online(cpu);
-
-    /* Regular kernel threads don't get to stay during offline. */
-    if (cpu_dying(cpu))
-        return false;
-
-    /* But are allowed during online. */
-    return cpu_online(cpu);
 }
 ```
 
@@ -18635,7 +18657,7 @@ out_info:
 }
 ```
 
-# exit
+# do_exit
 
 ```c
 do_exit(code) {
@@ -19851,7 +19873,7 @@ start_kernel();
                         }
                         wq_watchdog_init() {
                             timer_setup(&wq_watchdog_timer, wq_watchdog_timer_fn, TIMER_DEFERRABLE);
-	                        wq_watchdog_set_thresh(wq_watchdog_thresh);
+                            wq_watchdog_set_thresh(wq_watchdog_thresh);
                         }
                     }
                 }
@@ -21892,6 +21914,657 @@ void rseq_sched_switch_event(struct task_struct *t)
             }
         }
     }
+}
+```
+
+# freezer
+
+```c
+       freeze_processes()
+              │
+ ┌────────────▼────────────┐
+ │  static_branch_inc()    │  (turn on freezer_active fast-path)
+ │  pm_freezing = true     │
+ │  UMH disabled           │
+ └────────────┬────────────┘
+              │
+ try_to_freeze_tasks(user_only)
+         │           │
+┌────────▼──┐   ┌────▼───────────┐
+│ in-place  │   │ signal wakeup  │
+│ freeze:   │   │ (fake signal / │
+│ TASK_FRZE │   │  kthread wake) │
+│ ABLE→FRZN │   └───────┬────────┘
+└───────────┘           │
+            arch_do_signal_or_restart()
+                        │
+                    get_signal()
+                        │
+                 try_to_freeze()
+                        │
+                 __refrigerator()
+                        │
+              TASK_FROZEN + schedule()
+                        │
+                  ┌─────▼──────┐
+                  │  FROZEN    │◄── parked by scheduler
+                  └─────┬──────┘
+                        │  thaw_processes()
+                  __thaw_task()
+                        │
+              restore saved_state
+              wake_up_state(TASK_FROZEN)
+                        │
+                  TASK_RUNNING
+```
+
+| Bit    | Meaning |
+| - | - |
+TASK_FREEZABLE | Task is in a safe sleep state that can be frozen in-place
+TASK_FROZEN | Task has been frozen (parked, not schedulable)
+TASK_FREEZABLE_UNSAFE | Same but may hold a lock; only used with lockdep disabled
+
+```c
+#define PF_NOFREEZE         0x00008000  /* This thread should not be frozen */
+#define PF_SUSPEND_TASK     0x80000000  /* This thread called freeze_processes() and should not be frozen */
+```
+
+```c
+bool freezing(struct task_struct *p)
+{
+    if (static_branch_unlikely(&freezer_active))
+        return freezing_slow_path(p);
+
+    return false;
+}
+
+bool freezing_slow_path(struct task_struct *p)
+{
+    if (p->flags & (PF_NOFREEZE | PF_SUSPEND_TASK))
+        return false;
+
+    if (tsk_is_oom_victim(p))
+        return false;
+
+    if (pm_nosig_freezing || cgroup1_freezing(p))
+        return true;
+
+    if (pm_freezing && !(p->flags & PF_KTHREAD))
+        return true;
+
+    return false;
+}
+```
+
+## try_to_freeze
+
+```c
+exit_to_user_mode_loop()
+    └── TIF_SIGPENDING set
+        arch_do_signal_or_restart()
+            └── get_signal()
+                ├── task_sigpending() = true
+                └── try_to_freeze()
+                        └── freezing(current) = true
+                            __refrigerator()
+                                ├── __state = TASK_FROZEN
+                                ├── saved_state = TASK_RUNNING
+                                └── schedule()
+                                    └── task removed from runqueue — FROZEN
+
+static inline bool try_to_freeze(void)
+{
+    might_sleep();
+    if (likely(!freezing(current)))
+        return false;
+    if (!(current->flags & PF_NOFREEZE))
+        debug_check_no_locks_held();
+    return __refrigerator(false);
+}
+
+bool __refrigerator(bool check_kthr_stop)
+{
+    unsigned int state = get_current_state();
+    bool was_frozen = false;
+
+    pr_debug("%s entered refrigerator\n", current->comm);
+
+    WARN_ON_ONCE(state && !(state & TASK_NORMAL));
+
+    for (;;) {
+        bool freeze;
+
+        raw_spin_lock_irq(&current->pi_lock);
+        WRITE_ONCE(current->__state, TASK_FROZEN);
+        /* unstale saved_state so that __thaw_task() will wake us up */
+        current->saved_state = TASK_RUNNING;
+        raw_spin_unlock_irq(&current->pi_lock);
+
+        spin_lock_irq(&freezer_lock);
+        freeze = freezing(current) && !(check_kthr_stop && kthread_should_stop());
+        spin_unlock_irq(&freezer_lock);
+
+        if (!freeze)
+            break;
+
+        was_frozen = true;
+        schedule();
+    }
+    __set_current_state(TASK_RUNNING);
+
+    pr_debug("%s left refrigerator\n", current->comm);
+
+    return was_frozen;
+}
+```
+
+## freeze_processes
+
+```c
+suspend_freeze_processes()
+    ├── freeze_processes()       ← Phase 1: user tasks only
+    │       sets pm_freezing = true
+    │       static_branch_inc(&freezer_active)
+    │       disables usermodehelper (UMH_FREEZING)
+    │       calls try_to_freeze_tasks(user_only=true)
+    │       disables OOM killer
+    │
+    └── freeze_kernel_threads()  ← Phase 2: kernel threads
+            sets pm_nosig_freezing = true
+            calls try_to_freeze_tasks(user_only=false)
+            also freezes workqueues
+
+int suspend_freeze_processes(void)
+{
+    int error;
+
+    error = freeze_processes();
+    /* freeze_processes() automatically thaws every task if freezing
+     * fails. So we need not do anything extra upon error. */
+    if (error)
+        return error;
+
+    error = freeze_kernel_threads();
+    /* freeze_kernel_threads() thaws only kernel threads upon freezing
+     * failure. So we have to thaw the userspace tasks ourselves. */
+    if (error)
+        thaw_processes();
+
+    return error;
+}
+
+int freeze_processes(void)
+{
+    int error;
+
+    error = __usermodehelper_disable(UMH_FREEZING);
+    if (error)
+        return error;
+
+    /* Make sure this task doesn't get frozen */
+    current->flags |= PF_SUSPEND_TASK;
+
+    if (!pm_freezing)
+        static_branch_inc(&freezer_active);
+
+    pm_wakeup_clear(0);
+    pm_freezing = true;
+    error = try_to_freeze_tasks(true);
+    if (!error)
+        __usermodehelper_set_disable_depth(UMH_DISABLED);
+
+    BUG_ON(in_atomic());
+
+    /* Now that the whole userspace is frozen we need to disable
+     * the OOM killer to disallow any further interference with
+     * killable tasks. There is no guarantee oom victims will
+     * ever reach a point they go away we have to wait with a timeout. */
+    if (!error && !oom_killer_disable(msecs_to_jiffies(freeze_timeout_msecs)))
+        error = -EBUSY;
+
+    if (error)
+        thaw_processes();
+    return error;
+}
+
+int try_to_freeze_tasks(bool user_only)
+{
+    const char *what = user_only ? "user space processes" :
+                    "remaining freezable tasks";
+    struct task_struct *g, *p;
+    unsigned long end_time;
+    unsigned int todo;
+    bool wq_busy = false;
+    ktime_t start, end, elapsed;
+    unsigned int elapsed_msecs;
+    bool wakeup = false;
+    int sleep_usecs = USEC_PER_MSEC;
+
+    pr_info("Freezing %s\n", what);
+
+    start = ktime_get_boottime();
+
+    end_time = jiffies + msecs_to_jiffies(freeze_timeout_msecs);
+
+    if (!user_only)
+        freeze_workqueues_begin();
+
+
+    while (true) {
+        todo = 0;
+        read_lock(&tasklist_lock);
+        for_each_process_thread(g, p) {
+            if (p == current || !freeze_task(p))
+                continue;
+
+            todo++;
+        }
+        read_unlock(&tasklist_lock);
+
+        if (!user_only) {
+            /* are freezable workqueues still busy? */
+            wq_busy = freeze_workqueues_busy();
+            todo += wq_busy;
+        }
+
+        if (!todo || time_after(jiffies, end_time))
+            break;
+
+        if (pm_wakeup_pending()) {
+            wakeup = true;
+            break;
+        }
+
+        /* We need to retry, but first give the freezing tasks some
+         * time to enter the refrigerator.  Start with an initial
+         * 1 ms sleep followed by exponential backoff until 8 ms. */
+        usleep_range(sleep_usecs / 2, sleep_usecs);
+        if (sleep_usecs < 8 * USEC_PER_MSEC)
+            sleep_usecs *= 2;
+    }
+
+    end = ktime_get_boottime();
+    elapsed = ktime_sub(end, start);
+    elapsed_msecs = ktime_to_ms(elapsed);
+
+    if (todo) {
+        pr_err("Freezing %s %s after %d.%03d seconds "
+               "(%d tasks refusing to freeze, wq_busy=%d):\n", what,
+               wakeup ? "aborted" : "failed",
+               elapsed_msecs / 1000, elapsed_msecs % 1000,
+               todo - wq_busy, wq_busy);
+
+        if (wq_busy)
+            show_freezable_workqueues();
+
+        if (!wakeup || pm_debug_messages_on) {
+            read_lock(&tasklist_lock);
+            for_each_process_thread(g, p) {
+                if (p != current && freezing(p) && !frozen(p))
+                    sched_show_task(p);
+            }
+            read_unlock(&tasklist_lock);
+        }
+    } else {
+        pr_info("Freezing %s completed (elapsed %d.%03d seconds)\n",
+            what, elapsed_msecs / 1000, elapsed_msecs % 1000);
+    }
+
+    return todo ? -EBUSY : 0;
+}
+```
+
+### freeze_task
+
+```c
+bool freeze_task(struct task_struct *p)
+{
+    unsigned long flags;
+
+    /* fast path: just change state in-place */
+    spin_lock_irqsave(&freezer_lock, flags);
+    if (!freezing(p) || frozen(p) || __freeze_task(p)) {
+        spin_unlock_irqrestore(&freezer_lock, flags);
+        return false;
+    }
+
+    /* slow path: send signal */
+    if (!(p->flags & PF_KTHREAD)) {
+        fake_signal_wake_up(p) {
+            unsigned long flags;
+
+            if (lock_task_sighand(p, &flags)) {
+                signal_wake_up(p, 0);
+                unlock_task_sighand(p, &flags);
+            }
+        }
+    } else
+        wake_up_state(p, TASK_NORMAL);
+
+    spin_unlock_irqrestore(&freezer_lock, flags);
+    return true;
+}
+
+bool __freeze_task(struct task_struct *p)
+{
+    /* TASK_FREEZABLE|TASK_STOPPED|TASK_TRACED -> TASK_FROZEN */
+    return task_call_func(p, __set_task_frozen, NULL);
+}
+
+int __set_task_frozen(struct task_struct *p, void *arg)
+{
+    unsigned int state = READ_ONCE(p->__state);
+
+    /* Allow freezing the sched_delayed tasks; they will not execute until
+     * ttwu() fixes them up, so it is safe to swap their state now, instead
+     * of waiting for them to get fully dequeued. */
+    if (task_is_runnable(p))
+        return 0;
+
+    if (p != current && task_curr(p))
+        return 0;
+
+    if (!(state & (TASK_FREEZABLE | __TASK_STOPPED | __TASK_TRACED)))
+        return 0;
+
+    /* Only TASK_NORMAL can be augmented with TASK_FREEZABLE, since they
+     * can suffer spurious wakeups. */
+    if (state & TASK_FREEZABLE)
+        WARN_ON_ONCE(!(state & TASK_NORMAL));
+
+#ifdef CONFIG_LOCKDEP
+    /* It's dangerous to freeze with locks held; there be dragons there. */
+    if (!(state & __TASK_FREEZABLE_UNSAFE))
+        WARN_ON_ONCE(debug_locks && p->lockdep_depth);
+#endif
+
+    p->saved_state = p->__state;
+    WRITE_ONCE(p->__state, TASK_FROZEN);
+    return TASK_FROZEN;
+}
+```
+
+## thaw_processes
+
+```c
+
+void thaw_processes(void)
+{
+	struct task_struct *g, *p;
+	struct task_struct *curr = current;
+
+	trace_suspend_resume(TPS("thaw_processes"), 0, true);
+	if (pm_freezing)
+		static_branch_dec(&freezer_active);
+	pm_freezing = false;
+	pm_nosig_freezing = false;
+
+	oom_killer_enable();
+
+	pr_info("Restarting tasks: Starting\n");
+
+	__usermodehelper_set_disable_depth(UMH_FREEZING);
+	thaw_workqueues() {
+        struct workqueue_struct *wq;
+
+        mutex_lock(&wq_pool_mutex);
+
+        if (!workqueue_freezing)
+            goto out_unlock;
+
+        workqueue_freezing = false;
+
+        /* restore max_active and repopulate worklist */
+        list_for_each_entry(wq, &workqueues, list) {
+            mutex_lock(&wq->mutex);
+            wq_adjust_max_active(wq);
+            mutex_unlock(&wq->mutex);
+        }
+
+    out_unlock:
+        mutex_unlock(&wq_pool_mutex);
+    }
+
+	read_lock(&tasklist_lock);
+	for_each_process_thread(g, p) {
+		/* No other threads should have PF_SUSPEND_TASK set */
+		WARN_ON((p != curr) && (p->flags & PF_SUSPEND_TASK));
+		__thaw_task(p);
+	}
+	read_unlock(&tasklist_lock);
+
+	WARN_ON(!(curr->flags & PF_SUSPEND_TASK));
+	curr->flags &= ~PF_SUSPEND_TASK;
+
+	usermodehelper_enable();
+
+	schedule();
+	pr_info("Restarting tasks: Done\n");
+	trace_suspend_resume(TPS("thaw_processes"), 0, false);
+}
+
+void thaw_process(struct task_struct *p)
+{
+    struct task_struct *t;
+
+    rcu_read_lock();
+    for_each_thread(p, t) {
+        __thaw_task(t);
+    }
+    rcu_read_unlock();
+}
+
+void __thaw_task(struct task_struct *p)
+{
+    guard(spinlock_irqsave)(&freezer_lock);
+    if (frozen(p) && !task_call_func(p, __restore_freezer_state, NULL)) {
+        wake_up_state(p, TASK_FROZEN) {
+            return try_to_wake_up(p, state, 0);
+        }
+    }
+}
+
+
+static int __restore_freezer_state(struct task_struct *p, void *arg)
+{
+    unsigned int state = p->saved_state;
+
+    if (state != TASK_RUNNING) {
+        WRITE_ONCE(p->__state, state);
+        p->saved_state = TASK_RUNNING;
+        return 1;
+    }
+
+    return 0;
+}
+```
+
+## cgroup_freeze_task
+
+```sh
+/sys/fs/cgroup/<group>/cgroup.freeze    # write "1" to freeze, "0" to thaw
+/sys/fs/cgroup/<group>/cgroup.events    # contains "frozen 1" when fully frozen
+```
+
+```sh
+User / systemd writes "1" to cgroup.freeze
+  └─ kernfs_fop_write_iter()                  [fs/kernfs/file.c]
+       └─ cgroup_freeze_write()               [kernel/cgroup/cgroup.c:4160]
+            └─ cgroup_freeze(cgrp, true)      [kernel/cgroup/freezer.c:263]
+                 └─ cgroup_freeze_task(task, true)  [kernel/cgroup/freezer.c:152]
+                      ├─ task->jobctl |= JOBCTL_TRAP_FREEZE   ← sets bit 23
+                      └─ signal_wake_up(task, false)          ← wakes task to process it
+
+do_signal() / get_signal()                    [kernel/signal.c]
+  │
+  ├─ recalc_sigpending_tsk()                  [kernel/signal.c:159]
+  │    └─ checks JOBCTL_TRAP_FREEZE → sets TIF_SIGPENDING
+  │
+  └─ get_signal() main loop                   [kernel/signal.c:2884]
+       │
+       ├─ [JOBCTL_STOP_PENDING?]  → do_signal_stop()
+       │
+       ├─ [JOBCTL_TRAP_MASK?]     → do_jobctl_trap()   (ptrace traps, not here)
+       │
+       └─ [JOBCTL_TRAP_FREEZE?]   → do_freezer_trap()  [kernel/signal.c:2699]
+               │
+               ├─ guard: bail if other JOBCTL_PENDING_MASK bits are set
+               ├─ __set_current_state(TASK_INTERRUPTIBLE | TASK_FREEZABLE)
+               ├─ clear_thread_flag(TIF_SIGPENDING)
+               ├─ spin_unlock_irq(&sighand->siglock)
+               ├─ cgroup_enter_frozen()       [kernel/cgroup/freezer.c:104]
+               │    └─ current->frozen = true
+               │    └─ cgroup_inc_frozen_cnt() → triggers cgroup_update_frozen()
+               └─ schedule()                  ← task sleeps here ◀───────┐
+                                                                          │
+                                                              (stays here until thawed)
+
+User writes "0" to cgroup.freeze
+  └─ cgroup_freeze_write() → cgroup_freeze(cgrp, false)
+       └─ cgroup_freeze_task(task, false)     [kernel/cgroup/freezer.c:163]
+            ├─ task->jobctl &= ~JOBCTL_TRAP_FREEZE   ← clears bit 23
+            └─ wake_up_process(task)                 ← task wakes from schedule()
+
+schedule()  ← returns
+clear_notify_signal()
+task_work_run()   (if pending)
+← returns to get_signal() loop
+→ goto relock → check cgroup_task_frozen()
+     └─ cgroup_leave_frozen(false)   [kernel/cgroup/freezer.c:128]
+          ├─ current->frozen = false
+          └─ cgroup_dec_frozen_cnt() → cgroup_update_frozen()
+← task continues normally back to userspace
+```
+
+```c
+void cgroup_freeze_task(struct task_struct *task, bool freeze)
+{
+    unsigned long flags;
+
+    /* If the task is about to die, don't bother with freezing it. */
+    if (!lock_task_sighand(task, &flags))
+        return;
+
+    if (freeze) {
+        task->jobctl |= JOBCTL_TRAP_FREEZE;
+        signal_wake_up(task, false);
+    } else {
+        task->jobctl &= ~JOBCTL_TRAP_FREEZE;
+        wake_up_process(task);
+    }
+
+    unlock_task_sighand(task, &flags);
+}
+```
+
+## cgroup_enter_frozen
+
+```c
+void cgroup_enter_frozen(void)
+{
+    struct cgroup *cgrp;
+
+    if (current->frozen)
+        return;
+
+    spin_lock_irq(&css_set_lock);
+    current->frozen = true;
+    cgrp = task_dfl_cgroup(current);
+    cgroup_inc_frozen_cnt(cgrp);
+    cgroup_update_frozen(cgrp) {
+        bool frozen;
+
+        /* If the cgroup has to be frozen (CGRP_FREEZE bit set),
+        * and all tasks are frozen and/or stopped, let's consider
+        * the cgroup frozen. Otherwise it's not frozen. */
+        frozen = test_bit(CGRP_FREEZE, &cgrp->flags) &&
+            cgrp->freezer.nr_frozen_tasks == __cgroup_task_count(cgrp);
+
+        /* If flags is updated, update the state of ancestor cgroups. */
+        if (cgroup_update_frozen_flag(cgrp, frozen))
+    }
+    spin_unlock_irq(&css_set_lock);
+}
+
+void cgroup_update_frozen(struct cgroup *cgrp)
+{
+    bool frozen;
+
+    /* If the cgroup has to be frozen (CGRP_FREEZE bit set),
+     * and all tasks are frozen and/or stopped, let's consider
+     * the cgroup frozen. Otherwise it's not frozen. */
+    frozen = test_bit(CGRP_FREEZE, &cgrp->flags) &&
+        cgrp->freezer.nr_frozen_tasks == __cgroup_task_count(cgrp);
+
+    /* If flags is updated, update the state of ancestor cgroups. */
+    if (cgroup_update_frozen_flag(cgrp, frozen))
+        cgroup_propagate_frozen(cgrp, frozen);
+}
+
+void cgroup_propagate_frozen(struct cgroup *cgrp, bool frozen)
+{
+    int desc = 1;
+
+    /* If the new state is frozen, some freezing ancestor cgroups may change
+     * their state too, depending on if all their descendants are frozen.
+     *
+     * Otherwise, all ancestor cgroups are forced into the non-frozen state. */
+    while ((cgrp = cgroup_parent(cgrp))) {
+        if (frozen) {
+            cgrp->freezer.nr_frozen_descendants += desc;
+            if (!test_bit(CGRP_FREEZE, &cgrp->flags) ||
+                (cgrp->freezer.nr_frozen_descendants !=
+                cgrp->nr_descendants))
+                continue;
+        } else {
+            cgrp->freezer.nr_frozen_descendants -= desc;
+        }
+
+        if (cgroup_update_frozen_flag(cgrp, frozen))
+            desc++;
+    }
+}
+
+bool cgroup_update_frozen_flag(struct cgroup *cgrp, bool frozen)
+{
+    lockdep_assert_held(&css_set_lock);
+
+    /* Already there? */
+    if (test_bit(CGRP_FROZEN, &cgrp->flags) == frozen)
+        return false;
+
+    if (frozen)
+        set_bit(CGRP_FROZEN, &cgrp->flags);
+    else
+        clear_bit(CGRP_FROZEN, &cgrp->flags);
+
+    cgroup_file_notify(&cgrp->events_file);
+    TRACE_CGROUP_PATH(notify_frozen, cgrp, frozen);
+    return true;
+}
+```
+
+## cgroup_leave_frozen
+
+```c
+void cgroup_leave_frozen(bool always_leave)
+{
+    struct cgroup *cgrp;
+
+    spin_lock_irq(&css_set_lock);
+    cgrp = task_dfl_cgroup(current);
+    if (always_leave || !test_bit(CGRP_FREEZE, &cgrp->flags)) {
+        cgroup_dec_frozen_cnt(cgrp);
+        cgroup_update_frozen(cgrp);
+        WARN_ON_ONCE(!current->frozen);
+        current->frozen = false;
+    } else if (!(current->jobctl & JOBCTL_TRAP_FREEZE)) {
+        spin_lock(&current->sighand->siglock);
+        current->jobctl |= JOBCTL_TRAP_FREEZE;
+        set_thread_flag(TIF_SIGPENDING);
+        spin_unlock(&current->sighand->siglock);
+    }
+    spin_unlock_irq(&css_set_lock);
 }
 ```
 

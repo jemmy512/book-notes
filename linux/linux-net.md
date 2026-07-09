@@ -11639,7 +11639,7 @@ sock_read_iter() {
     }
 }
 ```
-* [try_to_wake_up](./linux-proc.md#ttwu)
+* [try_to_wake_up](./linux-proc.md#try_to_wake_up)
 
 ## driver layer rx
 
