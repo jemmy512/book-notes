@@ -18796,53 +18796,7 @@ out:
      * should always go to the real parent of the group leader. */
     if (unlikely(group_stop)) {
         read_lock(&tasklist_lock);
-        do_notify_parent_cldstop(tsk, false/*for_ptracer*/, group_stop/*why*/) {
-            if (for_ptracer) {
-                parent = tsk->parent;
-            } else {
-                tsk = tsk->group_leader;
-                parent = tsk->real_parent;
-            }
-
-            clear_siginfo(&info);
-            info.si_signo = SIGCHLD;
-            info.si_errno = 0;
-
-            rcu_read_lock();
-            info.si_pid = task_pid_nr_ns(tsk, task_active_pid_ns(parent));
-            info.si_uid = from_kuid_munged(task_cred_xxx(parent, user_ns), task_uid(tsk));
-            rcu_read_unlock();
-
-            task_cputime(tsk, &utime, &stime);
-            info.si_utime = nsec_to_clock_t(utime);
-            info.si_stime = nsec_to_clock_t(stime);
-
-            info.si_code = why;
-            switch (why) {
-            case CLD_CONTINUED:
-                info.si_status = SIGCONT;
-                break;
-            case CLD_STOPPED:
-                info.si_status = tsk->signal->group_exit_code & 0x7f;
-                break;
-            case CLD_TRAPPED:
-                info.si_status = tsk->exit_code & 0x7f;
-                break;
-            default:
-                BUG();
-            }
-
-            sighand = parent->sighand;
-            spin_lock_irqsave(&sighand->siglock, flags);
-            if (sighand->action[SIGCHLD-1].sa.sa_handler != SIG_IGN
-                && !(sighand->action[SIGCHLD-1].sa.sa_flags & SA_NOCLDSTOP)) {
-
-                send_signal_locked(SIGCHLD, &info, parent, PIDTYPE_TGID);
-            }
-            /* Even if SIGCHLD is not generated, we must wake up wait4 calls. */
-            __wake_up_parent(tsk, parent);
-            spin_unlock_irqrestore(&sighand->siglock, flags);
-        }
+        do_notify_parent_cldstop(tsk, false/*for_ptracer*/, group_stop/*why*/);
         read_unlock(&tasklist_lock);
     }
 }
@@ -22290,21 +22244,21 @@ int __set_task_frozen(struct task_struct *p, void *arg)
 
 void thaw_processes(void)
 {
-	struct task_struct *g, *p;
-	struct task_struct *curr = current;
+    struct task_struct *g, *p;
+    struct task_struct *curr = current;
 
-	trace_suspend_resume(TPS("thaw_processes"), 0, true);
-	if (pm_freezing)
-		static_branch_dec(&freezer_active);
-	pm_freezing = false;
-	pm_nosig_freezing = false;
+    trace_suspend_resume(TPS("thaw_processes"), 0, true);
+    if (pm_freezing)
+        static_branch_dec(&freezer_active);
+    pm_freezing = false;
+    pm_nosig_freezing = false;
 
-	oom_killer_enable();
+    oom_killer_enable();
 
-	pr_info("Restarting tasks: Starting\n");
+    pr_info("Restarting tasks: Starting\n");
 
-	__usermodehelper_set_disable_depth(UMH_FREEZING);
-	thaw_workqueues() {
+    __usermodehelper_set_disable_depth(UMH_FREEZING);
+    thaw_workqueues() {
         struct workqueue_struct *wq;
 
         mutex_lock(&wq_pool_mutex);
@@ -22325,22 +22279,22 @@ void thaw_processes(void)
         mutex_unlock(&wq_pool_mutex);
     }
 
-	read_lock(&tasklist_lock);
-	for_each_process_thread(g, p) {
-		/* No other threads should have PF_SUSPEND_TASK set */
-		WARN_ON((p != curr) && (p->flags & PF_SUSPEND_TASK));
-		__thaw_task(p);
-	}
-	read_unlock(&tasklist_lock);
+    read_lock(&tasklist_lock);
+    for_each_process_thread(g, p) {
+        /* No other threads should have PF_SUSPEND_TASK set */
+        WARN_ON((p != curr) && (p->flags & PF_SUSPEND_TASK));
+        __thaw_task(p);
+    }
+    read_unlock(&tasklist_lock);
 
-	WARN_ON(!(curr->flags & PF_SUSPEND_TASK));
-	curr->flags &= ~PF_SUSPEND_TASK;
+    WARN_ON(!(curr->flags & PF_SUSPEND_TASK));
+    curr->flags &= ~PF_SUSPEND_TASK;
 
-	usermodehelper_enable();
+    usermodehelper_enable();
 
-	schedule();
-	pr_info("Restarting tasks: Done\n");
-	trace_suspend_resume(TPS("thaw_processes"), 0, false);
+    schedule();
+    pr_info("Restarting tasks: Done\n");
+    trace_suspend_resume(TPS("thaw_processes"), 0, false);
 }
 
 void thaw_process(struct task_struct *p)
@@ -22379,7 +22333,7 @@ static int __restore_freezer_state(struct task_struct *p, void *arg)
 }
 ```
 
-## cgroup_freeze_task
+## cgroup_freeze
 
 ```sh
 /sys/fs/cgroup/<group>/cgroup.freeze    # write "1" to freeze, "0" to thaw
@@ -22387,26 +22341,28 @@ static int __restore_freezer_state(struct task_struct *p, void *arg)
 ```
 
 ```sh
+# Trigger Path — Freezing a task
 User / systemd writes "1" to cgroup.freeze
-  └─ kernfs_fop_write_iter()                  [fs/kernfs/file.c]
-       └─ cgroup_freeze_write()               [kernel/cgroup/cgroup.c:4160]
-            └─ cgroup_freeze(cgrp, true)      [kernel/cgroup/freezer.c:263]
-                 └─ cgroup_freeze_task(task, true)  [kernel/cgroup/freezer.c:152]
+  └─ kernfs_fop_write_iter()
+       └─ cgroup_freeze_write()
+            └─ cgroup_freeze(cgrp, true)
+                 └─ cgroup_freeze_task(task, true)
                       ├─ task->jobctl |= JOBCTL_TRAP_FREEZE   ← sets bit 23
                       └─ signal_wake_up(task, false)          ← wakes task to process it
 
-do_signal() / get_signal()                    [kernel/signal.c]
+# Task Response Path — Entering the freeze
+do_signal() / get_signal()
   │
-  ├─ recalc_sigpending_tsk()                  [kernel/signal.c:159]
+  ├─ recalc_sigpending_tsk()
   │    └─ checks JOBCTL_TRAP_FREEZE → sets TIF_SIGPENDING
   │
-  └─ get_signal() main loop                   [kernel/signal.c:2884]
+  └─ get_signal() main loop
        │
        ├─ [JOBCTL_STOP_PENDING?]  → do_signal_stop()
        │
        ├─ [JOBCTL_TRAP_MASK?]     → do_jobctl_trap()   (ptrace traps, not here)
        │
-       └─ [JOBCTL_TRAP_FREEZE?]   → do_freezer_trap()  [kernel/signal.c:2699]
+       └─ [JOBCTL_TRAP_FREEZE?]   → do_freezer_trap()
                │
                ├─ guard: bail if other JOBCTL_PENDING_MASK bits are set
                ├─ __set_current_state(TASK_INTERRUPTIBLE | TASK_FREEZABLE)
@@ -22415,28 +22371,154 @@ do_signal() / get_signal()                    [kernel/signal.c]
                ├─ cgroup_enter_frozen()       [kernel/cgroup/freezer.c:104]
                │    └─ current->frozen = true
                │    └─ cgroup_inc_frozen_cnt() → triggers cgroup_update_frozen()
-               └─ schedule()                  ← task sleeps here ◀───────┐
+               └─ schedule()                   ← task sleeps here ◀───────┐
                                                                           │
                                                               (stays here until thawed)
 
+# Thaw Path — Unfreezing
 User writes "0" to cgroup.freeze
   └─ cgroup_freeze_write() → cgroup_freeze(cgrp, false)
-       └─ cgroup_freeze_task(task, false)     [kernel/cgroup/freezer.c:163]
+       └─ cgroup_freeze_task(task, false)
             ├─ task->jobctl &= ~JOBCTL_TRAP_FREEZE   ← clears bit 23
             └─ wake_up_process(task)                 ← task wakes from schedule()
 
+
+# Task resumes inside do_freezer_trap() after schedule() returns:
 schedule()  ← returns
 clear_notify_signal()
 task_work_run()   (if pending)
 ← returns to get_signal() loop
 → goto relock → check cgroup_task_frozen()
-     └─ cgroup_leave_frozen(false)   [kernel/cgroup/freezer.c:128]
+     └─ cgroup_leave_frozen(false)
           ├─ current->frozen = false
           └─ cgroup_dec_frozen_cnt() → cgroup_update_frozen()
 ← task continues normally back to userspace
+
+
+# Summary Diagram
+write(cgroup.freeze, "1")
+        │
+        ▼
+cgroup_freeze_task()
+    jobctl |= JOBCTL_TRAP_FREEZE
+    signal_wake_up()
+        │
+        ▼ (task wakes, enters signal handling)
+get_signal()
+    └─ do_freezer_trap()
+        ├─ cgroup_enter_frozen()  → frozen=true, bump counter
+        └─ schedule()  ◀──── SLEEPS HERE
+                │
+write(cgroup.freeze, "0")
+                │
+        cgroup_freeze_task()
+            jobctl &= ~JOBCTL_TRAP_FREEZE
+            wake_up_process()
+                │
+                ▼
+            schedule() returns
+            cgroup_leave_frozen()  → frozen=false, decrement counter
+            task resumes userspace
 ```
 
 ```c
+void cgroup_freeze(struct cgroup *cgrp, bool freeze)
+{
+    struct cgroup_subsys_state *css;
+    struct cgroup *parent;
+    struct cgroup *dsct;
+    bool applied = false;
+    u64 ts_nsec;
+    bool old_e;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    /* Nothing changed? Just exit. */
+    if (cgrp->freezer.freeze == freeze)
+        return;
+
+    cgrp->freezer.freeze = freeze;
+    ts_nsec = ktime_get_ns();
+
+    /* Propagate changes downwards the cgroup tree. */
+    css_for_each_descendant_pre(css, &cgrp->self) {
+        dsct = css->cgroup;
+
+        if (cgroup_is_dead(dsct))
+            continue;
+
+        /* e_freeze is affected by parent's e_freeze and dst's freeze.
+         * If old e_freeze eq new e_freeze, no change, its children
+         * will not be affected. So do nothing and skip the subtree */
+        old_e = dsct->freezer.e_freeze;
+        parent = cgroup_parent(dsct);
+        dsct->freezer.e_freeze = (dsct->freezer.freeze || parent->freezer.e_freeze);
+        if (dsct->freezer.e_freeze == old_e) {
+            css = css_rightmost_descendant(css);
+            continue;
+        }
+
+        /* Do change actual state: freeze or unfreeze. */
+        cgroup_do_freeze(dsct, freeze, ts_nsec);
+        applied = true;
+    }
+
+    /* Even if the actual state hasn't changed, let's notify a user.
+     * The state can be enforced by an ancestor cgroup: the cgroup
+     * can already be in the desired state or it can be locked in the
+     * opposite state, so that the transition will never happen.
+     * In both cases it's better to notify a user, that there is
+     * nothing to wait for. */
+    if (!applied) {
+        TRACE_CGROUP_PATH(notify_frozen, cgrp,
+                  test_bit(CGRP_FROZEN, &cgrp->flags));
+        cgroup_file_notify(&cgrp->events_file);
+    }
+}
+
+ void cgroup_do_freeze(struct cgroup *cgrp, bool freeze, u64 ts_nsec)
+{
+    struct css_task_iter it;
+    struct task_struct *task;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    spin_lock_irq(&css_set_lock);
+    write_seqcount_begin(&cgrp->freezer.freeze_seq);
+    if (freeze) {
+        set_bit(CGRP_FREEZE, &cgrp->flags);
+        cgrp->freezer.freeze_start_nsec = ts_nsec;
+    } else {
+        clear_bit(CGRP_FREEZE, &cgrp->flags);
+        cgrp->freezer.frozen_nsec += (ts_nsec -
+            cgrp->freezer.freeze_start_nsec);
+    }
+    write_seqcount_end(&cgrp->freezer.freeze_seq);
+    spin_unlock_irq(&css_set_lock);
+
+    if (freeze)
+        TRACE_CGROUP_PATH(freeze, cgrp);
+    else
+        TRACE_CGROUP_PATH(unfreeze, cgrp);
+
+    css_task_iter_start(&cgrp->self, 0, &it);
+    while ((task = css_task_iter_next(&it))) {
+        /* Ignore kernel threads here. Freezing cgroups containing
+         * kthreads isn't supported. */
+        if (task->flags & PF_KTHREAD)
+            continue;
+        cgroup_freeze_task(task, freeze);
+    }
+    css_task_iter_end(&it);
+
+    /* Cgroup state should be revisited here to cover empty leaf cgroups
+     * and cgroups which descendants are already in the desired state. */
+    spin_lock_irq(&css_set_lock);
+    if (cgrp->nr_descendants == cgrp->freezer.nr_frozen_descendants)
+        cgroup_update_frozen(cgrp);
+    spin_unlock_irq(&css_set_lock);
+}
+
 void cgroup_freeze_task(struct task_struct *task, bool freeze)
 {
     unsigned long flags;
