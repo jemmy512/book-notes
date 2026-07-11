@@ -714,6 +714,13 @@ logfile ~/.msmtp.log
     ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
 
     git send-email \
+    --dry-run \
+    --to-cmd='./scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nol' \
+    --cc-cmd='./scripts/get_maintainer.pl --nogit --nogit-fallback --norolestats --nom' \
+    --cc="linux-kernel@vger.kernel.org" \
+    v2-0001-net-rps-consolidate-RPS-dispatch-into-netif_rps-h.patch
+
+    git send-email \
     --in-reply-to=<message-id> \
     --to=dnlplm@xxx.yyy \
     --cc=bjorn@xxx.yyy \
@@ -726,6 +733,59 @@ logfile ~/.msmtp.log
 * `--annotate`: Reply code comment
 * `--subject-prefix="PATCH <MOD NAME>"`
 * `--in-reply-to`: Message id can be found at https://lore.kernel.org/all/ according to the patch name
+
+# scripts/bloat-o-meter
+
+```sh
+cd /Volumes/code/linux
+
+# Save current .config if you have one
+[ -f .config ] && cp .config .config.saved
+
+# Sanity: HEAD should be your v2 commit
+git log -1 --oneline
+# Expected: 25fc897 net/rps: consolidate RPS dispatch into netif_rps() helpers
+
+# --- make config ---
+make defconfig ARCH=arm64
+# -e (enable) and -d (disable) configs
+./scripts/config -e CONFIG_RPS -e CONFIG_XPS -e CONFIG_SMP \
+                 -d CONFIG_DEBUG_INFO_REDUCED
+
+# Kconfig re-evaluates all the deps and fills in the gaps that step 2 created.
+make olddefconfig
+
+# --- Build v2 (HEAD) ---
+source bee-init
+make net/core/dev.o -j$(nproc) ARCH=arm64 LLVM=1 \
+     HOSTCFLAGS="$HOSTCFLAGS -DO_LARGEFILE=0" KBUILD_HOSTLDFLAGS=""
+cp net/core/dev.o /tmp/dev.o.v2
+
+# --- Build baseline (revert just the two files, no full checkout) ---
+git checkout HEAD~1 -- net/core/dev.c include/linux/netdevice.h
+make net/core/dev.o -j$(nproc) ARCH=arm64 LLVM=1 \
+     HOSTCFLAGS="$HOSTCFLAGS -DO_LARGEFILE=0" KBUILD_HOSTLDFLAGS=""
+cp net/core/dev.o /tmp/dev.o.base
+
+# --- Restore v2 in the tree ---
+git checkout HEAD -- net/core/dev.c include/linux/netdevice.h
+
+./scripts/bloat-o-meter /tmp/dev.o.base /tmp/dev.o.v2 | tee /tmp/bloatometer.txt
+```
+
+```sh
+
+# Evidence 2: disassembly diff (use llvm-objdump on macOS)
+OBJDUMP=/opt/homebrew/opt/llvm/bin/llvm-objdump
+for fn in netif_rx_internal netif_receive_skb_internal netif_receive_skb_list_internal; do
+  $OBJDUMP -d --disassemble-symbols="$fn" --no-show-raw-insn --no-leading-addr \
+     /tmp/dev.o.base > "/tmp/$fn.base.s" 2>/dev/null
+  $OBJDUMP -d --disassemble-symbols="$fn" --no-show-raw-insn --no-leading-addr \
+     /tmp/dev.o.v2   > "/tmp/$fn.v2.s"   2>/dev/null
+  echo "===== $fn ====="
+  diff -u "/tmp/$fn.base.s" "/tmp/$fn.v2.s" || true
+done | tee /tmp/objdump-diff.txt
+```
 
 # git cmd
 
