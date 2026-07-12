@@ -22564,23 +22564,28 @@ void cgroup_enter_frozen(void)
 
         /* If flags is updated, update the state of ancestor cgroups. */
         if (cgroup_update_frozen_flag(cgrp, frozen))
+            cgroup_propagate_frozen(cgrp, frozen);
     }
     spin_unlock_irq(&css_set_lock);
 }
 
-void cgroup_update_frozen(struct cgroup *cgrp)
+
+bool cgroup_update_frozen_flag(struct cgroup *cgrp, bool frozen)
 {
-    bool frozen;
+    lockdep_assert_held(&css_set_lock);
 
-    /* If the cgroup has to be frozen (CGRP_FREEZE bit set),
-     * and all tasks are frozen and/or stopped, let's consider
-     * the cgroup frozen. Otherwise it's not frozen. */
-    frozen = test_bit(CGRP_FREEZE, &cgrp->flags) &&
-        cgrp->freezer.nr_frozen_tasks == __cgroup_task_count(cgrp);
+    /* Already there? */
+    if (test_bit(CGRP_FROZEN, &cgrp->flags) == frozen)
+        return false;
 
-    /* If flags is updated, update the state of ancestor cgroups. */
-    if (cgroup_update_frozen_flag(cgrp, frozen))
-        cgroup_propagate_frozen(cgrp, frozen);
+    if (frozen)
+        set_bit(CGRP_FROZEN, &cgrp->flags);
+    else
+        clear_bit(CGRP_FROZEN, &cgrp->flags);
+
+    cgroup_file_notify(&cgrp->events_file);
+    TRACE_CGROUP_PATH(notify_frozen, cgrp, frozen);
+    return true;
 }
 
 void cgroup_propagate_frozen(struct cgroup *cgrp, bool frozen)
@@ -22605,24 +22610,6 @@ void cgroup_propagate_frozen(struct cgroup *cgrp, bool frozen)
         if (cgroup_update_frozen_flag(cgrp, frozen))
             desc++;
     }
-}
-
-bool cgroup_update_frozen_flag(struct cgroup *cgrp, bool frozen)
-{
-    lockdep_assert_held(&css_set_lock);
-
-    /* Already there? */
-    if (test_bit(CGRP_FROZEN, &cgrp->flags) == frozen)
-        return false;
-
-    if (frozen)
-        set_bit(CGRP_FROZEN, &cgrp->flags);
-    else
-        clear_bit(CGRP_FROZEN, &cgrp->flags);
-
-    cgroup_file_notify(&cgrp->events_file);
-    TRACE_CGROUP_PATH(notify_frozen, cgrp, frozen);
-    return true;
 }
 ```
 
