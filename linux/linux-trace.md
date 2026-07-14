@@ -902,7 +902,12 @@ static int ptrace_attach(struct task_struct *task, long request,
                 if (task_is_stopped(task) &&
                     task_set_jobctl_pending(task, JOBCTL_TRAP_STOP | JOBCTL_TRAPPING)) {
                     task->jobctl &= ~JOBCTL_STOPPED;
-                    signal_wake_up_state(task, __TASK_STOPPED);
+                    signal_wake_up_state(task, __TASK_STOPPED) {
+                        set_tsk_thread_flag(t, TIF_SIGPENDING);
+
+                        if (!wake_up_state(t, state | TASK_INTERRUPTIBLE))
+                            kick_process(t);
+                    }
                 }
             }
         }
@@ -1036,95 +1041,6 @@ void el0_svc_common(struct pt_regs *regs, int scno, int sc_nr,
         if (scno == NO_SYSCALL)
             goto trace_fn_exit;
     }
-}
-
-
-int ptrace_notify(int exit_code, unsigned long message) {
-    int signr;
-
-    BUG_ON((exit_code & (0x7f | ~0xffff)) != SIGTRAP);
-    if (unlikely(task_work_pending(current)))
-        task_work_run();
-
-    spin_lock_irq(&current->sighand->siglock);
-    signr = ptrace_do_notify(SIGTRAP, exit_code, CLD_TRAPPED/*why*/, message) {
-        kernel_siginfo_t info;
-
-        clear_siginfo(&info);
-        info.si_signo = signr;
-        info.si_code = exit_code;
-        info.si_pid = task_pid_vnr(current);
-        info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
-
-        /* Let the debugger run. */
-        return ptrace_stop(exit_code, why, message, &info) {
-            bool gstop_done = false;
-
-            if (arch_ptrace_stop_needed()) {
-                spin_unlock_irq(&current->sighand->siglock);
-                arch_ptrace_stop();
-                spin_lock_irq(&current->sighand->siglock);
-            }
-
-            if (!current->ptrace || __fatal_signal_pending(current))
-                return exit_code;
-
-            /* 1. set curretn TASK_TRACED so scheduler wont run this task */
-            set_special_state(TASK_TRACED);
-            current->jobctl |= JOBCTL_TRACED;
-
-            smp_wmb();
-
-            current->ptrace_message = message;
-            current->last_siginfo = info;
-            current->exit_code = exit_code;
-
-            if (why == CLD_STOPPED && (current->jobctl & JOBCTL_STOP_PENDING))
-                gstop_done = task_participate_group_stop(current);
-
-            /* any trap clears pending STOP trap, STOP trap clears NOTIFY */
-            task_clear_jobctl_pending(current, JOBCTL_TRAP_STOP);
-            if (info && info->si_code >> 8 == PTRACE_EVENT_STOP)
-                task_clear_jobctl_pending(current, JOBCTL_TRAP_NOTIFY);
-
-            /* entering a trap, clear TRAPPING */
-            task_clear_jobctl_trapping(current);
-
-            spin_unlock_irq(&current->sighand->siglock);
-            read_lock(&tasklist_lock);
-
-            /* 2. notify tracer and real parent */
-            if (current->ptrace)
-                do_notify_parent_cldstop(current, true, why);
-            if (gstop_done && (!current->ptrace || ptrace_reparented(current)))
-                do_notify_parent_cldstop(current, false, why);
-
-            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
-                preempt_disable();
-            read_unlock(&tasklist_lock);
-            cgroup_enter_frozen();
-            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
-                preempt_enable_no_resched();
-
-            /* 3. schedule out of runqueue */
-            schedule();
-            cgroup_leave_frozen(true);
-
-            spin_lock_irq(&current->sighand->siglock);
-            exit_code = current->exit_code;
-            current->last_siginfo = NULL;
-            current->ptrace_message = 0;
-            current->exit_code = 0;
-
-            /* LISTENING can be set only during STOP traps, clear it */
-            current->jobctl &= ~(JOBCTL_LISTENING | JOBCTL_PTRACE_FROZEN);
-
-            recalc_sigpending_tsk(current);
-            return exit_code;
-        }
-    }
-    spin_unlock_irq(&current->sighand->siglock);
-    return signr;
 }
 ```
 
@@ -1828,6 +1744,99 @@ static int ptrace_hbp_get_addr(unsigned int note_type,
 
     *addr = bp ? counter_arch_bp(bp)->address : 0;
     return 0;
+}
+```
+
+## ptrce_notify
+
+```c
+int ptrace_notify(int exit_code, unsigned long message)
+{
+    int signr;
+
+    BUG_ON((exit_code & (0x7f | ~0xffff)) != SIGTRAP);
+    if (unlikely(task_work_pending(current)))
+        task_work_run();
+
+    spin_lock_irq(&current->sighand->siglock);
+    signr = ptrace_do_notify(SIGTRAP, exit_code, CLD_TRAPPED/*why*/, message) {
+        kernel_siginfo_t info;
+
+        clear_siginfo(&info);
+        info.si_signo = signr;
+        info.si_code = exit_code;
+        info.si_pid = task_pid_vnr(current);
+        info.si_uid = from_kuid_munged(current_user_ns(), current_uid());
+
+        /* Let the debugger run. */
+        return ptrace_stop(exit_code, why, message, &info) {
+            bool gstop_done = false;
+
+            if (arch_ptrace_stop_needed()) {
+                spin_unlock_irq(&current->sighand->siglock);
+                arch_ptrace_stop();
+                spin_lock_irq(&current->sighand->siglock);
+            }
+
+            if (!current->ptrace || __fatal_signal_pending(current))
+                return exit_code;
+
+            /* 1. set curretn TASK_TRACED so scheduler wont run this task */
+            set_special_state(TASK_TRACED);
+            current->jobctl |= JOBCTL_TRACED;
+
+            smp_wmb();
+
+            current->ptrace_message = message;
+            current->last_siginfo = info;
+            current->exit_code = exit_code;
+
+            if (why == CLD_STOPPED && (current->jobctl & JOBCTL_STOP_PENDING))
+                gstop_done = task_participate_group_stop(current);
+
+            /* any trap clears pending STOP trap, STOP trap clears NOTIFY */
+            task_clear_jobctl_pending(current, JOBCTL_TRAP_STOP);
+            if (info && info->si_code >> 8 == PTRACE_EVENT_STOP)
+                task_clear_jobctl_pending(current, JOBCTL_TRAP_NOTIFY);
+
+            /* entering a trap, clear TRAPPING */
+            task_clear_jobctl_trapping(current);
+
+            spin_unlock_irq(&current->sighand->siglock);
+            read_lock(&tasklist_lock);
+
+            /* 2. notify tracer and real parent */
+            if (current->ptrace)
+                do_notify_parent_cldstop(current, true, why);
+            if (gstop_done && (!current->ptrace || ptrace_reparented(current)))
+                do_notify_parent_cldstop(current, false, why);
+
+            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+                preempt_disable();
+            read_unlock(&tasklist_lock);
+            cgroup_enter_frozen();
+            if (!IS_ENABLED(CONFIG_PREEMPT_RT))
+                preempt_enable_no_resched();
+
+            /* 3. schedule out of runqueue */
+            schedule();
+            cgroup_leave_frozen(true);
+
+            spin_lock_irq(&current->sighand->siglock);
+            exit_code = current->exit_code;
+            current->last_siginfo = NULL;
+            current->ptrace_message = 0;
+            current->exit_code = 0;
+
+            /* LISTENING can be set only during STOP traps, clear it */
+            current->jobctl &= ~(JOBCTL_LISTENING | JOBCTL_PTRACE_FROZEN);
+
+            recalc_sigpending_tsk(current);
+            return exit_code;
+        }
+    }
+    spin_unlock_irq(&current->sighand->siglock);
+    return signr;
 }
 ```
 

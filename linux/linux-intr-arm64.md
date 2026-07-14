@@ -463,52 +463,142 @@ el0t_64_irq_handler(struct pt_regs *regs) {
 
         irq_exit_rcu();
 
-        arm64_exit_to_user_mode(regs) {
-            __exit_to_user_mode_prepare(regs) {
-                flags = read_thread_flags();
-                if (unlikely(flags & _TIF_WORK_MASK)) {
-                    do_notify_resume(regs, flags) {
-                        do {
-                            if (thread_flags & _TIF_NEED_RESCHED) {
-                                local_daif_restore(DAIF_PROCCTX_NOIRQ);
-                                schedule();
-                            } else {
-                                local_daif_restore(DAIF_PROCCTX);
+        arm64_exit_to_user_mode(regs);
+    }
+}
+```
 
-                                if (thread_flags & _TIF_UPROBE)
-                                    uprobe_notify_resume(regs);
+## arm64_enter_from_user_mode
 
-                                if (thread_flags & _TIF_MTE_ASYNC_FAULT) {
-                                    clear_thread_flag(TIF_MTE_ASYNC_FAULT);
-                                    send_sig_fault(SIGSEGV, SEGV_MTEAERR, (void __user *)NULL, current);
-                                }
+```c
+void arm64_enter_from_user_mode(struct pt_regs *regs)
+{
+	enter_from_user_mode(regs);
+	rseq_note_user_irq_entry();
+	mte_disable_tco_entry(current);
+	sme_enter_from_user_mode();
+}
 
-                                if (thread_flags & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL))
-                                    arch_do_signal_or_restart(regs);
+void enter_from_user_mode(struct pt_regs *regs)
+{
+	arch_enter_from_user_mode(regs);
+	lockdep_hardirqs_off(CALLER_ADDR0);
 
-                                if (thread_flags & _TIF_NOTIFY_RESUME) {
-                                    resume_user_mode_work(regs);
-                                }
+	CT_WARN_ON(__ct_state() != CT_STATE_USER);
+	user_exit_irqoff() {
+        if (context_tracking_enabled())
+		    __ct_user_exit(CT_STATE_USER);
+    }
 
-                                if (thread_flags & _TIF_FOREIGN_FPSTATE)
-                                    fpsimd_restore_current_state();
-                            }
+	instrumentation_begin();
+	kmsan_unpoison_entry_regs(regs);
+	trace_hardirqs_off_finish();
+	instrumentation_end();
+}
+```
 
-                            local_daif_mask();
-                            thread_flags = read_thread_flags();
-                        } while (thread_flags & _TIF_WORK_MASK);
-                    }
+## arm64_exit_to_user_mode
+
+```c
+arm64_exit_to_user_mode(regs) {
+    local_irq_disable();
+
+    irqentry_exit_to_user_mode_prepare(regs) {
+        __exit_to_user_mode_prepare(regs, EXIT_TO_USER_MODE_WORK_IRQ);
+        rseq_irqentry_exit_to_user_mode();
+        __exit_to_user_mode_validate();
+    }
+    local_daif_mask();
+    sme_exit_to_user_mode();
+    mte_check_tfsr_exit();
+
+    exit_to_user_mode() {
+        instrumentation_begin();
+        unwind_reset_info();
+        trace_hardirqs_on_prepare();
+        lockdep_hardirqs_on_prepare();
+        instrumentation_end();
+
+        user_enter_irqoff() {
+            if (context_tracking_enabled())
+		        __ct_user_enter(CT_STATE_USER);
+        }
+        arch_exit_to_user_mode();
+        lockdep_hardirqs_on(CALLER_ADDR0);
+    }
+}
+
+void __exit_to_user_mode_prepare(struct pt_regs *regs,
+                            const unsigned long work_mask)
+{
+    unsigned long ti_work;
+
+    lockdep_assert_irqs_disabled();
+
+    /* Flush pending rcuog wakeup before the last need_resched() check */
+    tick_nohz_user_enter_prepare();
+
+    ti_work = read_thread_flags();
+    if (unlikely(ti_work & work_mask)) {
+        if (!hrtimer_rearm_deferred_user_irq(&ti_work, work_mask)) {
+            ti_work = exit_to_user_mode_loop(regs, ti_work) {
+                for (;;) {
+                    ti_work = __exit_to_user_mode_loop(regs, ti_work);
+
+                    if (likely(!rseq_exit_to_user_mode_restart(regs, ti_work)))
+                        return ti_work;
+                    ti_work = read_thread_flags();
                 }
-            }
-            mte_check_tfsr_exit();
-            __exit_to_user_mode() {
-                trace_hardirqs_on_prepare();
-                lockdep_hardirqs_on_prepare();
-                user_enter_irqoff();
-                lockdep_hardirqs_on(CALLER_ADDR0);
             }
         }
     }
+
+    arch_exit_to_user_mode_prepare(regs, ti_work);
+}
+unsigned long __exit_to_user_mode_loop(struct pt_regs *regs,
+                                  unsigned long ti_work)
+{
+    /* Before returning to user space ensure that all pending work
+     * items have been completed. */
+    while (ti_work & EXIT_TO_USER_MODE_WORK_LOOP) {
+
+        local_irq_enable();
+
+        if (ti_work & (_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)) {
+            if (!rseq_grant_slice_extension(ti_work, TIF_SLICE_EXT_DENY))
+                schedule();
+        }
+
+        if (ti_work & _TIF_UPROBE)
+            uprobe_notify_resume(regs);
+
+        if (ti_work & _TIF_PATCH_PENDING)
+            klp_update_patch_state(current);
+
+        if (ti_work & (_TIF_SIGPENDING | _TIF_NOTIFY_SIGNAL)) {
+            futex_fixup_robust_unlock(regs);
+            arch_do_signal_or_restart(regs);
+        }
+
+        if (ti_work & _TIF_NOTIFY_RESUME)
+            resume_user_mode_work(regs);
+
+        /* Architecture specific TIF work */
+        arch_exit_to_user_mode_work(regs, ti_work);
+
+        /* Disable interrupts and reevaluate the work flags as they
+         * might have changed while interrupts and preemption was
+         * enabled above. */
+        local_irq_disable();
+
+        /* Check if any of the above work has queued a deferred wakeup */
+        tick_nohz_user_enter_prepare();
+
+        ti_work = read_thread_flags();
+    }
+
+    /* Return the latest work state for arch_exit_to_user_mode() */
+    return ti_work;
 }
 ```
 
@@ -523,129 +613,153 @@ el1h_64_irq_handler(struct pt_regs *regs) {
             __el1_pnmi(regs, handler);
         } else {
             __el1_irq(regs, handler) {
-                enter_from_kernel_mode(regs) {
-                    return irqentry_enter(regs) {
-                        irqentry_state_t ret = {
-                            .exit_rcu = false,
-                        };
-
-                        if (user_mode(regs)) {
-                            irqentry_enter_from_user_mode(regs) {
-                                enter_from_user_mode(regs) {
-                                    arch_enter_from_user_mode(regs);
-                                    lockdep_hardirqs_off(CALLER_ADDR0);
-
-                                    CT_WARN_ON(__ct_state() != CT_STATE_USER);
-                                    user_exit_irqoff();
-
-                                    instrumentation_begin();
-                                    kmsan_unpoison_entry_regs(regs);
-                                    trace_hardirqs_off_finish();
-                                    instrumentation_end();
-                                }
-/* For RSEQ the only relevant reason to inspect and eventually fixup (abort)
-user space critical sections is when user space was interrupted and the
-task was scheduled out. */
-                                rseq_note_user_irq_entry() {
-                                    if (IS_ENABLED(CONFIG_GENERIC_IRQ_ENTRY))
-                                        current->rseq.event.user_irq = true;
-                                }
-                            }
-                            return ret;
-                        }
-
-                        if (!IS_ENABLED(CONFIG_TINY_RCU) && (is_idle_task(current) || arch_in_rcu_eqs())) {
-                            lockdep_hardirqs_off(CALLER_ADDR0);
-                            ct_irq_enter();
-                            instrumentation_begin();
-                            kmsan_unpoison_entry_regs(regs);
-                            trace_hardirqs_off_finish();
-                            instrumentation_end();
-
-                            ret.exit_rcu = true;
-                            return ret;
-                        }
-
-                        lockdep_hardirqs_off(CALLER_ADDR0);
-                        instrumentation_begin();
-                        kmsan_unpoison_entry_regs(regs);
-                        rcu_irq_enter_check_tick();
-                        trace_hardirqs_off_finish();
-                        instrumentation_end();
-
-                        return ret;
-                    }
-                }
+                state = arm64_enter_from_kernel_mode(regs);
 
                 irq_enter_rcu();
                 do_interrupt_handler(regs, handler);
                 irq_exit_rcu();
 
-                exit_to_kernel_mode(regs, state) {
-                   irqentry_exit(regs, state) {
-                        if (user_mode(regs)) {
-                            irqentry_exit_to_user_mode(regs) {
-                                instrumentation_begin();
-                                __exit_to_user_mode_prepare(regs);
-                                instrumentation_end();
-                                exit_to_user_mode();
-                            }
-                        } else if (!regs_irqs_disabled(regs)) {
-                            if (state.exit_rcu) {
-                                instrumentation_begin();
-                                /* Tell the tracer that IRET will enable interrupts */
-                                trace_hardirqs_on_prepare();
-                                lockdep_hardirqs_on_prepare();
-                                instrumentation_end();
-                                ct_irq_exit();
-                                lockdep_hardirqs_on(CALLER_ADDR0);
-                                return;
-                            }
-
-                            instrumentation_begin();
-                            if (IS_ENABLED(CONFIG_PREEMPTION)) {
-                                irqentry_exit_cond_resched() {
-                                    if (!preempt_count()) {
-                                        rcu_irq_exit_check_preempt();
-                                        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
-                                            WARN_ON_ONCE(!on_thread_stack());
-
-                                        if (need_resched() && arch_irqentry_exit_need_resched()) {
-                                            preempt_schedule_irq() {
-                                                enum ctx_state prev_state;
-
-                                                BUG_ON(preempt_count() || !irqs_disabled());
-
-                                                prev_state = exception_enter();
-
-                                                do {
-                                                    preempt_disable();
-                                                    local_irq_enable();
-                                                    __schedule(SM_PREEMPT);
-                                                    local_irq_disable();
-                                                    sched_preempt_enable_no_resched();
-                                                } while (need_resched());
-
-                                                exception_exit(prev_state);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            /* Covers both tracing and lockdep */
-                            trace_hardirqs_on();
-                            instrumentation_end();
-                        } else {
-                            /* IRQ flags state is correct already. Just tell RCU if it
-                            * was not watching on entry. */
-                            if (state.exit_rcu)
-                                ct_irq_exit();
-                        }
-                   }
-                }
+                arm64_exit_to_kernel_mode(regs, state);
             }
         }
+    }
+}
+```
+
+## arm64_enter_from_kernel_mode
+
+```c
+irqentry_state_t arm64_enter_from_kernel_mode(struct pt_regs *regs)
+{
+    irqentry_state_t state;
+
+    state = irqentry_enter_from_kernel_mode(regs);
+    mte_check_tfsr_entry();
+    mte_disable_tco_entry(current);
+
+    return state;
+}
+
+irqentry_state_t irqentry_enter_from_kernel_mode(struct pt_regs *regs)
+{
+    irqentry_state_t ret = {
+        .exit_rcu = false,
+    };
+
+    if (!IS_ENABLED(CONFIG_TINY_RCU) && (is_idle_task(current) || arch_in_rcu_eqs())) {
+        /* If RCU is not watching then the same careful
+         * sequence vs. lockdep and tracing is required
+         * as in irqentry_enter_from_user_mode(). */
+        lockdep_hardirqs_off(CALLER_ADDR0);
+        ct_irq_enter();
+        instrumentation_begin();
+        kmsan_unpoison_entry_regs(regs);
+        trace_hardirqs_off_finish();
+        instrumentation_end();
+
+        ret.exit_rcu = true;
+        return ret;
+    }
+
+    /* If RCU is watching then RCU only wants to check whether it needs
+     * to restart the tick in NOHZ mode. rcu_irq_enter_check_tick()
+     * already contains a warning when RCU is not watching, so no point
+     * in having another one here. */
+    lockdep_hardirqs_off(CALLER_ADDR0);
+    instrumentation_begin();
+    kmsan_unpoison_entry_regs(regs);
+    rcu_irq_enter_check_tick();
+    trace_hardirqs_off_finish();
+    instrumentation_end();
+
+    return ret;
+}
+```
+
+## arm64_exit_to_kernel_mode
+
+```c
+void noinstr arm64_exit_to_kernel_mode(struct pt_regs *regs,
+                          irqentry_state_t state)
+{
+    local_irq_disable();
+    irqentry_exit_to_kernel_mode_preempt(regs, state);
+    local_daif_mask();
+    mte_check_tfsr_exit();
+    irqentry_exit_to_kernel_mode_after_preempt(regs, state);
+}
+
+void irqentry_exit_to_kernel_mode_preempt(struct pt_regs *regs,
+                            irqentry_state_t state)
+{
+    if (regs_irqs_disabled(regs) || state.exit_rcu)
+        return;
+
+    if (IS_ENABLED(CONFIG_PREEMPTION))
+        irqentry_exit_cond_resched();
+}
+
+void raw_irqentry_exit_cond_resched(void)
+{
+    if (!preempt_count()) {
+        /* Sanity check RCU and thread stack */
+        rcu_irq_exit_check_preempt();
+        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
+            WARN_ON_ONCE(!on_thread_stack());
+        if (need_resched() && arch_irqentry_exit_need_resched())
+            preempt_schedule_irq();
+    }
+}
+
+void __sched preempt_schedule_irq(void)
+{
+    enum ctx_state prev_state;
+
+    /* Catch callers which need to be fixed */
+    BUG_ON(preempt_count() || !irqs_disabled());
+
+    prev_state = exception_enter();
+
+    do {
+        preempt_disable();
+        local_irq_enable();
+        __schedule(SM_PREEMPT);
+        local_irq_disable();
+        sched_preempt_enable_no_resched();
+    } while (need_resched());
+
+    exception_exit(prev_state);
+}
+
+void
+irqentry_exit_to_kernel_mode_after_preempt(struct pt_regs *regs, irqentry_state_t state)
+{
+    if (!regs_irqs_disabled(regs)) {
+        /* If RCU was not watching on entry this needs to be done
+         * carefully and needs the same ordering of lockdep/tracing
+         * and RCU as the return to user mode path. */
+        if (state.exit_rcu) {
+            instrumentation_begin();
+            hrtimer_rearm_deferred();
+            /* Tell the tracer that IRET will enable interrupts */
+            trace_hardirqs_on_prepare();
+            lockdep_hardirqs_on_prepare();
+            instrumentation_end();
+            ct_irq_exit();
+            lockdep_hardirqs_on(CALLER_ADDR0);
+            return;
+        }
+
+        instrumentation_begin();
+        hrtimer_rearm_deferred();
+        /* Covers both tracing and lockdep */
+        trace_hardirqs_on();
+        instrumentation_end();
+    } else {
+        /* IRQ flags state is correct already. Just tell RCU if it
+         * was not watching on entry. */
+        if (state.exit_rcu)
+            ct_irq_exit();
     }
 }
 ```
@@ -660,14 +774,10 @@ void el0t_64_sync_handler(struct pt_regs *regs) {
     switch (ESR_ELx_EC(esr)) {
     case ESR_ELx_EC_SVC64:
         el0_svc(regs) {
-            enter_from_user_mode(regs) {
-                lockdep_hardirqs_off(CALLER_ADDR0);
-                CT_WARN_ON(ct_state() != CONTEXT_USER);
-                user_exit_irqoff();
-                trace_hardirqs_off_finish();
-                mte_disable_tco_entry(current);
-            }
+            arm64_syscall_enter_from_user_mode(regs);
             cortex_a76_erratum_1463225_svc_handler();
+            fpsimd_syscall_enter();
+            local_daif_restore(DAIF_PROCCTX);
 
             do_el0_svc(regs) {
                 fp_user_discard();
@@ -696,8 +806,8 @@ void el0t_64_sync_handler(struct pt_regs *regs) {
                 }
             }
 
-            exit_to_user_mode(regs)
-                --->
+            arm64_syscall_exit_to_user_mode(regs);
+            fpsimd_syscall_exit();
         }
         break;
     case ESR_ELx_EC_DABT_LOW:
@@ -984,10 +1094,8 @@ int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
             void *info = csd->info;
             unsigned long flags;
 
-            /*
-            * We can unlock early even for the synchronous on-stack case,
-            * since we're doing this from the same CPU..
-            */
+            /* We can unlock early even for the synchronous on-stack case,
+            * since we're doing this from the same CPU.. */
             csd_lock_record(csd);
             csd_unlock(csd);
             local_irq_save(flags);

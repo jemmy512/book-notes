@@ -394,28 +394,200 @@ primary_entry
 /* init/main.c */
 void start_kernel(void)
 {
-    /* #0 process, the only one doesn't created by fork or kernel_thread */
+    char *command_line;
+    char *after_dashes;
+
     set_task_stack_end_magic(&init_task);
+    smp_setup_processor_id();
+    debug_objects_early_init();
+    init_vmlinux_build_id();
+
+    cgroup_init_early();
 
     local_irq_disable();
+    early_boot_irqs_disabled = true;
 
+    /* Interrupts are still disabled. Do necessary setups, then
+     * enable them. */
+    boot_cpu_init();
+    page_address_init();
+    pr_notice("%s", linux_banner);
     setup_arch(&command_line);
+    mm_core_init_early();
+    /* Static keys and static calls are needed by LSMs */
+    jump_label_init();
+    static_call_init();
+    early_security_init();
+    setup_boot_config();
+    setup_command_line(command_line);
+    setup_nr_cpu_ids();
+    setup_per_cpu_areas();
+    smp_prepare_boot_cpu();    /* arch-specific boot-cpu hooks */
+    early_numa_node_init();
+    boot_cpu_hotplug_init();
 
-    /* set_system_intr_gate(IA32_SYSCALL_VECTOR, entry_INT80_32) */
+    print_kernel_cmdline(saved_command_line);
+    /* parameters may set static keys */
+    parse_early_param();
+    after_dashes = parse_args("Booting kernel",
+                  static_command_line, __start___param,
+                  __stop___param - __start___param,
+                  -1, -1, NULL, &unknown_bootoption);
+    print_unknown_bootoptions();
+    if (!IS_ERR_OR_NULL(after_dashes))
+        parse_args("Setting init args", after_dashes, NULL, 0, -1, -1,
+               NULL, set_init_arg);
+    if (extra_init_args)
+        parse_args("Setting extra init args", extra_init_args,
+               NULL, 0, -1, -1, NULL, set_init_arg);
+
+    /* Architectural and non-timekeeping rng init, before allocator init */
+    random_init_early(command_line);
+
+    /* These use large bootmem allocations and must precede
+     * initalization of page allocator */
+    setup_log_buf(0);
+    vfs_caches_init_early();
+    sort_main_extable();
     trap_init();
+    mm_core_init();
+    maple_tree_init();
+    poking_init();
+    ftrace_init();
 
-    /* mnt_init()->init_rootfs() register_filesystem(&rootfs_fs_type) */
-    vfs_caches_init()
-    setup_arch(&command_line)
-    mm_init();
+    /* trace_printk can be enabled here */
+    early_trace_init();
+
+    /* Set up the scheduler prior starting any interrupts (such as the
+     * timer interrupt). Full topology setup happens at smp_init()
+     * time - but meanwhile we still have a functioning scheduler. */
     sched_init();
-    init_IRQ();
-    softirq_init();
-    signals_init();
-    cpuset_init();
-    cgroup_init();
 
-    rest_init()
+    if (WARN(!irqs_disabled(),
+         "Interrupts were enabled *very* early, fixing it\n"))
+        local_irq_disable();
+    radix_tree_init();
+
+    /* Set up housekeeping before setting up workqueues to allow the unbound
+     * workqueue to take non-housekeeping into account. */
+    housekeeping_init();
+
+    /* Allow workqueue creation and work item queueing/cancelling
+     * early.  Work item execution depends on kthreads and starts after
+     * workqueue_init(). */
+    workqueue_init_early();
+
+    rcu_init();
+    kvfree_rcu_init();
+
+    /* Trace events are available after this */
+    trace_init();
+
+    if (initcall_debug)
+        initcall_debug_enable();
+
+    context_tracking_init();
+    /* init some links before init_ISA_irqs() */
+    early_irq_init();
+    init_IRQ();
+    tick_init();
+    rcu_init_nohz();
+    timers_init();
+    srcu_init();
+    hrtimers_init();
+    softirq_init();
+    vdso_setup_data_pages();
+    timekeeping_init();
+    time_init();
+
+    /* This must be after timekeeping is initialized */
+    random_init();
+
+    /* These make use of the fully initialized rng */
+    kfence_init();
+    boot_init_stack_canary();
+
+    perf_event_init();
+    profile_init();
+    call_function_init();
+    WARN(!irqs_disabled(), "Interrupts were enabled early\n");
+
+    early_boot_irqs_disabled = false;
+    local_irq_enable();
+
+    kmem_cache_init_late();
+
+    /* HACK ALERT! This is early. We're enabling the console before
+     * we've done PCI setups etc, and console_init() must be aware of
+     * this. But we do want output early, in case something goes wrong. */
+    console_init();
+    if (panic_later)
+        panic("Too many boot %s vars at `%s'", panic_later,
+              panic_param);
+
+    lockdep_init();
+
+    /* Need to run this when irqs are enabled, because it wants
+     * to self-test [hard/soft]-irqs on/off lock inversion bugs
+     * too: */
+    locking_selftest();
+
+#ifdef CONFIG_BLK_DEV_INITRD
+    if (initrd_start && !initrd_below_start_ok &&
+        page_to_pfn(virt_to_page((void *)initrd_start)) < min_low_pfn) {
+        pr_crit("initrd overwritten (0x%08lx < 0x%08lx) - disabling it.\n",
+            page_to_pfn(virt_to_page((void *)initrd_start)),
+            min_low_pfn);
+        initrd_start = 0;
+    }
+#endif
+    setup_per_cpu_pageset();
+    numa_policy_init();
+    acpi_early_init();
+    if (late_time_init)
+        late_time_init();
+    sched_clock_init();
+    calibrate_delay();
+
+    arch_cpu_finalize_init();
+
+    pid_idr_init();
+    anon_vma_init();
+    thread_stack_cache_init();
+    cred_init();
+    fork_init();
+    proc_caches_init();
+    uts_ns_init();
+    time_ns_init();
+    key_init();
+    security_init();
+    dbg_late_init();
+    net_ns_init();
+    vfs_caches_init();
+    pagecache_init();
+    signals_init();
+    seq_file_init();
+    proc_root_init();
+    nsfs_init();
+    pidfs_init();
+    cpuset_init();
+    mem_cgroup_init();
+    cgroup_init();
+    taskstats_init_early();
+    delayacct_init();
+
+    acpi_subsystem_init();
+    arch_post_acpi_subsys_init();
+    kcsan_init();
+
+    /* Do the rest non-__init'ed, we're now alive */
+    rest_init();
+
+    /* Avoid stack canaries in callers of boot_init_stack_canary for gcc-10
+     * and older. */
+#if !__has_attribute(__no_stack_protector__)
+    prevent_tail_call_optimization();
+#endif
 }
 
 static void rest_init(void)
@@ -804,6 +976,79 @@ int sched_cpu_dying(unsigned int cpu)
             rq->core = rq;
     }
     return 0;
+}
+```
+
+## kernel_init
+
+```c
+int __ref kernel_init(void *unused)
+{
+    int ret;
+
+    /* Wait until kthreadd is all set-up. */
+    wait_for_completion(&kthreadd_done);
+
+    kernel_init_freeable();
+    /* need to finish all async __init code before freeing the memory */
+    async_synchronize_full();
+
+    system_state = SYSTEM_FREEING_INITMEM;
+    kprobe_free_init_mem();
+    ftrace_free_init_mem();
+    kgdb_free_init_mem();
+    exit_boot_config();
+    free_initmem();
+    mark_readonly();
+
+    /* Kernel mappings are now finalized - update the userspace page-table
+     * to finalize PTI. */
+    pti_finalize();
+
+    system_state = SYSTEM_RUNNING;
+    numa_default_policy();
+
+    rcu_end_inkernel_boot();
+
+    do_sysctl_args();
+
+    if (ramdisk_execute_command) {
+        ret = run_init_process(ramdisk_execute_command);
+        if (!ret)
+            return 0;
+        pr_err("Failed to execute %s (error %d)\n",
+               ramdisk_execute_command, ret);
+    }
+
+    /* We try each of these until one succeeds.
+     *
+     * The Bourne shell can be used instead of init if we are
+     * trying to recover a really broken machine. */
+    if (execute_command) {
+        ret = run_init_process(execute_command);
+        if (!ret)
+            return 0;
+        panic("Requested init %s failed (error %d).",
+              execute_command, ret);
+    }
+
+    if (CONFIG_DEFAULT_INIT[0] != '\0') {
+        ret = run_init_process(CONFIG_DEFAULT_INIT);
+        if (ret)
+            pr_err("Default init %s failed (error %d)\n",
+                   CONFIG_DEFAULT_INIT, ret);
+        else
+            return 0;
+    }
+
+    if (!try_to_run_init_process("/sbin/init") ||
+        !try_to_run_init_process("/etc/init") ||
+        !try_to_run_init_process("/bin/init") ||
+        !try_to_run_init_process("/bin/sh"))
+        return 0;
+
+    panic("No working init found.  Try passing init= option to kernel. "
+          "See Linux Documentation/admin-guide/init.rst for guidance.");
 }
 ```
 
@@ -2398,7 +2643,12 @@ static void noinstr el0_svc(struct pt_regs *regs)
     do_el0_svc(regs);
 
     arm64_exit_to_user_mode(regs) {
-        __exit_to_user_mode_prepare(regs);
+        local_irq_disable();
+        irqentry_exit_to_us_mode_prepare(regs);
+        local_daif_mask();
+        sme_exit_to_user_mode();
+        mte_check_tfsr_exit();
+        exit_to_user_mode();
     }
     fpsimd_syscall_exit();
 }
@@ -2480,54 +2730,6 @@ void __exit_to_user_mode_prepare(struct pt_regs *regs)
     }
 
     arch_exit_to_user_mode_prepare(regs, ti_work);
-}
-```
-
-##### irqentry_exit
-
-```c
-static __always_inline void __el1_irq(struct pt_regs *regs,
-                      void (*handler)(struct pt_regs *))
-{
-    irqentry_state_t state;
-
-    state = enter_from_kernel_mode(regs);
-
-    irq_enter_rcu();
-    do_interrupt_handler(regs, handler);
-    irq_exit_rcu();
-
-    exit_to_kernel_mode(regs, state) {
-        irqentry_exit() {
-            if (user_mode(regs)) {
-                irqentry_exit_to_user_mode(regs) {
-                    __exit_to_user_mode_prepare(ress);
-                }
-            } else if (!regs_irqs_disabled(regs)) {
-                irqentry_exit_cond_resched() {
-                    /* raw_irqentry_exit_cond_resched */
-                    if (!preempt_count()) {
-                        rcu_irq_exit_check_preempt();
-                        if (need_resched() && arch_irqentry_exit_need_resched()) {
-                            preempt_schedule_irq() {
-                                prev_state = exception_enter();
-
-                                do {
-                                    preempt_disable();
-                                    local_irq_enable();
-                                    __schedule(SM_PREEMPT);
-                                    local_irq_disable();
-                                    sched_preempt_enable_no_resched();
-                                } while (need_resched());
-
-                                exception_exit(prev_state);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 ```
 
@@ -2641,61 +2843,8 @@ static inline void __preempt_count_sub(int val)
 
 #### preempt_schedule_irq
 
-```c
-/* do_IRQ -> retint_kernel */
-el1t_64_irq_handler() {
-    el1_interrupt(regs, handle_arch_irq) {
-        write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
+[:link: arm64_exit_to_kernel_mode](./linux-intr-arm64.md#arm64_exit_to_kernel_mode)
 
-        if (IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) && !interrupts_enabled(regs)) {
-            __el1_pnmi(regs, handler);
-        } else {
-            __el1_irq(regs, handler) {
-                irqentry_state_t state;
-
-                state = enter_from_kernel_mode(regs);
-
-                irq_enter_rcu();
-                do_interrupt_handler(regs, handler);
-                irq_exit_rcu();
-
-                exit_to_kernel_mode(regs, state); {
-                    irqentry_exit(regs, state) {
-                        if (user_mode(regs)) {
-                            irqentry_exit_to_user_mode(regs);
-                        } else if (!regs_irqs_disabled(regs)) {
-                            if (IS_ENABLED(CONFIG_PREEMPTION)) {
-                                irqentry_exit_cond_resched() {
-                                    if (!preempt_count()) {
-                                        /* Sanity check RCU and thread stack */
-                                        rcu_irq_exit_check_preempt();
-                                        if (IS_ENABLED(CONFIG_DEBUG_ENTRY))
-                                            WARN_ON_ONCE(!on_thread_stack());
-                                        if (need_resched() && arch_irqentry_exit_need_resched()) {
-                                            preempt_schedule_irq() {
-                                                do {
-                                                    preempt_disable();
-                                                    local_irq_enable();
-                                                    __schedule(SM_PREEMPT);
-                                                    local_irq_disable();
-                                                    sched_preempt_enable_no_resched();
-                                                } while (need_resched());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            if (state.exit_rcu)
-                                ct_irq_exit();
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-```
 <img src='../images/kernel/proc-sched.png' style='max-height:850px'/>
 
 #### cond_resched
@@ -9794,13 +9943,6 @@ static void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued) 
 
             /* Pulls along cfs_rq::zero_vruntime. */
             avg_vruntime(cfs_rq);
-
-        #ifdef CONFIG_SCHED_HRTICK
-            if (queued) {
-                resched_curr_lazy(rq_of(cfs_rq));
-                return;
-            }
-        #endif
         }
     }
 
@@ -18660,73 +18802,147 @@ out_info:
 # do_exit
 
 ```c
-do_exit(code) {
-    WARN_ON(irqs_disabled());
-    synchronize_group_exit(tsk, code) {
-        struct sighand_struct *sighand = tsk->sighand;
-        struct signal_struct *signal = tsk->signal;
+void __noreturn do_exit(long code)
+{
+    struct task_struct *tsk = current;
+    struct kthread *kthread;
+    int group_dead;
 
-        spin_lock_irq(&sighand->siglock);
-        signal->quick_threads--;
-        if ((signal->quick_threads == 0) &&
-            !(signal->flags & SIGNAL_GROUP_EXIT)) {
-            signal->flags = SIGNAL_GROUP_EXIT;
-            signal->group_exit_code = code;
-            signal->group_stop_count = 0;
+    WARN_ON(irqs_disabled());
+    WARN_ON(tsk->plug);
+
+    kthread = tsk_is_kthread(tsk);
+    if (unlikely(kthread)) {
+        kthread_do_exit(kthread, code) {
+            kthread->result = result;
+            if (!list_empty(&kthread->affinity_node)) {
+                mutex_lock(&kthread_affinity_lock);
+                list_del(&kthread->affinity_node);
+                mutex_unlock(&kthread_affinity_lock);
+
+                if (kthread->preferred_affinity) {
+                    kfree(kthread->preferred_affinity);
+                    kthread->preferred_affinity = NULL;
+                }
+            }
         }
-        spin_unlock_irq(&sighand->siglock);
     }
 
     kcov_task_exit(tsk);
     kmsan_task_exit(tsk);
 
-    coredump_task_exit(tsk);
+    synchronize_group_exit(tsk, code);
     ptrace_event(PTRACE_EVENT_EXIT, code);
-
-    validate_creds_for_do_exit(tsk);
+    user_events_exit(tsk);
 
     io_uring_files_cancel();
-    exit_signals(tsk);
+    sched_mm_cid_exit(tsk);
+    exit_signals(tsk);  /* sets PF_EXITING */
 
+    seccomp_filter_release(tsk);
+
+    acct_update_integrals(tsk);
     group_dead = atomic_dec_and_test(&tsk->signal->live);
+    if (group_dead) {
+        /* If the last thread of global init has exited, panic
+         * immediately to get a useable coredump. */
+        if (unlikely(is_global_init(tsk)))
+            panic("Attempted to kill init! exitcode=0x%08x\n",
+                tsk->signal->group_exit_code ?: (int)code);
+
+#ifdef CONFIG_POSIX_TIMERS
+        hrtimer_cancel(&tsk->signal->real_timer);
+        exit_itimers(tsk);
+#endif
+        if (tsk->mm)
+            setmax_mm_hiwater_rss(&tsk->signal->maxrss, tsk->mm);
+    }
+    acct_collect(code, group_dead);
+    if (group_dead)
+        tty_audit_exit();
+    audit_free(tsk);
+
+    tsk->exit_code = code;
+    taskstats_exit(tsk, group_dead);
+    trace_sched_process_exit(tsk, group_dead);
+
+    /* Since sampling can touch ->mm, make sure to stop everything before we
+     * tear it down.
+     *
+     * Also flushes inherited counters to the parent - before the parent
+     * gets woken up by child-exit notifications. */
+    perf_event_exit_task(tsk);
+    /* PF_EXITING (above) ensures unwind_deferred_request() will no
+     * longer add new unwinds. While exit_mm() (below) will destroy the
+     * abaility to do unwinds. So flush any pending unwinds here. */
+    unwind_deferred_task_exit(tsk);
 
     exit_mm();
-    exit_sem(tsk);
 
+    if (group_dead)
+        acct_process();
+
+    exit_sem(tsk);
     exit_shm(tsk);
     exit_files(tsk);
     exit_fs(tsk);
-    exit_task_namespaces(tsk);
-    exit_task_work(tsk);
+    if (group_dead)
+        disassociate_ctty(1);
+
+    exit_nsproxy_namespaces(tsk) {
+        switch_task_namespaces(p, NULL) {
+            p->nsproxy = new;
+        }
+    }
+
+    exit_task_work(tsk) {
+        task_work_run();
+    }
+
     exit_thread(tsk);
-    perf_event_exit_task(tsk);
+
     sched_autogroup_exit_task(tsk);
-    cgroup_exit(tsk);
+
+    cgroup_task_exit(tsk) {
+        do_each_subsys_mask(ss, i, have_exit_callback) {
+            ss->exit(tsk);
+        } while_each_subsys_mask();
+    }
+
+    /* FIXME: do that only when needed, using sched_exit tracepoint */
+    flush_ptrace_hw_breakpoint(tsk);
+
     exit_tasks_rcu_start();
     exit_notify(tsk, group_dead);
     proc_exit_connector(tsk);
     mpol_put_task_policy(tsk);
-    exit_io_context(tsk);
-    free_pipe_info(tsk->splice_pipe);
-    put_page(tsk->task_frag.page);
+#ifdef CONFIG_FUTEX
+    if (unlikely(current->futex.pi_state_cache))
+        kfree(current->futex.pi_state_cache);
+#endif
+    /* Make sure we are holding no locks: */
+    debug_check_no_locks_held();
+
+    if (tsk->io_context)
+        exit_io_context(tsk);
+
+    if (tsk->splice_pipe)
+        free_pipe_info(tsk->splice_pipe);
+
+    if (tsk->task_frag.page)
+        put_page(tsk->task_frag.page);
+
+    exit_task_stack_account(tsk);
+
+    check_stack_usage();
+    preempt_disable();
+    if (tsk->nr_dirtied)
+        __this_cpu_add(dirty_throttle_leaks, tsk->nr_dirtied);
     exit_rcu();
     exit_tasks_rcu_finish();
+
     lockdep_free_task(tsk);
-
-    do_task_dead() {
-        /* Causes final put_task_struct in finish_task_switch(): */
-        set_special_state(TASK_DEAD);
-
-        /* Tell freezer to ignore us: */
-        current->flags |= PF_NOFREEZE;
-
-        __schedule(SM_NONE);
-        BUG();
-
-        /* Avoid "noreturn function does return" - but don't continue if BUG() is a NOP: */
-        for (;;)
-            cpu_relax();
-    }
+    do_task_dead();
 }
 ```
 
