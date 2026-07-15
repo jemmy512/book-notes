@@ -215,18 +215,18 @@ int ioremap_page_range(unsigned long addr, unsigned long end,
 #define writel writel
 static inline void writel(u32 value, volatile void __iomem *addr)
 {
-	if (rwmmio_tracepoint_enabled(rwmmio_write))
-		log_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
-	__io_bw();
-	__raw_writel((u32 __force)__cpu_to_le32(value), addr);
-	__io_aw();
-	if (rwmmio_tracepoint_enabled(rwmmio_post_write))
-		log_post_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
+    if (rwmmio_tracepoint_enabled(rwmmio_write))
+        log_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
+    __io_bw();
+    __raw_writel((u32 __force)__cpu_to_le32(value), addr);
+    __io_aw();
+    if (rwmmio_tracepoint_enabled(rwmmio_post_write))
+        log_post_write_mmio(value, 32, addr, _THIS_IP_, _RET_IP_);
 }
 
 static __always_inline void __raw_writel(u32 val, volatile void __iomem *addr)
 {
-	volatile u32 __iomem *ptr = addr;
+    volatile u32 __iomem *ptr = addr;
     asm volatile("str %w0, %1" : : "rZ" (val), "Qo" (*ptr));
 }
 ```
@@ -905,35 +905,35 @@ Get the importer-visible DMA mapping for an attached dma-buf.
 ```c
 static int __init pcie_portdrv_init(void)
 {
-	if (pcie_ports_disabled)
-		return -EACCES;
+    if (pcie_ports_disabled)
+        return -EACCES;
 
-	pcie_init_services();
-	dmi_check_system(pcie_portdrv_dmi_table);
+    pcie_init_services();
+    dmi_check_system(pcie_portdrv_dmi_table);
 
-	return pci_register_driver(&pcie_portdriver);
+    return pci_register_driver(&pcie_portdriver);
 }
 device_initcall(pcie_portdrv_init);
 
 static int __init pci_driver_init(void)
 {
-	int ret;
+    int ret;
 
-	pci_probe_wq = alloc_workqueue("sync_wq", WQ_PERCPU, 0);
-	if (!pci_probe_wq)
-		return -ENOMEM;
+    pci_probe_wq = alloc_workqueue("sync_wq", WQ_PERCPU, 0);
+    if (!pci_probe_wq)
+        return -ENOMEM;
 
-	ret = bus_register(&pci_bus_type);
-	if (ret)
-		return ret;
+    ret = bus_register(&pci_bus_type);
+    if (ret)
+        return ret;
 
 #ifdef CONFIG_PCIEPORTBUS
-	ret = bus_register(&pcie_port_bus_type);
-	if (ret)
-		return ret;
+    ret = bus_register(&pcie_port_bus_type);
+    if (ret)
+        return ret;
 #endif
-	dma_debug_add_bus(&pci_bus_type);
-	return 0;
+    dma_debug_add_bus(&pci_bus_type);
+    return 0;
 }
 postcore_initcall(pci_driver_init);
 ```
@@ -2278,5 +2278,527 @@ out:
     if (!retval)
         return 0;
     do_exit(0);
+}
+```
+
+# DTS
+
+```c
+Bootloader
+  │  passes FDT blob physical address
+  ▼
+setup_arch()                          [arch/arm64/kernel/setup.c]
+  │
+  ├─ setup_machine_fdt(__fdt_pointer)
+  │     │
+  │     └─ early_init_dt_scan(dt_virt, dt_phys)
+  │           ├─ early_init_dt_verify()
+  │           │     └─ initial_boot_params = dt_virt   (raw flat blob)
+  │           └─ early_init_dt_scan_nodes()
+  │                 └─ scan /chosen, /memory, cpus (direct FDT reads, of_root = NULL)
+  │
+  └─ unflatten_device_tree()                           [if acpi_disabled]
+        │
+        └─ __unflatten_device_tree(initial_boot_params, NULL, &of_root, ...)
+              │
+              ├─ Pass 1: unflatten_dt_nodes(blob, NULL, ...)  → compute size
+              ├─ memblock_alloc() for the whole tree
+              ├─ Pass 2: unflatten_dt_nodes(blob, mem, ...)
+              │     └─ populate_node() × N  → allocates struct device_node,
+              │           links parent/child/sibling, copies properties
+              │           first root node → *mynodes = of_root  ◄──── WRITTEN HERE
+              └─ reverse_nodes(of_root)     → restore .dts child order
+```
+
+```txt
+Byte offset 0
+┌─────────────────────────────────────────────────────────┐
+│                      HEADER                             │  40 bytes (v17) - struct fdt_header
+│  +00  magic           = 0xd00dfeed                      │
+│  +04  totalsize       (entire blob in bytes)            │
+│  +08  off_dt_struct   → offset to Structure Block       │
+│  +0C  off_dt_strings  → offset to Strings Block         │
+│  +10  off_mem_rsvmap  → offset to Mem-reserve Block     │
+│  +14  version         = 17 (current)                    │
+│  +18  last_comp_version = 16                            │
+│  +1C  boot_cpuid_phys (v2+)                             │
+│  +20  size_dt_strings (v3+)                             │
+│  +24  size_dt_struct  (v17+)                            │
+└─────────────────────────────────────────────────────────┘
+         ↕  (possible padding to 8-byte align)
+┌─────────────────────────────────────────────────────────┐
+│             MEMORY RESERVATION BLOCK                    │  at off_mem_rsvmap - struct fdt_reserve_entry
+│  ┌──────────────────────────────┐                       │  must be 8-byte aligned
+│  │  fdt_reserve_entry[0]        │                       │
+│  │    address  (fdt64_t)  8 B   │                       │
+│  │    size     (fdt64_t)  8 B   │                       │
+│  ├──────────────────────────────┤                       │
+│  │  fdt_reserve_entry[1] ...    │                       │
+│  ├──────────────────────────────┤                       │
+│  │  sentinel: address=0, size=0 │  ← terminator         │
+│  └──────────────────────────────┘                       │
+└─────────────────────────────────────────────────────────┘
+         ↕  (possible padding to 4-byte align)
+┌─────────────────────────────────────────────────────────┐
+│                 STRUCTURE BLOCK                         │  at off_dt_struct - struct fdt_node_header
+│                                                         │  must be 4-byte aligned
+│  A flat stream of 4-byte-aligned tokens:                │
+│                                                         │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │ FDT_BEGIN_NODE (0x00000001)  4 B                 │   │  ← root "/"
+│  │ name[]  NUL-terminated, padded to 4-byte boundary│   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │   FDT_PROP (0x00000003)      4 B                 │   │  ← property - struct fdt_property
+│  │   len      (fdt32_t)         4 B  value length   │   │
+│  │   nameoff  (fdt32_t)         4 B  → strings block│   │
+│  │   data[]   len bytes, padded to 4-byte boundary  │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │   FDT_NOP  (0x00000004)      4 B  (optional)     │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │   FDT_BEGIN_NODE             4 B                 │   │  ← child node
+│  │   name[]  ...                                    │   │
+│  │     (child props / sub-nodes ...)                │   │
+│  │   FDT_END_NODE (0x00000002)  4 B                 │   │
+│  ├──────────────────────────────────────────────────┤   │
+│  │ FDT_END_NODE                 4 B                 │   │  ← end of root
+│  ├──────────────────────────────────────────────────┤   │
+│  │ FDT_END    (0x00000009)      4 B                 │   │  ← sentinel
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                  STRINGS BLOCK                          │  at off_dt_strings
+│                                                         │
+│  Packed NUL-terminated property-name strings:           │
+│  "compatible\0model\0reg\0interrupts\0..."              │
+│                                                         │
+│  fdt_property.nameoff is a byte offset into this block  │
+└─────────────────────────────────────────────────────────┘
+```
+
+## of_root
+
+```c
+struct device_node *of_root;
+EXPORT_SYMBOL(of_root);
+
+void __init __no_sanitize_address setup_arch(char **cmdline_p)
+{
+    early_fixmap_init();
+    early_ioremap_init();
+
+    setup_machine_fdt(__fdt_pointer);
+
+    if (acpi_disabled)
+        unflatten_device_tree();
+}
+```
+
+## setup_machine_fdt
+
+```c
+void __init setup_machine_fdt(phys_addr_t dt_phys)
+{
+    int size = 0;
+    void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL);
+    const char *name;
+
+    if (dt_virt)
+        memblock_reserve(dt_phys, size);
+
+    /* dt_virt is a fixmap address, hence __pa(dt_virt) can't be used.
+     * Pass dt_phys directly. */
+    if (!early_init_dt_scan(dt_virt, dt_phys)) {
+        /* Note that in this _really_ early stage we cannot even BUG()
+         * or oops, so the least terrible thing to do is cpu_relax(),
+         * or else we could end-up printing non-initialized data, etc. */
+        while (true)
+            cpu_relax();
+    }
+
+    /* Early fixups are done, map the FDT as read-only now */
+    fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO);
+
+    name = of_flat_dt_get_machine_name();
+    if (!name)
+        return;
+
+    pr_info("Machine model: %s\n", name);
+    dump_stack_set_arch_desc("%s (DT)", name);
+}
+
+bool __init early_init_dt_scan(void *dt_virt, phys_addr_t dt_phys)
+{
+    bool status;
+
+    status = early_init_dt_verify(dt_virt, dt_phys) {
+        if (!dt_virt)
+            return false;
+
+        /* check device tree validity */
+        if (fdt_check_header(dt_virt))
+            return false;
+
+        /* Setup flat device-tree pointer */
+        initial_boot_params = dt_virt;
+        initial_boot_params_pa = dt_phys;
+        of_fdt_crc32 = crc32_be(~0, initial_boot_params,
+                    fdt_totalsize(initial_boot_params));
+
+        /* Initialize {size,address}-cells info */
+        early_init_dt_scan_root();
+
+        return true;
+    }
+    if (!status)
+        return false;
+
+    early_init_dt_scan_nodes();
+    return true;
+}
+
+/* fetch the top level address and size cells */
+int __init early_init_dt_scan_root(void)
+{
+	const __be32 *prop;
+	const void *fdt = initial_boot_params;
+	int node = fdt_path_offset(fdt, "/");
+
+	if (node < 0)
+		return -ENODEV;
+
+	dt_root_size_cells = OF_ROOT_NODE_SIZE_CELLS_DEFAULT;
+	dt_root_addr_cells = OF_ROOT_NODE_ADDR_CELLS_DEFAULT;
+
+	prop = of_get_flat_dt_prop(node, "#size-cells", NULL);
+	if (!WARN(!prop, "No '#size-cells' in root node\n"))
+		dt_root_size_cells = be32_to_cpup(prop);
+	pr_debug("dt_root_size_cells = %x\n", dt_root_size_cells);
+
+	prop = of_get_flat_dt_prop(node, "#address-cells", NULL);
+	if (!WARN(!prop, "No '#address-cells' in root node\n"))
+		dt_root_addr_cells = be32_to_cpup(prop);
+	pr_debug("dt_root_addr_cells = %x\n", dt_root_addr_cells);
+
+	return 0;
+}
+
+void __init early_init_dt_scan_nodes(void)
+{
+	int rc;
+
+	/* Retrieve various information from the /chosen node */
+	rc = early_init_dt_scan_chosen(boot_command_line);
+	if (rc)
+		pr_warn("No chosen node found, continuing without\n");
+
+	/* Setup memory, calling early_init_dt_add_memory_arch */
+	early_init_dt_scan_memory();
+
+	/* Handle linux,usable-memory-range property */
+	early_init_dt_check_for_usable_mem_range();
+
+	/* Handle kexec handover */
+	early_init_dt_check_kho();
+}
+```
+
+## unflatten_device_tree
+
+```c
+void __init unflatten_device_tree(void)
+{
+    void *fdt = initial_boot_params;
+
+    /* Save the statically-placed regions in the reserved_mem array */
+    fdt_scan_reserved_mem_late();
+
+    /* Populate an empty root node when bootloader doesn't provide one */
+    if (!fdt) {
+        fdt = (void *) __dtb_empty_root_begin;
+        /* fdt_totalsize() will be used for copy size */
+        if (fdt_totalsize(fdt) >
+            __dtb_empty_root_end - __dtb_empty_root_begin) {
+            pr_err("invalid size in dtb_empty_root\n");
+            return;
+        }
+        of_fdt_crc32 = crc32_be(~0, fdt, fdt_totalsize(fdt));
+        fdt = copy_device_tree(fdt);
+    }
+
+    __unflatten_device_tree(fdt, NULL, &of_root,
+                early_init_dt_alloc_memory_arch, false);
+
+    /* Get pointer to "/chosen" and "/aliases" nodes for use everywhere */
+    of_alias_scan(early_init_dt_alloc_memory_arch);
+
+    unittest_unflatten_overlay_base();
+}
+
+void *__unflatten_device_tree(const void *blob,
+                  struct device_node *dad,
+                  struct device_node **mynodes,
+                  void *(*dt_alloc)(u64 size, u64 align),
+                  bool detached)
+{
+    int size;
+    void *mem;
+    int ret;
+
+    if (mynodes)
+        *mynodes = NULL;
+
+    pr_debug(" -> unflatten_device_tree()\n");
+
+    if (!blob) {
+        pr_debug("No device tree pointer\n");
+        return NULL;
+    }
+
+    pr_debug("Unflattening device tree:\n");
+    pr_debug("magic: %08x\n", fdt_magic(blob));
+    pr_debug("size: %08x\n", fdt_totalsize(blob));
+    pr_debug("version: %08x\n", fdt_version(blob));
+
+    if (fdt_check_header(blob)) {
+        pr_err("Invalid device tree blob header\n");
+        return NULL;
+    }
+
+    /* First pass, scan for size */
+    size = unflatten_dt_nodes(blob, NULL, dad, NULL);
+    if (size <= 0)
+        return NULL;
+
+    size = ALIGN(size, 4);
+    pr_debug("  size is %d, allocating...\n", size);
+
+    /* Allocate memory for the expanded device tree */
+    mem = dt_alloc(size + 4, __alignof__(struct device_node));
+    if (!mem)
+        return NULL;
+
+    *(__be32 *)(mem + size) = cpu_to_be32(0xdeadbeef);
+
+    pr_debug("  unflattening %p...\n", mem);
+
+    /* Second pass, do actual unflattening */
+    ret = unflatten_dt_nodes(blob, mem, dad, mynodes);
+
+    if (be32_to_cpup(mem + size) != 0xdeadbeef)
+        pr_warn("End of tree marker overwritten: %08x\n", be32_to_cpup(mem + size));
+
+    if (ret <= 0)
+        return NULL;
+
+    if (detached && mynodes && *mynodes) {
+        of_node_set_flag(*mynodes, OF_DETACHED);
+        pr_debug("unflattened tree is detached\n");
+    }
+
+    pr_debug(" <- unflatten_device_tree()\n");
+    return mem;
+}
+
+int unflatten_dt_nodes(const void *blob,
+                  void *mem,
+                  struct device_node *dad,
+                  struct device_node **nodepp)
+{
+    struct device_node *root;
+    int offset = 0, depth = 0, initial_depth = 0;
+#define FDT_MAX_DEPTH    64
+    struct device_node *nps[FDT_MAX_DEPTH];
+    void *base = mem;
+    bool dryrun = !base;
+    int ret;
+
+    if (nodepp)
+        *nodepp = NULL;
+
+    /* We're unflattening device sub-tree if @dad is valid. There are
+     * possibly multiple nodes in the first level of depth. We need
+     * set @depth to 1 to make fdt_next_node() happy as it bails
+     * immediately when negative @depth is found. Otherwise, the device
+     * nodes except the first one won't be unflattened successfully. */
+    if (dad)
+        depth = initial_depth = 1;
+
+    root = dad;
+    nps[depth] = dad;
+
+    for (offset = 0;
+         offset >= 0 && depth >= initial_depth;
+         offset = fdt_next_node(blob, offset, &depth)) {
+        if (WARN_ON_ONCE(depth >= FDT_MAX_DEPTH - 1))
+            continue;
+
+        if (!IS_ENABLED(CONFIG_OF_KOBJ) &&
+            !of_fdt_device_is_available(blob, offset))
+            continue;
+
+        ret = populate_node(blob, offset, &mem, nps[depth], &nps[depth+1], dryrun);
+        if (ret < 0)
+            return ret;
+
+        if (!dryrun && nodepp && !*nodepp)
+            *nodepp = nps[depth+1];
+        if (!dryrun && !root)
+            root = nps[depth+1];
+    }
+
+    if (offset < 0 && offset != -FDT_ERR_NOTFOUND) {
+        pr_err("Error %d processing FDT\n", offset);
+        return -EINVAL;
+    }
+
+    /* Reverse the child list. Some drivers assumes node order matches .dts
+     * node order */
+    if (!dryrun)
+        reverse_nodes(root);
+
+    return mem - base;
+}
+
+int populate_node(const void *blob,
+              int offset,
+              void **mem,
+              struct device_node *dad,
+              struct device_node **pnp,
+              bool dryrun)
+{
+    struct device_node *np;
+    const char *pathp;
+    int len;
+
+    pathp = fdt_get_name(blob, offset, &len);
+    if (!pathp) {
+        *pnp = NULL;
+        return len;
+    }
+
+    len++;
+
+    np = unflatten_dt_alloc(mem, sizeof(struct device_node) + len,
+                __alignof__(struct device_node));
+    if (!dryrun) {
+        char *fn;
+        of_node_init(np);
+        np->full_name = fn = ((char *)np) + sizeof(*np);
+
+        memcpy(fn, pathp, len);
+
+        if (dad != NULL) {
+            np->parent = dad;
+            np->sibling = dad->child;
+            dad->child = np;
+        }
+    }
+
+    populate_properties(blob, offset, mem, np, pathp, dryrun);
+    if (!dryrun) {
+        np->name = of_get_property(np, "name", NULL);
+        if (!np->name)
+            np->name = "<NULL>";
+    }
+
+    *pnp = np;
+    return 0;
+}
+
+void populate_properties(const void *blob,
+				int offset,
+				void **mem,
+				struct device_node *np,
+				const char *nodename,
+				bool dryrun)
+{
+	struct property *pp, **pprev = NULL;
+	int cur;
+	bool has_name = false;
+
+	pprev = &np->properties;
+	for (cur = fdt_first_property_offset(blob, offset);
+	     cur >= 0;
+	     cur = fdt_next_property_offset(blob, cur)) {
+		const __be32 *val;
+		const char *pname;
+		u32 sz;
+
+		val = fdt_getprop_by_offset(blob, cur, &pname, &sz);
+		if (!val) {
+			pr_warn("Cannot locate property at 0x%x\n", cur);
+			continue;
+		}
+
+		if (!pname) {
+			pr_warn("Cannot find property name at 0x%x\n", cur);
+			continue;
+		}
+
+		if (!strcmp(pname, "name"))
+			has_name = true;
+
+		pp = unflatten_dt_alloc(mem, sizeof(struct property),
+					__alignof__(struct property));
+		if (dryrun)
+			continue;
+
+		/* We accept flattened tree phandles either in
+		 * ePAPR-style "phandle" properties, or the
+		 * legacy "linux,phandle" properties.  If both
+		 * appear and have different values, things
+		 * will get weird. Don't do that.
+		 */
+		if (!strcmp(pname, "phandle") ||
+		    !strcmp(pname, "linux,phandle")) {
+			if (!np->phandle)
+				np->phandle = be32_to_cpup(val);
+		}
+
+		/* And we process the "ibm,phandle" property
+		 * used in pSeries dynamic device tree
+		 * stuff
+		 */
+		if (IS_ENABLED(CONFIG_PPC_PSERIES) && !strcmp(pname, "ibm,phandle"))
+			np->phandle = be32_to_cpup(val);
+
+		pp->name   = (char *)pname;
+		pp->length = sz;
+		pp->value  = (__be32 *)val;
+		*pprev     = pp;
+		pprev      = &pp->next;
+	}
+
+	/* With version 0x10 we may not have the name property,
+	 * recreate it here from the unit name if absent
+	 */
+	if (!has_name) {
+		const char *p = nodename, *ps = p, *pa = NULL;
+		int len;
+
+		while (*p) {
+			if ((*p) == '@')
+				pa = p;
+			else if ((*p) == '/')
+				ps = p + 1;
+			p++;
+		}
+
+		if (pa < ps)
+			pa = p;
+		len = (pa - ps) + 1;
+		pp = unflatten_dt_alloc(mem, sizeof(struct property) + len,
+					__alignof__(struct property));
+		if (!dryrun) {
+			pp->name   = "name";
+			pp->length = len;
+			pp->value  = pp + 1;
+			*pprev     = pp;
+			memcpy(pp->value, ps, len - 1);
+			((char *)pp->value)[len - 1] = 0;
+			pr_debug("fixed up name for %s -> %s\n",
+				 nodename, (char *)pp->value);
+		}
+	}
 }
 ```
