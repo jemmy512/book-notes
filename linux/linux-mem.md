@@ -1,216 +1,3 @@
-# Table of Contents
-
-<details>
-<summary>▾ Expand ▴ Collapse</summary>
-
-* [_start:](#_start)
-
-* [setu_arch](#setup_arch)
-    * [setup_machine_fdt](#setup_machine_fdt)
-    * [arm64_memblock_init](#arm64_memblock_init)
-    * [paging_init](#paging_init)
-    * [bootmem_init](#bootmem_init)
-
-* [numa](#numa)
-    * [numa_init](#numa_init)
-    * [node](#node)
-    * [zone](#zone)
-        * [zone_sizes_init](#zone_sizes_init)
-        * [build_all_zonelists](#build_all_zonelists)
-    * [page](#page)
-
-* [sparsemem](#sparsemem)
-    * [sparse_init](#sparse_init)
-    * [vmemmap_populate](#vmemmap_populate)
-    * [sparse_add_section](#sparse_add_section)
-    * [sparse_remove_section](#sparse_remove_section)
-
-* [mm_core_init](#mm_core_init)
-
-* [memblock](#memblock)
-    * [memblock_add](#memblock_add)
-    * [memmap_remove](#memmap_remove)
-    * [memmap_free](#memmap_free)
-    * [memblock_free_all](#memblock_free_all)
-* [hotplug](#hotplug)
-    * [add_memory](#add_memory)
-    * [remove_memory](#remove_memory)
-    * [memory_subsys](#memory_subsys)
-        * [memory_block_online](#memory_block_online)
-        * [memory_block_offline](#memory_block_offline)
-
-* [segment](#segment)
-* [paging](#paging)
-* [user virtual space](#user-virtual-space)
-* [kernel virtual space](#kernel-virtual-space)
-
-* [alloc_pages](#alloc_pages)
-    * [prepare_alloc_pages](#prepare_alloc_pages)
-    * [get_page_from_freelist](#get_page_from_freelist)
-        * [rmqueue](#rmqueue)
-        * [rmqueue_pcplist](#rmqueue_pcplist)
-        * [rmqueue_fallback](#rmqueue_fallback)
-        * [node_reclaim](#node_reclaim)
-    * [alloc_pages_slowpath](#alloc_pages_slowpath)
-        * [alloc_pages_direct_compact](#alloc_pages_direct_compact)
-        * [alloc_pages_direct_reclaim](#alloc_pages_direct_reclaim)
-        * [alloc_pages_may_oom](#alloc_pages_may_oom)
-
-* [free_pages](#free_pages)
-    * [free_frozen_pages](#free_frozen_pages)
-    * [free_one_page](#free_one_page)
-
-* [kmem_cache](#kmem_cache)
-    * [kmem_cache_create](#kmem_cache_create)
-        * [calculate_sizes](#calculate_sizes)
-    * [kmem_cache_destroy](#kmem_cache_destroy)
-
-* [slab](#slab)
-    * [slab_alloc](#slab_alloc)
-    * [slab_free](#slab_free)
-* [kernel mapping](#kernel-mapping)
-* [kmalloc](#kmalloc)
-    * [kmalloc_caches](#kmalloc_caches)
-* [kmap_atomic](#kmap_atomic)
-* [vmalloc](#vmalloc)
-* [cma](#cma)
-    * [rmem_cma_setup](#rmem_cma_setup)
-    * [cma_init_reserved_areas](#cma_init_reserved_areas)
-    * [cma_alloc](#cma_alloc)
-* [rmap](#rmap)
-
-* [brk](#brk)
-
-* [pgd_mapping](#pgd_mapping)
-    * [create_pgd_mapping](#create_pgd_mapping)
-    * [remove_pgd_mapping](#remove_pgd_mapping)
-
-* [mmap](#mmap)
-    * [get_unmapped_area](#get_unmapped_area)
-    * [mmap_region](#mmap_region)
-    * [mm_populate](#mm_populate)
-
-* [page_fault](#page_fault)
-    * [do_pte_missing](#do_pte_missing)
-        * [do_anonymous_page](#do_anonymous_page)
-        * [do_fault](#do_fault)
-            * [do_read_fault](#do_read_fault)
-            * [do_cow_fault](#do_cow_fault)
-            * [do_sharaed_fault](#do_shared_fault)
-    * [do_swap_page](#do_swap_page)
-    * [do_wp_page](#do_wp_page)
-    * [do_numa_page](#do_numa_page)
-    * [do_kernel_fault](#do_kernel_fault)
-    * [hugetlb_fault](#hugetlb_fault)
-
-* [munmap](#munmap)
-
-* [mmu_gather](#mmu_gather)
-    * [tlb_gather_mmu](#tlb_gather_mmu)
-    * [unmap_vmas](#unmap_vmas)
-    * [free_pgtables](#free_pgtables)
-    * [tlb_finish_mmu](#tlb_finish_mmu)
-
-* [mremap](#mremap)
-    * [anon_vma_prepare](#anon_vma_prepare)
-    * [anon_vma_fork](#anon_vma_fork)
-    * [try_to_unmap](#try_to_unmap)
-
-* [page_reclaim](#page_reclaim)
-    * [lru](#lru)
-    * [folio_batch](#folio_batch)
-    * [workingset](#workingset)
-    * [throttle_direct_reclaim](#throttle_direct_reclaim)
-    * [shrink_node](#shrink_node)
-        * [shrink_node_memcgs](#shrink_node_memcgs)
-            * [get_scan_count](#get_scan_count)
-        * [shrink_active_list](#shrink_active_list)
-            * [isolate_lru_folios](#isolate_lru_folios)
-            * [move_folios_to_lru](#move_folios_to_lru)
-        * [shrink_inactive_list](#shrink_inactive_list)
-            * [shrink_folio_list](#shrink_folio_list)
-                * [remove_mapping](#remove_mapping)
-        * [shrink_slab](#shrink_slab)
-            * [shrink_slab_memcg](#shrink_slab_memcg)
-    * [vmpressure](#vmpressure)
-
-* [page_compact](#page_compact)
-    * [compact_finished](#compact_finished)
-    * [isolate_migratepages](#isolate_migratepages)
-        * [fast_find_migrateblock](#fast_find_migrateblock)
-        * [isolate_migratepages_block](#isolate_migratepages_block)
-    * [isolate_freepages](#isolate_freepages)
-        * [fast_isolate_freepages](#fast_isolate_freepages)
-        * [isolate_freepages_block](#isolate_freepages_block)
-
-* [page_migrate](#page_migrate)
-    * [migreate_pages_batch](#migreate_pages_batch)
-        * [migrate_folio_unmap](#migrate_folio_unmap)
-            * [try_to_migrate](#try_to_migrate)
-        * [migrate_folio_move](#migrate_folio_move)
-            * [migrate_folio](#migrate_folio)
-        * [remove_migration_ptes](#remove_migration_ptes)
-
-* [kcompactd](#kcompactd)
-* [kswapd](#kswapd)
-
-* [swap](#swap)
-    * [swapon](#swapon)
-        * [setup_swap_map_and_extents](#setup_swap_map_and_extents)
-    * [swapoff](#swapoff)
-        * [swap_discard_work](#swap_discard_work)
-    * [folio_alloc_swap](#folio_alloc_swap)
-    * [add_to_swap](#add_to_swap)
-        * [get_swap_pages](#get_swap_pages)
-        * [swap_alloc_cluster](#swap_alloc_cluster)
-        * [scan_swap_map_slots](#scan_swap_map_slots)
-            * [scan_swap_map_try_ssd_cluster](#scan_swap_map_try_ssd_cluster)
-    * [swap_free](#swap_free)
-    * [folio_free_swap](#folio_free_swap)
-
-* [fork](#fork)
-    * [copy_page_range](#copy_page_range)
-
-* [out_of_memory](#out_of_memory)
-    * [oom_reaper](#oom_reaper)
-    * [select_bad_process](#select_bad_process)
-    * [oom_kill_process](#oom_kill_process)
-
-* [exit_mm](#exit_mm)
-
-* [dma]
-    * [dma_alloc_coherent](#dma_alloc_coherent)
-        * [dma_direct_alloc](#dma_direct_alloc)
-        * [iommu_dma_alloc](#iommu_dma_alloc)
-
-* [hugetlb]
-    * [arm64_hugetlb_cma_reserve](#arm64_hugetlb_cma_alloc)
-    * [hugetlb_init](#hugetlb_init)
-        * [gather_bootmem_prealloc_parallel](#gather_bootmem_prealloc_parallel)
-    * [hugatble_hstat_alloc_pages](#hugetlb_hstate_alloc_pages)
-        * [hugetlb_gigantic_pages_alloc_boot](#hugetlb_gigantic_pages_alloc_boot)
-        * [hugetlb_pages_alloc_boot](#hugetlb_pages_alloc_boot)
-            * [alloc_gigantic_folio](#alloc_gigantic_folio)
-                * [alloc_contig_range_noprof](#alloc_contig_range_noprof)
-            * [alloc_buddy_hugetlb_folio](#alloc_buddy_hugetlb_folio)
-    * [alloc_hugetlb_folio](#alloc_hugetlb_folio)
-        * [dequeue_hugetlb_folio_vma](#dequeue_hugetlb_folio_vma)
-        * [alloc_buddy_hugetlb_folio_with_mpol](#alloc_buddy_hugetlb_folio_with_mpol)
-        * [hugetlb_vmemmap_optimize_folio](#hugetlb_vmemmap_optimize_folio)
-    * [hugetlbfs]
-        * [hugetlbfs_create](#hugetlbfs_create)
-        * [hugetlbfs_file_map](#hugetlb_file_map)
-        * [hugetlb_reserve_pages](#hugetlb_reserve_pages)
-    * [khugepaged](#khugepaged)
-        * [hpage_collapse_scan_file](#hpage_collapse_scan_file)
-            * [collpase_file](#collpase_file)
-        * [collapse_pte_mapped_thp](#collapse_pte_mapped_thp)
-        * [hpage_collapse_scan_pmd](#hpage_collapse_scan_pmd)
-            * [collapse_huge_page](#collapse_huge_page)
-    * [split_huge_page](#split_huge_page)
-
-</details>
-
 ![](../images/kernel/kernel-structual.svg)
 
 # Doc
@@ -517,7 +304,7 @@ start_kernel()
        │    │    └─ maps all memblock.memory → PAGE_OFFSET + pa
        │    ├─ memblock_allow_resize()
        │    ├─ create_idmap()           ← identity map for trampoline
-       │    └─ declare_kernel_vmas()    ← register kernel VMAs (text, data, BSS…)
+       │    └─ declare_kernel_vmas()    ← register kernel VMAs (text, data, BSS...)
        │
        ├─ bootmem_init()            [arch/arm64/mm/init.c:300]
        │    ├─ set max_pfn, min_low_pfn, max_low_pfn
@@ -559,8 +346,6 @@ setup_arch(&command_line);
 
     early_ioremap_init();
 
-    setup_machine_fdt(__fdt_pointer);
-        --->
     arm64_memblock_init();
         --->
     paging_init();
@@ -646,51 +431,6 @@ void __init early_fixmap_init(void)
         }
     }
 }
-```
-
-## setup_machine_fdt
-
-```c
-setup_machine_fdt(__fdt_pointer)
-    void *dt_virt = fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL) {
-        const u64 dt_virt_base = __fix_to_virt(FIX_FDT);
-        dt_phys_base = round_down(dt_phys, PAGE_SIZE);
-        offset = dt_phys % PAGE_SIZE;
-        dt_virt = (void *)dt_virt_base + offset;
-
-        create_mapping_noalloc(dt_phys_base, dt_virt_base, PAGE_SIZE, prot);
-            __create_pgd_mapping();
-
-        *size = fdt_totalsize(dt_virt);
-        if (*size > MAX_FDT_SIZE)
-            return NULL;
-
-        if (offset + *size > PAGE_SIZE) {
-            create_mapping_noalloc(dt_phys_base, dt_virt_base,
-                        offset + *size, prot);
-        }
-
-        return dt_virt;
-    }
-    if (dt_virt)
-        memblock_reserve(dt_phys, size);
-
-    early_init_dt_scan(dt_virt) {
-        status = early_init_dt_verify(params);
-        early_init_dt_scan_nodes() {
-
-        }
-    }
-
-    const char * name = of_flat_dt_get_machine_name();
-
-    /* Early fixups are done, map the FDT as read-only now */
-    fixmap_remap_fdt(dt_phys, &size, PAGE_KERNEL_RO) {
-
-    }
-
-    name = of_flat_dt_get_machine_name();
-
 ```
 
 ## arm64_memblock_init
@@ -7418,89 +7158,7 @@ slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
             /* The obtained objcg pointer is safe to use within the current scope,
             * defined by current task or set_active_memcg() pair.
             * obj_cgroup_get() is used to get a permanent reference. */
-            objcg = current_obj_cgroup() {
-                struct mem_cgroup *memcg;
-                struct obj_cgroup *objcg;
-
-                if (IS_ENABLED(CONFIG_MEMCG_NMI_UNSAFE) && in_nmi())
-                    return NULL;
-
-                if (in_task()) {
-                    memcg = current->active_memcg;
-                    if (unlikely(memcg))
-                        goto from_memcg;
-
-                    objcg = READ_ONCE(current->objcg);
-                    if (unlikely((unsigned long)objcg & CURRENT_OBJCG_UPDATE_FLAG)) {
-                        objcg = current_objcg_update() {
-                            struct mem_cgroup *memcg;
-                            struct obj_cgroup *old, *objcg = NULL;
-
-                            do {
-                                /* Atomically drop the update bit. */
-                                old = xchg(&current->objcg, NULL);
-                                if (old) {
-                                    old = (struct obj_cgroup *)
-                                        ((unsigned long)old & ~CURRENT_OBJCG_UPDATE_FLAG);
-                                    obj_cgroup_put(old);
-
-                                    old = NULL;
-                                }
-
-                                /* If new objcg is NULL, no reason for the second atomic update. */
-                                if (!current->mm || (current->flags & PF_KTHREAD))
-                                    return NULL;
-
-                                /* Release the objcg pointer from the previous iteration,
-                                * if try_cmpxcg() below fails. */
-                                if (unlikely(objcg)) {
-                                    obj_cgroup_put(objcg);
-                                    objcg = NULL;
-                                }
-
-                                /* Obtain the new objcg pointer. The current task can be
-                                * asynchronously moved to another memcg and the previous
-                                * memcg can be offlined. So let's get the memcg pointer
-                                * and try get a reference to objcg under a rcu read lock. */
-
-                                rcu_read_lock();
-                                memcg = mem_cgroup_from_task(current);
-                                objcg = __get_obj_cgroup_from_memcg(memcg);
-                                rcu_read_unlock();
-
-                                /* Try set up a new objcg pointer atomically. If it
-                                * fails, it means the update flag was set concurrently, so
-                                * the whole procedure should be repeated. */
-                            } while (!try_cmpxchg(&current->objcg, &old, objcg));
-
-                            return objcg;
-                        }
-                    }
-                    /* Objcg reference is kept by the task, so it's safe
-                    * to use the objcg by the current task. */
-                    return objcg;
-                }
-
-                memcg = this_cpu_read(int_active_memcg);
-                if (unlikely(memcg))
-                    goto from_memcg;
-
-                return NULL;
-
-            from_memcg:
-                objcg = NULL;
-                for (; !mem_cgroup_is_root(memcg); memcg = parent_mem_cgroup(memcg)) {
-                    /* Memcg pointer is protected by scope (see set_active_memcg())
-                    * and is pinning the corresponding objcg, so objcg can't go
-                    * away and can be used within the scope without any additional
-                    * protection. */
-                    objcg = rcu_dereference_check(memcg->objcg, 1);
-                    if (likely(objcg))
-                        break;
-                }
-
-                return objcg;
-            }
+            objcg = current_obj_cgroup();
             if (!objcg)
                 return true;
 
@@ -7823,6 +7481,53 @@ void drain_obj_stock(struct obj_stock_pcp *stock)
     WRITE_ONCE(stock->cached_objcg, NULL);
     obj_cgroup_put(old);
 }
+```
+
+### current_obj_cgroup
+
+```c
+struct obj_cgroup *current_obj_cgroup(void)
+{
+    struct mem_cgroup *memcg;
+    struct obj_cgroup *objcg;
+    int nid = numa_node_id();
+
+    if (IS_ENABLED(CONFIG_MEMCG_NMI_UNSAFE) && in_nmi())
+        return NULL;
+
+    if (in_task()) {
+        memcg = current->active_memcg;
+        if (unlikely(memcg))
+            goto from_memcg;
+
+        objcg = READ_ONCE(current->objcg);
+        if (unlikely((unsigned long)objcg & CURRENT_OBJCG_UPDATE_FLAG))
+            objcg = current_objcg_update();
+        /* Objcg reference is kept by the task, so it's safe
+         * to use the objcg by the current task. */
+        return objcg ? : rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+    }
+
+    memcg = this_cpu_read(int_active_memcg);
+    if (unlikely(memcg))
+        goto from_memcg;
+
+    return rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+
+from_memcg:
+    for (; memcg; memcg = parent_mem_cgroup(memcg)) {
+        /* Memcg pointer is protected by scope (see set_active_memcg())
+         * and is pinning the corresponding objcg, so objcg can't go
+         * away and can be used within the scope without any additional
+         * protection. */
+        objcg = rcu_dereference_check(memcg->nodeinfo[nid]->objcg, 1);
+        if (likely(objcg))
+            return objcg;
+    }
+
+    return rcu_dereference_check(root_mem_cgroup->nodeinfo[nid]->objcg, 1);
+}
+
 ```
 
 ## slab_free
@@ -11825,7 +11530,7 @@ void vmpressure(gfp_t gfp, struct mem_cgroup *memcg, bool tree,
 ![](../images/kernel/mem-page_compact.svg)
 
 * [OPPO内核工匠 - Linux内核内存规整详解](https://mp.weixin.qq.com/s/Ts7yGSuTrh3JLMnP4E3ajA)
-* [Oracle - Linux Memory Compaction: Internals and Debugging — Part 1: How Compaction Works](https://blogs.oracle.com/linux/linux-memory-compaction-part-1)
+* [Oracle - Linux Memory Compaction: Internals and Debugging - Part 1: How Compaction Works](https://blogs.oracle.com/linux/linux-memory-compaction-part-1)
 
 ---
 
@@ -23363,223 +23068,6 @@ static void die_kernel_fault(const char *msg, unsigned long addr,
 }
 ```
 
-### panic
-
-```c
-void panic(const char *fmt, ...)
-{
-    va_list args;
-
-    va_start(args, fmt);
-    vpanic(fmt, args);
-    va_end(args);
-}
-
-void vpanic(const char *fmt, va_list args)
-{
-    static char buf[PANIC_MSG_BUFSZ];
-    long i, i_next = 0, len;
-    int state = 0;
-    bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
-
-    if (panic_on_warn) {
-        /* This thread may hit another WARN() in the panic path.
-         * Resetting this prevents additional WARN() from panicking the
-         * system on this thread.  Other threads are blocked by the
-         * panic_mutex in panic(). */
-        panic_on_warn = 0;
-    }
-
-    /* Disable local interrupts. This will prevent panic_smp_self_stop
-     * from deadlocking the first cpu that invokes the panic, since
-     * there is nothing to prevent an interrupt handler (that runs
-     * after setting panic_cpu) from invoking panic() again. */
-    local_irq_disable();
-    preempt_disable_notrace();
-
-    /* Redirect panic to target CPU if configured via panic_force_cpu=. */
-    if (panic_try_force_cpu(fmt, args)) {
-        /* Mark ourselves offline so panic_other_cpus_shutdown() won't wait
-         * for us on architectures that check num_online_cpus(). */
-        set_cpu_online(smp_processor_id(), false);
-        panic_smp_self_stop() {
-            local_cpu_stop(smp_processor_id()) {
-                set_cpu_online(cpu, false);
-
-                local_daif_mask();
-                sdei_mask_local_cpu();
-                cpu_park_loop() {
-                    for (;;) {
-                        wfe();
-                        wfi();
-                    }
-                }
-            }
-        }
-    }
-    /* It's possible to come here directly from a panic-assertion and
-     * not have preempt disabled. Some functions called from here want
-     * preempt to be disabled. No point enabling it later though...
-     *
-     * Only one CPU is allowed to execute the panic code from here. For
-     * multiple parallel invocations of panic, all other CPUs either
-     * stop themself or will wait until they are stopped by the 1st CPU
-     * with smp_send_stop().
-     *
-     * cmpxchg success means this is the 1st CPU which comes here,
-     * so go ahead.
-     * `old_cpu == this_cpu' means we came from nmi_panic() which sets
-     * panic_cpu to this CPU.  In this case, this is also the 1st CPU. */
-    /* atomic_try_cmpxchg updates old_cpu on failure */
-    if (panic_try_start()) {
-        /* go ahead */
-    } else if (panic_on_other_cpu())
-        panic_smp_self_stop();
-
-    console_verbose();
-    bust_spinlocks(1);
-    len = vscnprintf(buf, sizeof(buf), fmt, args);
-
-    if (len && buf[len - 1] == '\n')
-        buf[len - 1] = '\0';
-
-    pr_emerg("Kernel panic - not syncing: %s\n", buf);
-    /* Avoid nested stack-dumping if a panic occurs during oops processing */
-    if (atomic_read(&panic_redirect_cpu) != PANIC_CPU_INVALID && panic_force_cpu == raw_smp_processor_id()) {
-        pr_emerg("panic: Redirected from CPU %d, skipping stack dump.\n",
-             atomic_read(&panic_redirect_cpu));
-    } else if (test_taint(TAINT_DIE) || oops_in_progress > 1) {
-        panic_this_cpu_backtrace_printed = true;
-    } else if (IS_ENABLED(CONFIG_DEBUG_BUGVERBOSE)) {
-        dump_stack();
-        panic_this_cpu_backtrace_printed = true;
-    }
-
-    /* If kgdb is enabled, give it a chance to run before we stop all
-     * the other CPUs or else we won't be able to debug processes left
-     * running on them. */
-    kgdb_panic(buf);
-
-    /* If we have crashed and we have a crash kernel loaded let it handle
-     * everything else.
-     * If we want to run this after calling panic_notifiers, pass
-     * the "crash_kexec_post_notifiers" option to the kernel.
-     *
-     * Bypass the panic_cpu check and call __crash_kexec directly. */
-    if (!_crash_kexec_post_notifiers)
-        __crash_kexec(NULL);
-
-    panic_other_cpus_shutdown(_crash_kexec_post_notifiers) {
-        if (panic_print & SYS_INFO_ALL_BT)
-            panic_trigger_all_cpu_backtrace();
-
-        /* Note that smp_send_stop() is the usual SMP shutdown function,
-        * which unfortunately may not be hardened to work in a panic
-        * situation. If we want to do crash dump after notifier calls
-        * and kmsg_dump, we will need architecture dependent extra
-        * bits in addition to stopping other CPUs, hence we rely on
-        * crash_smp_send_stop() for that. */
-        if (!crash_kexec)
-            smp_send_stop();
-        else
-            crash_smp_send_stop();
-    }
-
-    printk_legacy_allow_panic_sync();
-
-    /* Run any panic handlers, including those that might need to
-     * add information to the kmsg dump output. */
-    atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
-
-    sys_info(panic_print);
-
-    kmsg_dump_desc(KMSG_DUMP_PANIC, buf);
-
-    /* If you doubt kdump always works fine in any situation,
-     * "crash_kexec_post_notifiers" offers you a chance to run
-     * panic_notifiers and dumping kmsg before kdump.
-     * Note: since some panic_notifiers can make crashed kernel
-     * more unstable, it can increase risks of the kdump failure too.
-     *
-     * Bypass the panic_cpu check and call __crash_kexec directly. */
-    if (_crash_kexec_post_notifiers)
-        __crash_kexec(NULL);
-
-    console_unblank();
-
-    /* We may have ended up stopping the CPU holding the lock (in
-     * smp_send_stop()) while still having some valuable data in the console
-     * buffer.  Try to acquire the lock then release it regardless of the
-     * result.  The release will also print the buffers out.  Locks debug
-     * should be disabled to avoid reporting bad unlock balance when
-     * panic() is not being callled from OOPS. */
-    debug_locks_off();
-    console_flush_on_panic(CONSOLE_FLUSH_PENDING);
-
-    if ((panic_print & SYS_INFO_PANIC_CONSOLE_REPLAY) ||
-        panic_console_replay)
-        console_flush_on_panic(CONSOLE_REPLAY_ALL);
-
-    if (!panic_blink)
-        panic_blink = no_blink;
-
-    if (panic_timeout > 0) {
-        /* Delay timeout seconds before rebooting the machine.
-         * We can't use the "normal" timers since we just panicked. */
-        pr_emerg("Rebooting in %d seconds..\n", panic_timeout);
-
-        for (i = 0; i < panic_timeout * 1000; i += PANIC_TIMER_STEP) {
-            touch_nmi_watchdog();
-            if (i >= i_next) {
-                i += panic_blink(state ^= 1);
-                i_next = i + 3600 / PANIC_BLINK_SPD;
-            }
-            mdelay(PANIC_TIMER_STEP);
-        }
-    }
-    if (panic_timeout != 0) {
-        /* This will not be a clean reboot, with everything
-         * shutting down.  But if there is a chance of
-         * rebooting the system it will be rebooted. */
-        if (panic_reboot_mode != REBOOT_UNDEFINED)
-            reboot_mode = panic_reboot_mode;
-        emergency_restart();
-    }
-#ifdef __sparc__
-    {
-        extern int stop_a_enabled;
-        /* Make sure the user can actually press Stop-A (L1-A) */
-        stop_a_enabled = 1;
-        pr_emerg("Press Stop-A (L1-A) from sun keyboard or send break\n"
-             "twice on console to return to the boot prom\n");
-    }
-#endif
-#if defined(CONFIG_S390)
-    disabled_wait();
-#endif
-    pr_emerg("---[ end Kernel panic - not syncing: %s ]---\n", buf);
-
-    /* Do not scroll important messages printed above */
-    suppress_printk = 1;
-
-    /* The final messages may not have been printed if in a context that
-     * defers printing (such as NMI) and irq_work is not available.
-     * Explicitly flush the kernel log buffer one last time. */
-    console_flush_on_panic(CONSOLE_FLUSH_PENDING);
-    nbcon_atomic_flush_unsafe();
-
-    local_irq_enable();
-    for (i = 0; ; i += PANIC_TIMER_STEP) {
-        touch_softlockup_watchdog();
-        if (i >= i_next) {
-            i += panic_blink(state ^= 1);
-            i_next = i + 3600 / PANIC_BLINK_SPD;
-        }
-        mdelay(PANIC_TIMER_STEP);
-    }
-}
-```
-
 # munmap
 
 ```c
@@ -32148,7 +31636,7 @@ void __init hugetlb_folio_init_vmemmap(struct folio *folio,
 ## THP
 
 * [LWN - Transparent huge pages in the page cache](https://lwn.net/Articles/686690/)
-* [开了 THP，数据库反而卡了——透明大页的延迟陷阱](https://mp.weixin.qq.com/s/meTkKfSEQFb1TRni228bUA)
+* [开了 THP, 数据库反而卡了--透明大页的延迟陷阱](https://mp.weixin.qq.com/s/meTkKfSEQFb1TRni228bUA)
 
 **Config Macro**
 * CONFIG_TRANSPARENT_HUGEPAGE
