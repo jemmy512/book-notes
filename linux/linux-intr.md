@@ -169,110 +169,65 @@ struct irqaction {
 
 # init_IRQ
 
+```sh
+IRQCHIP_DECLARE(x, "compat", x_init)
+        │  (linker)
+        ▼
+__irqchip_of_table[]   ← contiguous array of of_device_id {.compatible, .data=init_fn}
+        │
+        │  irqchip_init()  [called once at boot]
+        ▼
+of_irq_init(__irqchip_of_table)
+  ├─ scan DT: find all interrupt-controller nodes matching the table → build intc_desc_list
+  └─ initialize BFS/topological order (root first, then children):
+       call desc->irq_init_cb(dev_node, parent_node)  for each
+```
+
+```c
+/* include/asm-generic/vmlinux.lds.h */
+#define IRQCHIP_DECLARE(name, compat, fn)   \
+    OF_DECLARE_2(irqchip, name, compat, typecheck_irq_init_cb(fn))
+
+#define OF_DECLARE_2(table, name, compat, fn)               \
+        _OF_DECLARE(table, name, compat, fn, of_init_fn_2)
+
+#define _OF_DECLARE(table, name, compat, fn, fn_type)   \
+    static const struct of_device_id __of_table_##name  \
+        __used __section("__" #table "_of_table")       \
+        __aligned(__alignof__(struct of_device_id))     \
+         = { .compatible = compat,                      \
+             .data = (fn == (fn_type)NULL) ? fn : fn  }
+
+#define IRQCHIP_OF_MATCH_TABLE() OF_TABLE(CONFIG_IRQCHIP, irqchip)
+
+#define ___OF_TABLE(cfg, name)    _OF_TABLE_##cfg(name) /* cfg: _0 or _1 */
+#define __OF_TABLE(cfg, name)    ___OF_TABLE(cfg, name)
+#define OF_TABLE(cfg, name)    __OF_TABLE(IS_ENABLED(cfg), name)
+#define _OF_TABLE_0(name)
+#define _OF_TABLE_1(name)               \
+    . = ALIGN(8);                       \
+    __##name##_of_table = .;            \
+    KEEP(*(__##name##_of_table))        \
+    KEEP(*(__##name##_of_table_end))
+
+    . = ALIGN(8);
+    __irqchip_of_table = .;
+    KEEP(*(__irqchip_of_table))
+    KEEP(*(__irqchip_of_table_end))
+
+static const struct of_device_id
+irqchip_of_match_end __used __section("__irqchip_of_table_end");
+
+extern struct of_device_id __irqchip_of_table[];
+```
+
 ```c
 void __init init_IRQ(void)
 {
     init_irq_stacks();
     init_irq_scs();
     irqchip_init() {
-        of_irq_init(__irqchip_of_table/* matches */) {
-            const struct of_device_id *match;
-            struct device_node *np, *parent = NULL;
-            struct of_intc_desc *desc, *temp_desc;
-            struct list_head intc_desc_list, intc_parent_list;
-
-            INIT_LIST_HEAD(&intc_desc_list);
-            INIT_LIST_HEAD(&intc_parent_list);
-
-            for_each_matching_node_and_match(np, matches, &match) {
-                if (!of_property_read_bool(np, "interrupt-controller") ||
-                        !of_device_is_available(np))
-                    continue;
-
-                if (WARN(!match->data, "of_irq_init: no init function for %s\n",
-                    match->compatible))
-                    continue;
-
-                /* Here, we allocate and populate an of_intc_desc with the node
-                * pointer, interrupt-parent device_node etc. */
-                desc = kzalloc(sizeof(*desc), GFP_KERNEL);
-                if (!desc) {
-                    of_node_put(np);
-                    goto err;
-                }
-
-                desc->irq_init_cb = match->data;
-                desc->dev = of_node_get(np);
-                /* interrupts-extended can reference multiple parent domains.
-                * Arbitrarily pick the first one; assume any other parents
-                * are the same distance away from the root irq controller. */
-                desc->interrupt_parent = of_parse_phandle(np, "interrupts-extended", 0);
-                if (!desc->interrupt_parent)
-                    desc->interrupt_parent = of_irq_find_parent(np);
-                if (desc->interrupt_parent == np) {
-                    of_node_put(desc->interrupt_parent);
-                    desc->interrupt_parent = NULL;
-                }
-                list_add_tail(&desc->list, &intc_desc_list);
-            }
-
-            /* The root irq controller is the one without an interrupt-parent.
-            * That one goes first, followed by the controllers that reference it,
-            * followed by the ones that reference the 2nd level controllers, etc. */
-            while (!list_empty(&intc_desc_list)) {
-                /* Process all controllers with the current 'parent'.
-                * First pass will be looking for NULL as the parent.
-                * The assumption is that NULL parent means a root controller. */
-                list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
-                    int ret;
-
-                    if (desc->interrupt_parent != parent)
-                        continue;
-
-                    list_del(&desc->list);
-
-                    of_node_set_flag(desc->dev, OF_POPULATED);
-
-                    ret = desc->irq_init_cb(desc->dev, desc->interrupt_parent) {
-                        gic_of_init(); /* for gic_v3 */
-                    }
-                    if (ret) {
-                        pr_err("%s: Failed to init %pOF (%p), parent %p\n",
-                            __func__, desc->dev, desc->dev,
-                            desc->interrupt_parent);
-                        of_node_clear_flag(desc->dev, OF_POPULATED);
-                        kfree(desc);
-                        continue;
-                    }
-
-                    /* This one is now set up; add it to the parent list so
-                    * its children can get processed in a subsequent pass. */
-                    list_add_tail(&desc->list, &intc_parent_list);
-                }
-
-                /* Get the next pending parent that might have children */
-                desc = list_first_entry_or_null(&intc_parent_list,
-                                typeof(*desc), list);
-                if (!desc) {
-                    pr_err("of_irq_init: children remain, but no parents\n");
-                    break;
-                }
-                list_del(&desc->list);
-                parent = desc->dev;
-                kfree(desc);
-            }
-
-            list_for_each_entry_safe(desc, temp_desc, &intc_parent_list, list) {
-                list_del(&desc->list);
-                kfree(desc);
-            }
-        err:
-            list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
-                list_del(&desc->list);
-                of_node_put(desc->dev);
-                kfree(desc);
-            }
-        }
+        of_irq_init(__irqchip_of_table);
 
         acpi_probe_device_table(irqchip);
         #define acpi_probe_device_table(t)  \
@@ -290,6 +245,115 @@ void __init init_IRQ(void)
         * the PMR/PSR pair to a consistent state. */
         WARN_ON(read_sysreg(daif) & PSR_A_BIT);
         local_daif_restore(DAIF_PROCCTX_NOIRQ);
+    }
+}
+```
+
+## of_irq_init
+
+```c
+void __init of_irq_init(const struct of_device_id *matches)
+{
+    const struct of_device_id *match;
+    struct device_node *np, *parent = NULL;
+    struct of_intc_desc *desc, *temp_desc;
+    struct list_head intc_desc_list, intc_parent_list;
+
+    INIT_LIST_HEAD(&intc_desc_list);
+    INIT_LIST_HEAD(&intc_parent_list);
+
+    for_each_matching_node_and_match(np, matches, &match) {
+        if (!of_property_read_bool(np, "interrupt-controller") ||
+                !of_device_is_available(np))
+            continue;
+
+        if (WARN(!match->data, "of_irq_init: no init function for %s\n",
+             match->compatible))
+            continue;
+
+        /* Here, we allocate and populate an of_intc_desc with the node
+         * pointer, interrupt-parent device_node etc. */
+        desc = kzalloc_obj(*desc);
+        if (!desc) {
+            of_node_put(np);
+            goto err;
+        }
+
+        desc->irq_init_cb = match->data;
+        desc->dev = of_node_get(np);
+        /* interrupts-extended can reference multiple parent domains.
+         * Arbitrarily pick the first one; assume any other parents
+         * are the same distance away from the root irq controller. */
+        desc->interrupt_parent = of_parse_phandle(np, "interrupts-extended", 0);
+        if (!desc->interrupt_parent && of_property_present(np, "interrupts"))
+            desc->interrupt_parent = of_irq_find_parent(np);
+        else if (!desc->interrupt_parent)
+            desc->interrupt_parent = of_parse_phandle(np, "interrupt-parent", 0);
+        if (desc->interrupt_parent == np) {
+            of_node_put(desc->interrupt_parent);
+            desc->interrupt_parent = NULL;
+        }
+        list_add_tail(&desc->list, &intc_desc_list);
+    }
+
+    /* The root irq controller is the one without an interrupt-parent.
+     * That one goes first, followed by the controllers that reference it,
+     * followed by the ones that reference the 2nd level controllers, etc. */
+    while (!list_empty(&intc_desc_list)) {
+        /* Process all controllers with the current 'parent'.
+         * First pass will be looking for NULL as the parent.
+         * The assumption is that NULL parent means a root controller. */
+        list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
+            int ret;
+
+            if (desc->interrupt_parent != parent)
+                continue;
+
+            list_del(&desc->list);
+
+            of_node_set_flag(desc->dev, OF_POPULATED);
+
+            pr_debug("of_irq_init: init %pOF (%p), parent %p\n",
+                 desc->dev,
+                 desc->dev, desc->interrupt_parent);
+            ret = desc->irq_init_cb(desc->dev, desc->interrupt_parent);
+            if (ret) {
+                pr_err("%s: Failed to init %pOF (%p), parent %p\n",
+                       __func__, desc->dev, desc->dev,
+                       desc->interrupt_parent);
+                of_node_clear_flag(desc->dev, OF_POPULATED);
+                of_node_put(desc->interrupt_parent);
+                of_node_put(desc->dev);
+                kfree(desc);
+                continue;
+            }
+
+            /* This one is now set up; add it to the parent list so
+             * its children can get processed in a subsequent pass. */
+            list_add_tail(&desc->list, &intc_parent_list);
+        }
+
+        /* Get the next pending parent that might have children */
+        desc = list_first_entry_or_null(&intc_parent_list, typeof(*desc), list);
+        if (!desc) {
+            pr_err("of_irq_init: children remain, but no parents\n");
+            break;
+        }
+        list_del(&desc->list);
+        parent = desc->dev;
+        kfree(desc);
+    }
+
+    list_for_each_entry_safe(desc, temp_desc, &intc_parent_list, list) {
+        list_del(&desc->list);
+        kfree(desc);
+    }
+err:
+    list_for_each_entry_safe(desc, temp_desc, &intc_desc_list, list) {
+        list_del(&desc->list);
+        of_node_put(desc->interrupt_parent);
+        of_node_put(desc->dev);
+        kfree(desc);
     }
 }
 ```
@@ -407,7 +471,11 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
 #endif
     return retval;
 }
+```
 
+## setup_irq
+
+```c
 static int
 __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
 {

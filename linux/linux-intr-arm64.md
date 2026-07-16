@@ -473,27 +473,27 @@ el0t_64_irq_handler(struct pt_regs *regs) {
 ```c
 void arm64_enter_from_user_mode(struct pt_regs *regs)
 {
-	enter_from_user_mode(regs);
-	rseq_note_user_irq_entry();
-	mte_disable_tco_entry(current);
-	sme_enter_from_user_mode();
+    enter_from_user_mode(regs);
+    rseq_note_user_irq_entry();
+    mte_disable_tco_entry(current);
+    sme_enter_from_user_mode();
 }
 
 void enter_from_user_mode(struct pt_regs *regs)
 {
-	arch_enter_from_user_mode(regs);
-	lockdep_hardirqs_off(CALLER_ADDR0);
+    arch_enter_from_user_mode(regs);
+    lockdep_hardirqs_off(CALLER_ADDR0);
 
-	CT_WARN_ON(__ct_state() != CT_STATE_USER);
-	user_exit_irqoff() {
+    CT_WARN_ON(__ct_state() != CT_STATE_USER);
+    user_exit_irqoff() {
         if (context_tracking_enabled())
-		    __ct_user_exit(CT_STATE_USER);
+            __ct_user_exit(CT_STATE_USER);
     }
 
-	instrumentation_begin();
-	kmsan_unpoison_entry_regs(regs);
-	trace_hardirqs_off_finish();
-	instrumentation_end();
+    instrumentation_begin();
+    kmsan_unpoison_entry_regs(regs);
+    trace_hardirqs_off_finish();
+    instrumentation_end();
 }
 ```
 
@@ -521,7 +521,7 @@ arm64_exit_to_user_mode(regs) {
 
         user_enter_irqoff() {
             if (context_tracking_enabled())
-		        __ct_user_enter(CT_STATE_USER);
+                __ct_user_enter(CT_STATE_USER);
         }
         arch_exit_to_user_mode();
         lockdep_hardirqs_on(CALLER_ADDR0);
@@ -610,13 +610,28 @@ el1h_64_irq_handler(struct pt_regs *regs) {
         write_sysreg(DAIF_PROCCTX_NOIRQ, daif);
 
         if (IS_ENABLED(CONFIG_ARM64_PSEUDO_NMI) && !interrupts_enabled(regs)) {
-            __el1_pnmi(regs, handler);
+            __el1_pnmi(regs, handler) {
+                irqentry_state_t state;
+
+                state = irqentry_nmi_enter(regs);
+                do_interrupt_handler(regs, handler);
+                irqentry_nmi_exit(regs, state);
+            }
         } else {
             __el1_irq(regs, handler) {
                 state = arm64_enter_from_kernel_mode(regs);
 
                 irq_enter_rcu();
-                do_interrupt_handler(regs, handler);
+                do_interrupt_handler(regs, handler) {
+                    struct pt_regs *old_regs = set_irq_regs(regs);
+
+                    if (on_thread_stack())
+                        call_on_irq_stack(regs, handler);
+                    else
+                        handler(regs);
+
+                    set_irq_regs(old_regs);
+                }
                 irq_exit_rcu();
 
                 arm64_exit_to_kernel_mode(regs, state);
@@ -974,61 +989,69 @@ int call_el1_break_hook(struct pt_regs *regs, unsigned long esr)
 
 ```c
 /* Registered at gic_smp_init->set_smp_ipi_range */
-irqreturn_t ipi_handler(int irq, void *data) {
-    do_handle_IPI(irq - ipi_irq_base) {
-        unsigned int cpu = smp_processor_id();
+static irqreturn_t ipi_handler(int irq, void *data)
+{
+    unsigned int ipi = (irq - ipi_irq_base) % nr_ipi;
 
-        if ((unsigned)ipinr < NR_IPI)
-            trace_ipi_entry(ipi_types[ipinr]);
-
-        switch (ipinr) {
-        case IPI_RESCHEDULE:
-            scheduler_ipi() {
-                #define preempt_fold_need_resched() \
-                    do { \
-                        if (tif_need_resched()) \
-                            set_preempt_need_resched(); \
-                    } while (0)
-            }
-            break;
-
-        case IPI_CALL_FUNC:
-            generic_smp_call_function_interrupt();
-            break;
-
-        case IPI_CPU_STOP:
-            local_cpu_stop();
-            break;
-
-        case IPI_CPU_CRASH_STOP:
-            if (IS_ENABLED(CONFIG_KEXEC_CORE)) {
-                ipi_cpu_crash_stop(cpu, get_irq_regs());
-
-                unreachable();
-            }
-            break;
-
-    #ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
-        case IPI_TIMER:
-            tick_receive_broadcast();
-            break;
-    #endif
-
-    #ifdef CONFIG_IRQ_WORK
-        case IPI_IRQ_WORK:
-            irq_work_run();
-            break;
-    #endif
-
-        default:
-            pr_crit("CPU%u: Unknown IPI message 0x%x\n", cpu, ipinr);
-            break;
-        }
-
-        if ((unsigned)ipinr < NR_IPI)
-            trace_ipi_exit(ipi_types[ipinr]);
-    }
+    do_handle_IPI(ipi);
     return IRQ_HANDLED;
+}
+
+void do_handle_IPI(int ipinr)
+{
+    unsigned int cpu = smp_processor_id();
+
+    if ((unsigned)ipinr < NR_IPI)
+        trace_ipi_entry(ipi_types[ipinr]);
+
+    switch (ipinr) {
+    case IPI_RESCHEDULE:
+        scheduler_ipi();
+        break;
+
+    case IPI_CALL_FUNC:
+        generic_smp_call_function_interrupt();
+        break;
+
+    case IPI_CPU_STOP:
+    case IPI_CPU_STOP_NMI:
+        if (IS_ENABLED(CONFIG_KEXEC_CORE) && crash_stop) {
+            ipi_cpu_crash_stop(cpu, get_irq_regs());
+            unreachable();
+        } else {
+            local_cpu_stop(cpu);
+        }
+        break;
+
+#ifdef CONFIG_GENERIC_CLOCKEVENTS_BROADCAST
+    case IPI_TIMER:
+        tick_receive_broadcast();
+        break;
+#endif
+
+#ifdef CONFIG_IRQ_WORK
+    case IPI_IRQ_WORK:
+        irq_work_run();
+        break;
+#endif
+
+    case IPI_CPU_BACKTRACE:
+        /* NOTE: in some cases this _won't_ be NMI context. See the
+         * comment in arch_trigger_cpumask_backtrace(). */
+        nmi_cpu_backtrace(get_irq_regs());
+        break;
+
+    case IPI_KGDB_ROUNDUP:
+        kgdb_nmicallback(cpu, get_irq_regs());
+        break;
+
+    default:
+        pr_crit("CPU%u: Unknown IPI message 0x%x\n", cpu, ipinr);
+        break;
+    }
+
+    if ((unsigned)ipinr < NR_IPI)
+        trace_ipi_exit(ipi_types[ipinr]);
 }
 ```
 
@@ -1458,6 +1481,37 @@ void irq_work_run_list(struct llist_head *list)
                 rcuwait_wake_up(&work->irqwait);
         }
     }
+}
+```
+
+## IPI_CPU_BACKTRACE
+
+```c
+bool nmi_cpu_backtrace(struct pt_regs *regs)
+{
+    int cpu = smp_processor_id();
+    unsigned long flags;
+
+    if (cpumask_test_cpu(cpu, to_cpumask(backtrace_mask))) {
+        /* Allow nested NMI backtraces while serializing
+         * against other CPUs. */
+        printk_cpu_sync_get_irqsave(flags);
+        if (!READ_ONCE(backtrace_idle) && regs && cpu_in_idle(instruction_pointer(regs))) {
+            pr_warn("NMI backtrace for cpu %d skipped: idling at %pS\n",
+                cpu, (void *)instruction_pointer(regs));
+        } else {
+            pr_warn("NMI backtrace for cpu %d\n", cpu);
+            if (regs)
+                show_regs(regs);
+            else
+                dump_stack();
+        }
+        printk_cpu_sync_put_irqrestore(flags);
+        cpumask_clear_cpu(cpu, to_cpumask(backtrace_mask));
+        return true;
+    }
+
+    return false;
 }
 ```
 
@@ -1911,6 +1965,57 @@ static void ipi_setup(int cpu)
             }
         }
     }
+}
+```
+
+#### request_percpu_nmi
+
+```c
+```
+
+#### request_percpu_irq
+
+```c
+static inline int __must_check
+request_percpu_irq(unsigned int irq, irq_handler_t handler,
+           const char *devname, void __percpu *percpu_dev_id)
+{
+    return request_percpu_irq_affinity(irq, handler, devname, NULL, percpu_dev_id);
+}
+
+int request_percpu_irq_affinity(unsigned int irq, irq_handler_t handler, const char *devname,
+                const cpumask_t *affinity, void __percpu *dev_id)
+{
+    struct irqaction *action;
+    struct irq_desc *desc;
+    int retval;
+
+    if (!dev_id)
+        return -EINVAL;
+
+    desc = irq_to_desc(irq);
+    if (!desc || !irq_settings_can_request(desc) ||
+        !irq_settings_is_per_cpu_devid(desc))
+        return -EINVAL;
+
+    action = create_percpu_irqaction(handler, 0, devname, affinity, dev_id);
+    if (!action)
+        return -ENOMEM;
+
+    retval = irq_chip_pm_get(&desc->irq_data);
+    if (retval < 0) {
+        kfree(action);
+        return retval;
+    }
+
+    retval = __setup_irq(irq, desc, action);
+
+    if (retval) {
+        irq_chip_pm_put(&desc->irq_data);
+        kfree(action);
+    }
+
+    return retval;
 }
 ```
 
