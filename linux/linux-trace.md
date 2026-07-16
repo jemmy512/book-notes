@@ -152,7 +152,7 @@ void dump_stack_lvl(const char *log_lvl)
 
     __dump_stack(log_lvl) {
         dump_stack_print_info(log_lvl);
-	    show_stack(NULL, NULL, log_lvl) {
+        show_stack(NULL, NULL, log_lvl) {
             dump_backtrace(NULL, tsk, loglvl) {
                 pr_debug("%s(regs = %p tsk = %p)\n", __func__, regs, tsk);
 
@@ -171,7 +171,7 @@ void dump_stack_lvl(const char *log_lvl)
 
                 put_task_stack(tsk);
             }
-	        barrier();
+            barrier();
         }
     }
 
@@ -181,21 +181,49 @@ void dump_stack_lvl(const char *log_lvl)
 
 static bool dump_backtrace_entry(const struct kunwind_state *state, void *arg)
 {
-	const char *source = state_source_string(state);
-	union unwind_flags flags = state->flags;
-	bool has_info = source || flags.all;
-	char *loglvl = arg;
+    const char *source = state_source_string(state);
+    union unwind_flags flags = state->flags;
+    bool has_info = source || flags.all;
+    char *loglvl = arg;
 
     /* %pSb resolves pc to symbol */
-	printk("%s %pSb%s%s%s%s%s\n", loglvl,
-		(void *)state->common.pc,
-		has_info ? " (" : "",
-		source ? source : "",
-		flags.fgraph ? "F" : "",
-		flags.kretprobe ? "K" : "",
-		has_info ? ")" : "");
+    printk("%s %pSb%s%s%s%s%s\n", loglvl,
+        (void *)state->common.pc,
+        has_info ? " (" : "",
+        source ? source : "",
+        flags.fgraph ? "F" : "",
+        flags.kretprobe ? "K" : "",
+        has_info ? ")" : "");
 
-	return true;
+    return true;
+}
+```
+
+### dump_stack_print_info
+
+```c
+void dump_stack_print_info(const char *log_lvl)
+{
+    printk("%sCPU: %d UID: %u PID: %d Comm: %.20s %s%s %s %.*s %s " BUILD_ID_FMT "\n",
+           log_lvl, raw_smp_processor_id(),
+           __kuid_val(current_real_cred()->euid),
+           current->pid, current->comm,
+           kexec_crash_loaded() ? "Kdump: loaded " : "",
+           print_tainted(),
+           init_utsname()->release,
+           (int)strcspn(init_utsname()->version, " "),
+           init_utsname()->version, preempt_model_str(), BUILD_ID_VAL);
+
+    if (get_taint())
+        printk("%s%s\n", log_lvl, print_tainted_verbose());
+
+    if (dump_stack_arch_desc_str[0] != '\0')
+        printk("%sHardware name: %s\n",
+               log_lvl, dump_stack_arch_desc_str);
+
+    print_worker_info(log_lvl, current);
+    print_stop_info(log_lvl, current);
+    print_scx_info(log_lvl, current);
 }
 ```
 
@@ -407,7 +435,11 @@ kunwind_next(struct kunwind_state *state)
         return 0;
     }
 }
+```
 
+### kunwind_next_frame_record
+
+```c
 static __always_inline int
 kunwind_next_frame_record(struct kunwind_state *state)
 {
@@ -422,7 +454,7 @@ kunwind_next_frame_record(struct kunwind_state *state)
     if (fp & 0x7)
         return -EINVAL;
 
-    info = unwind_find_stack(&state->common, fp, sizeof(*record)) {
+    info = unwind_find_stack(&state->common/*state*/, fp/*sp*/, sizeof(*record)) {
         struct stack_info *info = &state->stack;
 
         ret = stackinfo_on_stack(info, sp, size) {
@@ -500,10 +532,13 @@ kunwind_next_frame_record_meta(struct kunwind_state *state) {
     struct task_struct *tsk = state->task;
     unsigned long fp = state->common.fp;
     struct frame_record_meta {
-        struct frame_record     record;
-        u64                     type;
-    }                   *meta;
-    struct stack_info   *info;
+        struct frame_record {
+            u64     fp;
+            u64     lr;
+        }       record;
+        u64     type;
+    }                       *meta;
+    struct stack_info       *info;
 
     info = unwind_find_stack(&state->common, fp, sizeof(*meta));
     if (!info)
@@ -545,6 +580,498 @@ kunwind_next_frame_record_meta(struct kunwind_state *state) {
     }
 }
 ```
+
+# panic
+
+```c
+void panic(const char *fmt, ...)
+{
+    va_list args;
+
+    va_start(args, fmt);
+    vpanic(fmt, args);
+    va_end(args);
+}
+
+void vpanic(const char *fmt, va_list args)
+{
+    static char buf[PANIC_MSG_BUFSZ];
+    long i, i_next = 0, len;
+    int state = 0;
+    bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
+
+    if (panic_on_warn) {
+        /* This thread may hit another WARN() in the panic path.
+         * Resetting this prevents additional WARN() from panicking the
+         * system on this thread.  Other threads are blocked by the
+         * panic_mutex in panic(). */
+        panic_on_warn = 0;
+    }
+
+    /* Disable local interrupts. This will prevent panic_smp_self_stop
+     * from deadlocking the first cpu that invokes the panic, since
+     * there is nothing to prevent an interrupt handler (that runs
+     * after setting panic_cpu) from invoking panic() again. */
+    local_irq_disable();
+    preempt_disable_notrace();
+
+    /* Redirect panic to target CPU if configured via panic_force_cpu=. */
+    if (panic_try_force_cpu(fmt, args)) {
+        /* Mark ourselves offline so panic_other_cpus_shutdown() won't wait
+         * for us on architectures that check num_online_cpus(). */
+        set_cpu_online(smp_processor_id(), false);
+        panic_smp_self_stop() {
+            local_cpu_stop(smp_processor_id()) {
+                set_cpu_online(cpu, false);
+
+                local_daif_mask();
+                sdei_mask_local_cpu();
+                cpu_park_loop() {
+                    for (;;) {
+                        wfe();
+                        wfi();
+                    }
+                }
+            }
+        }
+    }
+    /* It's possible to come here directly from a panic-assertion and
+     * not have preempt disabled. Some functions called from here want
+     * preempt to be disabled. No point enabling it later though...
+     *
+     * Only one CPU is allowed to execute the panic code from here. For
+     * multiple parallel invocations of panic, all other CPUs either
+     * stop themself or will wait until they are stopped by the 1st CPU
+     * with smp_send_stop().
+     *
+     * cmpxchg success means this is the 1st CPU which comes here,
+     * so go ahead.
+     * `old_cpu == this_cpu' means we came from nmi_panic() which sets
+     * panic_cpu to this CPU.  In this case, this is also the 1st CPU. */
+    /* atomic_try_cmpxchg updates old_cpu on failure */
+    if (panic_try_start()) {
+        /* go ahead */
+    } else if (panic_on_other_cpu())
+        panic_smp_self_stop();
+
+    console_verbose();
+    bust_spinlocks(1);
+    len = vscnprintf(buf, sizeof(buf), fmt, args);
+
+    if (len && buf[len - 1] == '\n')
+        buf[len - 1] = '\0';
+
+    pr_emerg("Kernel panic - not syncing: %s\n", buf);
+    /* Avoid nested stack-dumping if a panic occurs during oops processing */
+    if (atomic_read(&panic_redirect_cpu) != PANIC_CPU_INVALID && panic_force_cpu == raw_smp_processor_id()) {
+        pr_emerg("panic: Redirected from CPU %d, skipping stack dump.\n",
+             atomic_read(&panic_redirect_cpu));
+    } else if (test_taint(TAINT_DIE) || oops_in_progress > 1) {
+        panic_this_cpu_backtrace_printed = true;
+    } else if (IS_ENABLED(CONFIG_DEBUG_BUGVERBOSE)) {
+        dump_stack();
+        panic_this_cpu_backtrace_printed = true;
+    }
+
+    /* If kgdb is enabled, give it a chance to run before we stop all
+     * the other CPUs or else we won't be able to debug processes left
+     * running on them. */
+    kgdb_panic(buf);
+
+    /* If we have crashed and we have a crash kernel loaded let it handle
+     * everything else.
+     * If we want to run this after calling panic_notifiers, pass
+     * the "crash_kexec_post_notifiers" option to the kernel.
+     *
+     * Bypass the panic_cpu check and call __crash_kexec directly. */
+    if (!_crash_kexec_post_notifiers)
+        __crash_kexec(NULL);
+
+    panic_other_cpus_shutdown(_crash_kexec_post_notifiers) {
+        if (panic_print & SYS_INFO_ALL_BT)
+            panic_trigger_all_cpu_backtrace();
+
+        /* Note that smp_send_stop() is the usual SMP shutdown function,
+        * which unfortunately may not be hardened to work in a panic
+        * situation. If we want to do crash dump after notifier calls
+        * and kmsg_dump, we will need architecture dependent extra
+        * bits in addition to stopping other CPUs, hence we rely on
+        * crash_smp_send_stop() for that. */
+        if (!crash_kexec)
+            smp_send_stop();
+        else
+            crash_smp_send_stop();
+    }
+
+    printk_legacy_allow_panic_sync();
+
+    /* Run any panic handlers, including those that might need to
+     * add information to the kmsg dump output. */
+    atomic_notifier_call_chain(&panic_notifier_list, 0, buf);
+
+    sys_info(panic_print);
+
+    kmsg_dump_desc(KMSG_DUMP_PANIC, buf);
+
+    /* If you doubt kdump always works fine in any situation,
+     * "crash_kexec_post_notifiers" offers you a chance to run
+     * panic_notifiers and dumping kmsg before kdump.
+     * Note: since some panic_notifiers can make crashed kernel
+     * more unstable, it can increase risks of the kdump failure too.
+     *
+     * Bypass the panic_cpu check and call __crash_kexec directly. */
+    if (_crash_kexec_post_notifiers)
+        __crash_kexec(NULL);
+
+    console_unblank();
+
+    /* We may have ended up stopping the CPU holding the lock (in
+     * smp_send_stop()) while still having some valuable data in the console
+     * buffer.  Try to acquire the lock then release it regardless of the
+     * result.  The release will also print the buffers out.  Locks debug
+     * should be disabled to avoid reporting bad unlock balance when
+     * panic() is not being callled from OOPS. */
+    debug_locks_off();
+    console_flush_on_panic(CONSOLE_FLUSH_PENDING);
+
+    if ((panic_print & SYS_INFO_PANIC_CONSOLE_REPLAY) ||
+        panic_console_replay)
+        console_flush_on_panic(CONSOLE_REPLAY_ALL);
+
+    if (!panic_blink)
+        panic_blink = no_blink;
+
+    if (panic_timeout > 0) {
+        /* Delay timeout seconds before rebooting the machine.
+         * We can't use the "normal" timers since we just panicked. */
+        pr_emerg("Rebooting in %d seconds..\n", panic_timeout);
+
+        for (i = 0; i < panic_timeout * 1000; i += PANIC_TIMER_STEP) {
+            touch_nmi_watchdog();
+            if (i >= i_next) {
+                i += panic_blink(state ^= 1);
+                i_next = i + 3600 / PANIC_BLINK_SPD;
+            }
+            mdelay(PANIC_TIMER_STEP);
+        }
+    }
+    if (panic_timeout != 0) {
+        /* This will not be a clean reboot, with everything
+         * shutting down.  But if there is a chance of
+         * rebooting the system it will be rebooted. */
+        if (panic_reboot_mode != REBOOT_UNDEFINED)
+            reboot_mode = panic_reboot_mode;
+        emergency_restart();
+    }
+#ifdef __sparc__
+    {
+        extern int stop_a_enabled;
+        /* Make sure the user can actually press Stop-A (L1-A) */
+        stop_a_enabled = 1;
+        pr_emerg("Press Stop-A (L1-A) from sun keyboard or send break\n"
+             "twice on console to return to the boot prom\n");
+    }
+#endif
+#if defined(CONFIG_S390)
+    disabled_wait();
+#endif
+    pr_emerg("---[ end Kernel panic - not syncing: %s ]---\n", buf);
+
+    /* Do not scroll important messages printed above */
+    suppress_printk = 1;
+
+    /* The final messages may not have been printed if in a context that
+     * defers printing (such as NMI) and irq_work is not available.
+     * Explicitly flush the kernel log buffer one last time. */
+    console_flush_on_panic(CONSOLE_FLUSH_PENDING);
+    nbcon_atomic_flush_unsafe();
+
+    local_irq_enable();
+    for (i = 0; ; i += PANIC_TIMER_STEP) {
+        touch_softlockup_watchdog();
+        if (i >= i_next) {
+            i += panic_blink(state ^= 1);
+            i_next = i + 3600 / PANIC_BLINK_SPD;
+        }
+        mdelay(PANIC_TIMER_STEP);
+    }
+}
+```
+
+## sys_info
+
+```sh
+# /etc/sysctl.conf
+# Dump tasks + mem + locks + all backtraces on panic
+kernel.panic_sys_info = tasks,mem,locks,all_bt,blocked_tasks
+
+# Optionally, fallback mask for non-panic sys_info(0) callers
+kernel.kernel_sys_info = tasks,mem,locks
+
+# dump all on next panic
+echo "tasks,mem,timers,locks,ftrace,all_bt,blocked_tasks" \
+    > /proc/sys/kernel/panic_sys_info
+```
+
+```sh
+panic()
+└─ sys_info(panic_print)
+    └─ __sys_info(si_mask)
+        └─ if (SYS_INFO_TASKS)
+            show_state()
+            └─ show_state_filter(0)
+                ├─ sched_show_task() for each task  ← per-task stack
+                └─ sysrq_sched_debug_show()         ← per-CPU rq info
+```
+
+```c
+void sys_info(unsigned long si_mask)
+{
+    __sys_info(si_mask ? : kernel_si_mask);
+}
+
+void __sys_info(unsigned long si_mask)
+{
+    if (si_mask & SYS_INFO_TASKS) {
+        show_state() {
+            show_state_filter(0);
+        }
+    }
+
+    if (si_mask & SYS_INFO_MEM)
+        show_mem();
+
+    if (si_mask & SYS_INFO_TIMERS)
+        sysrq_timer_list_show();
+
+    if (si_mask & SYS_INFO_LOCKS)
+        debug_show_all_locks();
+
+    if (si_mask & SYS_INFO_FTRACE)
+        ftrace_dump(DUMP_ALL);
+
+    if (si_mask & SYS_INFO_ALL_BT)
+        trigger_all_cpu_backtrace();
+
+    if (si_mask & SYS_INFO_BLOCKED_TASKS)
+        show_state_filter(TASK_UNINTERRUPTIBLE);
+}
+```
+
+### show_mem
+
+```c
+static inline void show_mem(void)
+{
+    __show_mem(0, NULL, MAX_NR_ZONES - 1);
+}
+
+void __show_mem(unsigned int filter, nodemask_t *nodemask, int max_zone_idx)
+{
+    unsigned long total = 0, reserved = 0, highmem = 0;
+    struct zone *zone;
+
+    printk("Mem-Info:\n");
+    show_free_areas(filter, nodemask, max_zone_idx);
+
+    for_each_populated_zone(zone) {
+
+        total += zone->present_pages;
+        reserved += zone->present_pages - zone_managed_pages(zone);
+
+        if (is_highmem(zone))
+            highmem += zone->present_pages;
+    }
+
+    printk("%lu pages RAM\n", total);
+    printk("%lu pages HighMem/MovableOnly\n", highmem);
+    printk("%lu pages reserved\n", reserved);
+#ifdef CONFIG_CMA
+    printk("%lu pages cma reserved\n", totalcma_pages);
+#endif
+#ifdef CONFIG_MEMORY_FAILURE
+    printk("%lu pages hwpoisoned\n", atomic_long_read(&num_poisoned_pages));
+#endif
+#ifdef CONFIG_MEM_ALLOC_PROFILING
+    static DEFINE_SPINLOCK(mem_alloc_profiling_spinlock);
+
+    if (spin_trylock(&mem_alloc_profiling_spinlock)) {
+        struct codetag_bytes tags[10];
+        size_t i, nr;
+
+        nr = alloc_tag_top_users(tags, ARRAY_SIZE(tags), false);
+        if (nr) {
+            pr_notice("Memory allocations (profiling is currently turned %s):\n",
+                mem_alloc_profiling_enabled() ? "on" : "off");
+            for (i = 0; i < nr; i++) {
+                struct codetag *ct = tags[i].ct;
+                struct alloc_tag *tag = ct_to_alloc_tag(ct);
+                struct alloc_tag_counters counter = alloc_tag_read(tag);
+                char bytes[10];
+
+                string_get_size(counter.bytes, 1, STRING_UNITS_2, bytes, sizeof(bytes));
+
+                /* Same as alloc_tag_to_text() but w/o intermediate buffer */
+                if (ct->modname)
+                    pr_notice("%12s %8llu %s:%u [%s] func:%s\n",
+                          bytes, counter.calls, ct->filename,
+                          ct->lineno, ct->modname, ct->function);
+                else
+                    pr_notice("%12s %8llu %s:%u func:%s\n",
+                          bytes, counter.calls, ct->filename,
+                          ct->lineno, ct->function);
+            }
+        }
+        spin_unlock(&mem_alloc_profiling_spinlock);
+    }
+#endif
+}
+```
+
+### show_state_filter
+
+```c
+void show_state_filter(unsigned int state_filter)
+{
+    struct task_struct *g, *p;
+
+    rcu_read_lock();
+    for_each_process_thread(g, p) {
+        /* reset the NMI-timeout, listing all files on a slow
+         * console might take a lot of time:
+         * Also, reset softlockup watchdogs on all CPUs, because
+         * another CPU might be blocked waiting for us to process
+         * an IPI. */
+        touch_nmi_watchdog();
+        touch_all_softlockup_watchdogs();
+        if (state_filter_match(state_filter, p))
+            sched_show_task(p);
+    }
+
+    if (!state_filter) {
+        sysrq_sched_debug_show() {
+            int cpu;
+
+            sched_debug_header(NULL);
+            for_each_online_cpu(cpu) {
+                /* Need to reset softlockup watchdogs on all CPUs, because
+                * another CPU might be blocked waiting for us to process
+                * an IPI or stop_machine. */
+                touch_nmi_watchdog();
+                touch_all_softlockup_watchdogs();
+                print_cpu(NULL, cpu);
+            }
+        }
+    }
+
+    rcu_read_unlock();
+    /* Only show locks if all tasks are dumped: */
+    if (!state_filter)
+        debug_show_all_locks();
+}
+```
+
+#### sched_show_task
+
+```c
+void sched_show_task(struct task_struct *p)
+{
+    unsigned long free;
+    int ppid;
+
+    if (!try_get_task_stack(p))
+        return;
+
+    pr_info("task:%-15.15s state:%c", p->comm, task_state_to_char(p));
+
+    if (task_is_running(p))
+        pr_cont("  running task    ");
+    free = stack_not_used(p);
+    ppid = 0;
+    rcu_read_lock();
+    if (pid_alive(p))
+        ppid = task_pid_nr(rcu_dereference(p->real_parent));
+    rcu_read_unlock();
+    pr_cont(" stack:%-5lu pid:%-5d tgid:%-5d ppid:%-6d task_flags:0x%04x flags:0x%08lx\n",
+        free, task_pid_nr(p), task_tgid_nr(p),
+        ppid, p->flags, read_task_thread_flags(p));
+
+    print_worker_info(KERN_INFO, p);
+    print_stop_info(KERN_INFO, p);
+    print_scx_info(KERN_INFO, p);
+    show_stack(p, NULL, KERN_INFO);
+    put_task_stack(p);
+}
+```
+
+#### print_cpu
+
+```c
+void print_cpu(struct seq_file *m, int cpu)
+{
+    struct rq *rq = cpu_rq(cpu);
+
+#ifdef CONFIG_X86
+    {
+        unsigned int freq = cpu_khz ? : 1;
+
+        SEQ_printf(m, "cpu#%d, %u.%03u MHz\n", cpu, freq / 1000, (freq % 1000));
+    }
+#else /* !CONFIG_X86: */
+    SEQ_printf(m, "cpu#%d\n", cpu);
+#endif /* !CONFIG_X86 */
+
+#define P(x)                                \
+do {                                    \
+    if (sizeof(rq->x) == 4)                        \
+        SEQ_printf(m, "  .%-30s: %d\n", #x, (int)(rq->x));    \
+    else                                \
+        SEQ_printf(m, "  .%-30s: %Ld\n", #x, (long long)(rq->x));\
+} while (0)
+
+#define PN(x) \
+    SEQ_printf(m, "  .%-30s: %Ld.%06ld\n", #x, SPLIT_NS(rq->x))
+
+    P(nr_running);
+    P(nr_switches);
+    P(nr_uninterruptible);
+    PN(next_balance);
+    SEQ_printf(m, "  .%-30s: %ld\n", "curr->pid", (long)(task_pid_nr(rq->curr)));
+    PN(clock);
+    PN(clock_task);
+#undef P
+#undef PN
+
+#define P64(n) SEQ_printf(m, "  .%-30s: %Ld\n", #n, rq->n);
+    P64(avg_idle);
+    P64(max_idle_balance_cost);
+#undef P64
+
+#define P(n) SEQ_printf(m, "  .%-30s: %d\n", #n, schedstat_val(rq->n));
+    if (schedstat_enabled()) {
+        P(yld_count);
+        P(sched_count);
+        P(sched_goidle);
+        P(ttwu_count);
+        P(ttwu_local);
+    }
+#undef P
+
+    print_cfs_stats(m, cpu);
+    print_rt_stats(m, cpu);
+    print_dl_stats(m, cpu);
+
+    print_rq(m, rq, cpu);
+    SEQ_printf(m, "\n");
+}
+```
+
+## smp_send_stop
+
+## crash_kexec
+
+## emergency_restart
+
 
 # ptrace
 
