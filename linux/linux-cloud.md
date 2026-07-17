@@ -1,52 +1,3 @@
-
-* [cgroup](#cgroup)
-    * [cgrp_demo](#cgrp_demo)
-    * [cgroup_api](#cgroup_api)
-        * [cgrou_init](#cgroup_init)
-            * [cgroup_init_cftypes](#cgroup_init_cftypes)
-            * [cgroup_init_subsys](#cgroup_init_subsys)
-            * [cgroup_setup_root](#cgroup_setup_root)
-        * [cgroup_create](#cgroup_create)
-        * [cgroup_attach_task](#cgroup_attach_task)
-        * [cgroup_fork](#cgroup_fork)
-        * [cgroup_fork](#cgroup_fork)
-        * [cgroup_subtree_control_write](#cgroup_subtree_control_write)
-
-    * [mem_cgroup](#mem_cgroup)
-        * [mem_cgroup_write](#mem_cgroup_write)
-        * [mem_cgroup_attach](#mem_cgroup_attach)
-        * [mem_cgroup_charge](#mem_cgroup_charge)
-        * [mem_cgroup_try_charge_swap](#mem_cgroup_try_charge_swap)
-        * [memory_reclaim](#memory_reclaim)
-        * [mem_cgroup_oom](#mem_cgroup_oom)
-        * [mem_cgroup_swapout](#mem_cgroup_swapout)
-        * [mem_cgroup_pressure](#mem_cgroup_pressure)
-
-    * [cpu_cgroup](#cpu_cgroup)
-        * [cpu_cgroup_css_alloc](#cpu_cgroup_css_alloc)
-        * [cpu_cgroup_attach](#cpu_cgroup_attach)
-        * [cpu_weight_write_u64](#cpu_weight_write_u64)
-        * [cpu_max_write](#cpu_max_write)
-        * [cfs_bandwidth](#cfs_bandwidth)
-            * [init_cfs_bandwidth](#init_cfs_bandwidth)
-            * [sched_cfs_period_timer](#sched_cfs_period_timer)
-            * [sched_cfs_slack_timer](#sched_cfs_slack_timer)
-            * [tg_set_cfs_bandwidth](#tg_set_cfs_bandwidth)
-            * [throttle_cfs_rq](#throttle_cfs_rq)
-            * [unthrottle_cfs_rq](#unthrottle_cfs_rq)
-            * [sched_group_set_shares](#sched_group_set_shares)
-            * [update_cfs_group](#update_cfs_group)
-
-        * [rt_bandwidth](#rt_bandwidth)
-            * [tg_set_rt_bandwidth](#tg_set_rt_bandwidth)
-            * [sched_rt_period_timer](#sched_rt_period_timer)
-            * [sched_rt_runtime_exceeded](#sched_rt_runtime_exceeded)
-
-        * [task_group](#task_group)
-            * [sched_create_group](#sched_create_group)
-
-* [[RFC 0/5] parker: PARtitioned KERnel](https://lore.kernel.org/linux-pm/20250923153146.365015-1-fam.zheng@bytedance.com/)
-
 # cgroup
 
 * [lore.cgroup](https://lore.kernel.org/cgroups)
@@ -507,6 +458,7 @@ int __init cgroup_init(void)
     hash_add(css_set_table, &init_css_set.hlist,
         css_set_hash(init_css_set.subsys));
 
+    /* create a mount point at /sys/fs/cgroup */
     sysfs_create_mount_point(fs_kobj, "cgroup");
     register_filesystem(&cgroup_fs_type);
     register_filesystem(&cgroup2_fs_type);
@@ -7881,6 +7833,79 @@ static struct pernet_operations fou_net_ops = {
     .id   = &fou_net_id,
     .size = sizeof(struct fou_net),
 };
+```
+
+### proc_net_init
+
+```c
+int __init proc_net_init(void)
+{
+    proc_symlink("net", NULL, "self/net");
+
+    return register_pernet_subsys(&proc_net_ns_ops);
+}
+
+static struct pernet_operations __net_initdata proc_net_ns_ops = {
+    .init = proc_net_ns_init,
+    .exit = proc_net_ns_exit,
+};
+
+static __net_init int proc_net_ns_init(struct net *net)
+{
+    struct proc_dir_entry *netd, *net_statd;
+    kuid_t uid;
+    kgid_t gid;
+    int err;
+
+    /* This PDE acts only as an anchor for /proc/${pid}/net hierarchy.
+     * Corresponding inode (PDE(inode) == net->proc_net) is never
+     * instantiated therefore blanket zeroing is fine.
+     * net->proc_net_stat inode is instantiated normally. */
+    err = -ENOMEM;
+    netd = kmem_cache_zalloc(proc_dir_entry_cache, GFP_KERNEL);
+    if (!netd)
+        goto out;
+
+    netd->subdir = RB_ROOT;
+    netd->data = net;
+    netd->nlink = 2;
+    netd->namelen = 3;
+    netd->parent = &proc_root;
+    netd->name = netd->inline_name;
+    memcpy(netd->name, "net", 4);
+
+    uid = make_kuid(net->user_ns, 0);
+    if (!uid_valid(uid))
+        uid = netd->uid;
+
+    gid = make_kgid(net->user_ns, 0);
+    if (!gid_valid(gid))
+        gid = netd->gid;
+
+    proc_set_user(netd, uid, gid);
+
+    /* Seed dentry revalidation for /proc/${pid}/net */
+    pde_force_lookup(netd) {
+        /* /proc/net/ entries can be changed under us by setns(CLONE_NEWNET) */
+	    pde->flags |= PROC_ENTRY_FORCE_LOOKUP;
+    }
+
+    err = -EEXIST;
+    net_statd = proc_net_mkdir(net, "stat", netd) {
+        return _proc_mkdir(name, 0, parent, net, true);
+    }
+    if (!net_statd)
+        goto free_net;
+
+    net->proc_net = netd;
+    net->proc_net_stat = net_statd;
+    return 0;
+
+free_net:
+    pde_free(netd);
+out:
+    return err;
+}
 ```
 
 ## time_namespace

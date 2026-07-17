@@ -2613,8 +2613,7 @@ struct dentry *lookup_fast(struct nameidata *nd)
             return ERR_PTR(-ECHILD);
         if (status == -ECHILD)
             /* we'd been told to redo it in non-rcu mode */
-            status = d_revalidate(nd->inode, &nd->last,
-                          dentry, nd->flags);
+            status = d_revalidate(nd->inode, &nd->last, dentry, nd->flags);
     } else {
         dentry = __d_lookup(parent, &nd->last);
         if (unlikely(!dentry))
@@ -13547,7 +13546,7 @@ void kobject_del(struct kobject *kobj)
 
 ## sysfs
 
-![](../images/kernel/file-sysfs.drawio.svg)
+![](../images/kernel/file-fs-sysfs.drawio.svg)
 
 | Step | Layer | Function |
 |------|-------|----------|
@@ -14670,7 +14669,11 @@ int kernfs_fop_open(struct inode *inode, struct file *file)
     if (!kernfs_get_active(kn))
         return -ENODEV;
 
-    ops = kernfs_ops(kn);
+    ops = kernfs_ops(kn) {
+        if (kn->flags & KERNFS_LOCKDEP)
+            lockdep_assert_held(kn);
+        return kn->attr.ops;
+    }
 
     has_read = ops->seq_show || ops->read || ops->mmap;
     has_write = ops->write || ops->mmap;
@@ -14916,6 +14919,28 @@ struct vfsmount *vfs_kern_mount(struct file_system_type *type,
 ### kernfs_get_tree
 
 ```c
+const struct super_operations kernfs_sops = {
+    .statfs         = kernfs_statfs,
+    .drop_inode     = inode_just_drop,
+    .evict_inode    = kernfs_evict_inode,
+
+    .show_options   = kernfs_sop_show_options,
+    .show_path      = kernfs_sop_show_path,
+
+    /* sysfs is built on top of kernfs and sysfs provides the power
+     * management infrastructure to support suspend/hibernate by
+     * writing to various files in /sys/power/. As filesystems may
+     * be automatically frozen during suspend/hibernate implementing
+     * freeze/thaw support for kernfs generically will cause
+     * deadlocks as the suspending/hibernation initiating task will
+     * hold a VFS lock that it will then wait upon to be released.
+     * If freeze/thaw for kernfs is needed talk to the VFS. */
+    .freeze_fs      = NULL,
+    .unfreeze_fs    = NULL,
+    .freeze_super   = NULL,
+    .thaw_super     = NULL,
+};
+
 int kernfs_get_tree(struct fs_context *fc)
 {
     struct kernfs_fs_context *kfc = fc->fs_private;
@@ -15003,6 +15028,29 @@ int kernfs_get_tree(struct fs_context *fc)
 
     fc->root = dget(sb->s_root);
     return 0;
+}
+
+int kernfs_set_super(struct super_block *sb, struct fs_context *fc)
+{
+    struct kernfs_fs_context *kfc = fc->fs_private;
+
+    kfc->ns_tag = NULL;
+    return set_anon_super_fc(sb, fc) {
+        return set_anon_super(sb, NULL) {
+            return get_anon_bdev(&s->s_dev) {
+                int dev;
+
+                dev = ida_alloc_range(&unnamed_dev_ida, 1, (1 << MINORBITS) - 1, GFP_ATOMIC);
+                if (dev == -ENOSPC)
+                    dev = -EMFILE;
+                if (dev < 0)
+                    return dev;
+
+                *p = MKDEV(0, dev);
+                return 0;
+            }
+        }
+    }
 }
 ```
 
@@ -15149,7 +15197,7 @@ struct dentry *kernfs_iop_lookup(struct inode *dir,
 ## procfs
 
 
-![](../images/kernel/file-procfs.drawio.svg)
+![](../images/kernel/file-fs-procfs.drawio.svg)
 
 ```c
 struct proc_dir_entry proc_root = {
@@ -15214,6 +15262,244 @@ static const struct proc_ops proc_single_ops = {
 };
 ```
 
+### proc_hierarchy
+
+```sh
+/proc/
+├── self          → (symlink to current PID)
+├── thread-self   → (symlink to current TID)
+└── <pid>/                          ← tgid_base_stuff (line 3282)
+    ├── task/                       DIR – proc_task_inode_operations
+    │   └── <tid>/                  ← tid_base_stuff (line 3641)
+    │       ├── fd/                 DIR
+    │       ├── fdinfo/             DIR
+    │       ├── ns/                 DIR
+    │       ├── net/                DIR  [CONFIG_NET]
+    │       ├── attr/               DIR  [CONFIG_SECURITY]
+    │       │   ├── current         ATTR
+    │       │   ├── prev            ATTR
+    │       │   ├── exec            ATTR
+    │       │   ├── fscreate        ATTR
+    │       │   ├── keycreate       ATTR
+    │       │   ├── sockcreate      ATTR
+    │       │   ├── smack/          DIR  [CONFIG_SECURITY_SMACK]
+    │       │   │   └── current     ATTR
+    │       │   └── apparmor/       DIR  [CONFIG_SECURITY_APPARMOR]
+    │       │       ├── current     ATTR
+    │       │       ├── prev        ATTR
+    │       │       └── exec        ATTR
+    │       ├── environ             REG
+    │       ├── auxv                REG
+    │       ├── status              ONE  → proc_pid_status
+    │       ├── personality         ONE
+    │       ├── limits              ONE
+    │       ├── sched               REG
+    │       ├── comm                NOD  (special perm: proc_tid_comm_inode_operations)
+    │       ├── syscall             ONE  [CONFIG_HAVE_ARCH_TRACEHOOK]
+    │       ├── cmdline             REG
+    │       ├── stat                ONE  → proc_tid_stat
+    │       ├── statm               ONE
+    │       ├── maps                REG
+    │       ├── children            REG  [CONFIG_PROC_CHILDREN]
+    │       ├── numa_maps           REG  [CONFIG_NUMA]
+    │       ├── mem                 REG
+    │       ├── cwd                 LNK
+    │       ├── root                LNK
+    │       ├── exe                 LNK
+    │       ├── mounts              REG
+    │       ├── mountinfo           REG
+    │       ├── clear_refs          REG  [CONFIG_PROC_PAGE_MONITOR]
+    │       ├── smaps               REG  [CONFIG_PROC_PAGE_MONITOR]
+    │       ├── smaps_rollup        REG  [CONFIG_PROC_PAGE_MONITOR]
+    │       ├── pagemap             REG  [CONFIG_PROC_PAGE_MONITOR]
+    │       ├── wchan               ONE  [CONFIG_KALLSYMS]
+    │       ├── stack               ONE  [CONFIG_STACKTRACE]
+    │       ├── schedstat           ONE  [CONFIG_SCHED_INFO]
+    │       ├── latency             REG  [CONFIG_LATENCYTOP]
+    │       ├── cpuset              ONE  [CONFIG_PROC_PID_CPUSET]
+    │       ├── cgroup              ONE  → proc_cgroup_show  [CONFIG_CGROUPS]  ← line 3701
+    │       ├── cpu_resctrl_groups  ONE  [CONFIG_PROC_CPU_RESCTRL]
+    │       ├── oom_score           ONE
+    │       ├── oom_adj             REG
+    │       ├── oom_score_adj       REG
+    │       ├── loginuid            REG  [CONFIG_AUDIT]
+    │       ├── sessionid           REG  [CONFIG_AUDIT]
+    │       ├── make-it-fail        REG  [CONFIG_FAULT_INJECTION]
+    │       ├── fail-nth            REG  [CONFIG_FAULT_INJECTION]
+    │       ├── io                  ONE  → proc_tid_io_accounting  [CONFIG_TASK_IO_ACCOUNTING]
+    │       ├── uid_map             REG  [CONFIG_USER_NS]
+    │       ├── gid_map             REG  [CONFIG_USER_NS]
+    │       ├── projid_map          REG  [CONFIG_USER_NS]
+    │       ├── setgroups           REG  [CONFIG_USER_NS]
+    │       ├── patch_state         ONE  [CONFIG_LIVEPATCH]
+    │       ├── arch_status         ONE  [CONFIG_PROC_PID_ARCH_STATUS]
+    │       ├── seccomp_cache       ONE  [CONFIG_SECCOMP_CACHE_DEBUG]
+    │       ├── ksm_merging_pages   ONE  [CONFIG_KSM]
+    │       └── ksm_stat            ONE  [CONFIG_KSM]
+    │
+    ├── fd/                         DIR
+    ├── map_files/                  DIR
+    ├── fdinfo/                     DIR
+    ├── ns/                         DIR
+    ├── net/                        DIR  [CONFIG_NET]
+    ├── attr/                       DIR  [CONFIG_SECURITY]  ← attr_dir_stuff (line 2877)
+    │   ├── current / prev / exec / fscreate / keycreate / sockcreate
+    │   ├── smack/                  DIR  [CONFIG_SECURITY_SMACK]
+    │   └── apparmor/               DIR  [CONFIG_SECURITY_APPARMOR]
+    ├── environ / auxv              REG
+    ├── status                      ONE  → proc_pid_status
+    ├── personality / limits        ONE
+    ├── sched                       REG
+    ├── autogroup                   REG  [CONFIG_SCHED_AUTOGROUP]
+    ├── timens_offsets              REG  [CONFIG_TIME_NS]
+    ├── comm                        REG
+    ├── syscall                     ONE  [CONFIG_HAVE_ARCH_TRACEHOOK]
+    ├── cmdline                     REG
+    ├── stat                        ONE  → proc_tgid_stat
+    ├── statm                       ONE
+    ├── maps / numa_maps / mem      REG
+    ├── cwd / root / exe            LNK
+    ├── mounts / mountinfo / mountstats  REG
+    ├── clear_refs / smaps / smaps_rollup / pagemap  REG  [CONFIG_PROC_PAGE_MONITOR]
+    ├── wchan                       ONE  [CONFIG_KALLSYMS]
+    ├── stack                       ONE  [CONFIG_STACKTRACE]
+    ├── schedstat                   ONE  [CONFIG_SCHED_INFO]
+    ├── latency                     REG  [CONFIG_LATENCYTOP]
+    ├── cpuset                      ONE  [CONFIG_PROC_PID_CPUSET]
+    ├── cgroup                      ONE  → proc_cgroup_show  [CONFIG_CGROUPS]  ← line 3346
+    ├── cpu_resctrl_groups          ONE  [CONFIG_PROC_CPU_RESCTRL]
+    ├── oom_score / oom_adj / oom_score_adj
+    ├── loginuid / sessionid        REG  [CONFIG_AUDIT]
+    ├── make-it-fail / fail-nth     REG  [CONFIG_FAULT_INJECTION]
+    ├── coredump_filter             REG  [CONFIG_ELF_CORE]
+    ├── io                          ONE  → proc_tgid_io_accounting  [CONFIG_TASK_IO_ACCOUNTING]
+    ├── uid_map / gid_map / projid_map / setgroups  REG  [CONFIG_USER_NS]
+    ├── timers                      REG  [CONFIG_CHECKPOINT_RESTORE + CONFIG_POSIX_TIMERS]
+    ├── timerslack_ns               REG
+    ├── patch_state                 ONE  [CONFIG_LIVEPATCH]
+    ├── stack_depth                 ONE  [CONFIG_KSTACK_ERASE_METRICS]
+    ├── arch_status                 ONE  [CONFIG_PROC_PID_ARCH_STATUS]
+    ├── seccomp_cache               ONE  [CONFIG_SECCOMP_CACHE_DEBUG]
+    ├── ksm_merging_pages           ONE  [CONFIG_KSM]
+    └── ksm_stat                    ONE  [CONFIG_KSM]
+```
+
+| Level | Table | Handler |
+|---|---|---|
+| `/proc/<pid>/` | `tgid_base_stuff` | `proc_tgid_base_inode_operations` |
+| `/proc/<pid>/task/<tid>/` | `tid_base_stuff` | `proc_tid_base_lookup` |
+| `/proc/<pid>/attr/` | `attr_dir_stuff` | `proc_attr_dir_operations` |
+| `/proc/<pid>/attr/smack/` | `smack_attr_dir_stuff` | `proc_smack_attr_dir_ops` |
+| `/proc/<pid>/attr/apparmor/` | `apparmor_attr_dir_stuff` | `proc_apparmor_attr_dir_ops` |
+
+```sh
+══════════════════════════════════════════════════════════════════════════
+  LAYER 0 · Syscall / VFS
+══════════════════════════════════════════════════════════════════════════
+
+  userspace: read(fd, buf, n)          open("/proc/<pid>/cgroup", O_RDONLY)
+                │                                    │
+                ▼                                    ▼
+          ksys_read()                         do_filp_open()
+                │                                    │
+                ▼                                    ▼
+           vfs_read()                        path_openat()
+                │                                    │
+                │                                    ▼
+                │                        [VFS lookup: proc_tgid_base_lookup]
+                │
+══════════════════════════════════════════════════════════════════════════
+  LAYER 1 · procfs inode_operations  (lookup / instantiate)
+══════════════════════════════════════════════════════════════════════════
+
+  proc_tgid_base_inode_operations.lookup = proc_tgid_base_lookup
+                │                                          [base.c:3416]
+                ▼
+  proc_pident_lookup(dir, dentry, tgid_base_stuff, end)
+                │                                          [base.c:2683]
+                │   linear scan of tgid_base_stuff[]
+                │   finds entry: ONE("cgroup", S_IRUGO, proc_cgroup_show)
+                │                                          [base.c:3346]
+                ▼
+  proc_pident_instantiate(dentry, task, &pid_entry)
+                │                                          [base.c:2660]
+                │   inode->i_fop = &proc_single_file_operations
+                │   PROC_I(inode)->op.proc_show = proc_cgroup_show  ← stored here
+                ▼
+  d_splice_alias_ops()   →  dentry cached in dcache
+
+══════════════════════════════════════════════════════════════════════════
+  LAYER 2 · procfs file_operations  (open)
+══════════════════════════════════════════════════════════════════════════
+
+  proc_single_file_operations = {
+      .open    = proc_single_open,       ← called on open()
+      .read    = seq_read,
+      .llseek  = seq_lseek,
+      .release = single_release,
+  }                                                        [base.c:804]
+                │
+                ▼ open()
+  proc_single_open(inode, filp)                            [base.c:799]
+                │
+                ▼
+  single_open(filp, proc_single_show, inode)
+                │                                         [seq_file.c:573]
+                │   allocates seq_operations {
+                │       .start = single_start,
+                │       .next  = single_next,
+                │       .stop  = single_stop,
+                │       .show  = proc_single_show,    ← installed here
+                │   }
+                │   seq_file->private = inode
+                ▼
+  seq_open()   →  file->private_data = seq_file
+
+══════════════════════════════════════════════════════════════════════════
+  LAYER 3 · seq_file engine  (read)
+══════════════════════════════════════════════════════════════════════════
+
+  read() → seq_read(file, buf, size, ppos)                [seq_file.c:152]
+                │
+                ▼
+  seq_read_iter(kiocb, iter)                              [seq_file.c:172]
+                │
+                │  p = m->op->start(m, &index)   ← single_start (returns 1)
+                │  err = m->op->show(m, p)        ← calls proc_single_show
+                │  m->op->stop(m, p)
+                ▼
+
+══════════════════════════════════════════════════════════════════════════
+  LAYER 4 · proc_single_show  (bridge: seq_file → proc_show)
+══════════════════════════════════════════════════════════════════════════
+
+  proc_single_show(seq_file *m, void *v)                  [base.c:781]
+                │
+                │  inode = m->private             ← set by single_open
+                │  ns    = proc_pid_ns(inode->i_sb)
+                │  pid   = proc_pid(inode)
+                │  task  = get_pid_task(pid, PIDTYPE_PID)
+                │
+                ▼
+  PROC_I(inode)->op.proc_show(m, ns, pid, task)   ← function pointer dispatch
+                │                                          [base.c:793]
+                │
+══════════════════════════════════════════════════════════════════════════
+  LAYER 5 · domain logic
+══════════════════════════════════════════════════════════════════════════
+                │
+                ▼
+  proc_cgroup_show(m, ns, pid, tsk)             [cgroup.c:6621]
+                │
+                │  for_each_root(root):
+                │      cgrp = task_cgroup_from_root(tsk, root)
+                │      cgroup_path_ns_locked(cgrp, buf, PATH_MAX,
+                │                            current->nsproxy->cgroup_ns)
+                │      seq_printf(m, "%d:subsys:path\n", ...)
+                ▼
+          output written into seq_file buffer
+          → copied to userspace by seq_read_iter
+```
 
 ### proc_root_init
 
@@ -15337,7 +15623,8 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
 }
 ```
 
-### proc_root_inode_operations
+### proc_root
+#### proc_root_inode_operations
 
 ```c
 static const struct inode_operations proc_root_inode_operations = {
@@ -15351,7 +15638,200 @@ static const struct inode_operations proc_root_inode_operations = {
 };
 ```
 
-### proc_root_operations
+##### proc_pid_lookup
+
+```c
+struct dentry *proc_pid_lookup(struct dentry *dentry, unsigned int flags)
+{
+	struct task_struct *task;
+	unsigned tgid;
+	struct proc_fs_info *fs_info;
+	struct pid_namespace *ns;
+	struct dentry *result = ERR_PTR(-ENOENT);
+
+	tgid = name_to_int(&dentry->d_name);
+	if (tgid == ~0U)
+		goto out;
+
+	fs_info = proc_sb_info(dentry->d_sb);
+	ns = fs_info->pid_ns;
+	rcu_read_lock();
+	task = find_task_by_pid_ns(tgid, ns);
+	if (task)
+		get_task_struct(task);
+	rcu_read_unlock();
+	if (!task)
+		goto out;
+
+	/* Limit procfs to only ptraceable tasks */
+	if (fs_info->hide_pid == HIDEPID_NOT_PTRACEABLE) {
+		if (!has_pid_permissions(fs_info, task, HIDEPID_NO_ACCESS))
+			goto out_put_task;
+	}
+
+	result = proc_pid_instantiate(dentry, task, NULL);
+out_put_task:
+	put_task_struct(task);
+out:
+	return result;
+}
+```
+
+##### proc_lookup
+
+```c
+struct proc_fs_info {
+    struct pid_namespace    *pid_ns;
+    kgid_t                  pid_gid;
+    enum proc_hidepid       hide_pid;
+    enum proc_pidonly       pidonly;
+    struct rcu_head         rcu;
+};
+
+struct dentry *proc_lookup(struct inode *dir, struct dentry *dentry,
+        unsigned int flags)
+{
+    struct proc_fs_info *fs_info = proc_sb_info(dir->i_sb);
+
+    if (fs_info->pidonly == PROC_PIDONLY_ON)
+        return ERR_PTR(-ENOENT);
+
+    return proc_lookup_de(dir, dentry, PDE(dir));
+}
+
+struct dentry *proc_lookup_de(struct inode *dir, struct dentry *dentry,
+                  struct proc_dir_entry *de)
+{
+    struct inode *inode;
+
+    read_lock(&proc_subdir_lock);
+    de = pde_subdir_find(de, dentry->d_name.name, dentry->d_name.len)  {
+        struct rb_node *node = dir->subdir.rb_node;
+
+        while (node) {
+            struct proc_dir_entry *de = rb_entry(node, struct proc_dir_entry, subdir_node);
+            int result = proc_match(name, de, len);
+
+            if (result < 0)
+                node = node->rb_left;
+            else if (result > 0)
+                node = node->rb_right;
+            else
+                return de;
+        }
+        return NULL;
+    }
+    if (de) {
+        pde_get(de);
+        read_unlock(&proc_subdir_lock);
+        inode = proc_get_inode(dir->i_sb, de) {
+            struct inode *inode = new_inode(sb);
+
+            if (!inode) {
+                pde_put(de);
+                return NULL;
+            }
+
+            inode->i_private = de->data;
+            inode->i_ino = de->low_ino;
+            simple_inode_init_ts(inode);
+            PROC_I(inode)->pde = de;
+            if (is_empty_pde(de)) {
+                make_empty_dir_inode(inode);
+                return inode;
+            }
+
+            if (de->mode) {
+                inode->i_mode = de->mode;
+                inode->i_uid = de->uid;
+                inode->i_gid = de->gid;
+            }
+            if (de->size)
+                inode->i_size = de->size;
+            if (de->nlink)
+                set_nlink(inode, de->nlink);
+
+            if (S_ISREG(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                if (pde_has_proc_read_iter(de))
+                    inode->i_fop = &proc_iter_file_ops;
+                else
+                    inode->i_fop = &proc_reg_file_ops;
+            } else if (S_ISDIR(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                inode->i_fop = de->proc_dir_ops;
+            } else if (S_ISLNK(inode->i_mode)) {
+                inode->i_op = de->proc_iops;
+                inode->i_fop = NULL;
+            } else {
+                BUG();
+            }
+            return inode;
+        }
+        if (!inode)
+            return ERR_PTR(-ENOMEM);
+        if (de->flags & PROC_ENTRY_FORCE_LOOKUP)
+            return d_splice_alias_ops(inode, dentry, &proc_net_dentry_ops);
+
+        return d_splice_alias_ops(inode, dentry, &proc_misc_dentry_ops);
+    }
+    read_unlock(&proc_subdir_lock);
+    return ERR_PTR(-ENOENT);
+}
+
+struct dentry *d_splice_alias_ops(struct inode *inode, struct dentry *dentry,
+                  const struct dentry_operations *ops)
+{
+    if (IS_ERR(inode))
+        return ERR_CAST(inode);
+
+    BUG_ON(!d_unhashed(dentry));
+
+    if (!inode)
+        goto out;
+
+    security_d_instantiate(dentry, inode);
+    spin_lock(&inode->i_lock);
+    if (S_ISDIR(inode->i_mode)) {
+        struct dentry *new = __d_find_any_alias(inode);
+        if (unlikely(new)) {
+            /* The reference to new ensures it remains an alias */
+            spin_unlock(&inode->i_lock);
+            write_seqlock(&rename_lock);
+            if (unlikely(d_ancestor(new, dentry))) {
+                write_sequnlock(&rename_lock);
+                dput(new);
+                new = ERR_PTR(-ELOOP);
+                pr_warn_ratelimited(
+                    "VFS: Lookup of '%s' in %s %s"
+                    " would have caused loop\n",
+                    dentry->d_name.name,
+                    inode->i_sb->s_type->name,
+                    inode->i_sb->s_id);
+            } else if (!IS_ROOT(new)) {
+                struct dentry *old_parent = dget(new->d_parent);
+                int err = __d_unalias(dentry, new);
+                write_sequnlock(&rename_lock);
+                if (err) {
+                    dput(new);
+                    new = ERR_PTR(err);
+                }
+                dput(old_parent);
+            } else {
+                __d_move(new, dentry, false);
+                write_sequnlock(&rename_lock);
+            }
+            iput(inode);
+            return new;
+        }
+    }
+out:
+    __d_add(dentry, inode, ops);
+    return NULL;
+}
+```
+
+#### proc_root_operations
 
 ```c
 static const struct file_operations proc_root_operations = {
@@ -15835,160 +16315,6 @@ static const struct inode_operations proc_dir_inode_operations = {
     .getattr        = proc_getattr,
     .setattr        = proc_notify_change,
 };
-```
-
-##### proc_lookup
-
-```c
-struct proc_fs_info {
-    struct pid_namespace    *pid_ns;
-    kgid_t                  pid_gid;
-    enum proc_hidepid       hide_pid;
-    enum proc_pidonly       pidonly;
-    struct rcu_head         rcu;
-};
-
-struct dentry *proc_lookup(struct inode *dir, struct dentry *dentry,
-        unsigned int flags)
-{
-    struct proc_fs_info *fs_info = proc_sb_info(dir->i_sb);
-
-    if (fs_info->pidonly == PROC_PIDONLY_ON)
-        return ERR_PTR(-ENOENT);
-
-    return proc_lookup_de(dir, dentry, PDE(dir));
-}
-
-struct dentry *proc_lookup_de(struct inode *dir, struct dentry *dentry,
-                  struct proc_dir_entry *de)
-{
-    struct inode *inode;
-
-    read_lock(&proc_subdir_lock);
-    de = pde_subdir_find(de, dentry->d_name.name, dentry->d_name.len)  {
-        struct rb_node *node = dir->subdir.rb_node;
-
-        while (node) {
-            struct proc_dir_entry *de = rb_entry(node, struct proc_dir_entry, subdir_node);
-            int result = proc_match(name, de, len);
-
-            if (result < 0)
-                node = node->rb_left;
-            else if (result > 0)
-                node = node->rb_right;
-            else
-                return de;
-        }
-        return NULL;
-    }
-    if (de) {
-        pde_get(de);
-        read_unlock(&proc_subdir_lock);
-        inode = proc_get_inode(dir->i_sb, de) {
-            struct inode *inode = new_inode(sb);
-
-            if (!inode) {
-                pde_put(de);
-                return NULL;
-            }
-
-            inode->i_private = de->data;
-            inode->i_ino = de->low_ino;
-            simple_inode_init_ts(inode);
-            PROC_I(inode)->pde = de;
-            if (is_empty_pde(de)) {
-                make_empty_dir_inode(inode);
-                return inode;
-            }
-
-            if (de->mode) {
-                inode->i_mode = de->mode;
-                inode->i_uid = de->uid;
-                inode->i_gid = de->gid;
-            }
-            if (de->size)
-                inode->i_size = de->size;
-            if (de->nlink)
-                set_nlink(inode, de->nlink);
-
-            if (S_ISREG(inode->i_mode)) {
-                inode->i_op = de->proc_iops;
-                if (pde_has_proc_read_iter(de))
-                    inode->i_fop = &proc_iter_file_ops;
-                else
-                    inode->i_fop = &proc_reg_file_ops;
-            } else if (S_ISDIR(inode->i_mode)) {
-                inode->i_op = de->proc_iops;
-                inode->i_fop = de->proc_dir_ops;
-            } else if (S_ISLNK(inode->i_mode)) {
-                inode->i_op = de->proc_iops;
-                inode->i_fop = NULL;
-            } else {
-                BUG();
-            }
-            return inode;
-        }
-        if (!inode)
-            return ERR_PTR(-ENOMEM);
-        if (de->flags & PROC_ENTRY_FORCE_LOOKUP)
-            return d_splice_alias_ops(inode, dentry, &proc_net_dentry_ops);
-
-        return d_splice_alias_ops(inode, dentry, &proc_misc_dentry_ops);
-    }
-    read_unlock(&proc_subdir_lock);
-    return ERR_PTR(-ENOENT);
-}
-
-struct dentry *d_splice_alias_ops(struct inode *inode, struct dentry *dentry,
-                  const struct dentry_operations *ops)
-{
-    if (IS_ERR(inode))
-        return ERR_CAST(inode);
-
-    BUG_ON(!d_unhashed(dentry));
-
-    if (!inode)
-        goto out;
-
-    security_d_instantiate(dentry, inode);
-    spin_lock(&inode->i_lock);
-    if (S_ISDIR(inode->i_mode)) {
-        struct dentry *new = __d_find_any_alias(inode);
-        if (unlikely(new)) {
-            /* The reference to new ensures it remains an alias */
-            spin_unlock(&inode->i_lock);
-            write_seqlock(&rename_lock);
-            if (unlikely(d_ancestor(new, dentry))) {
-                write_sequnlock(&rename_lock);
-                dput(new);
-                new = ERR_PTR(-ELOOP);
-                pr_warn_ratelimited(
-                    "VFS: Lookup of '%s' in %s %s"
-                    " would have caused loop\n",
-                    dentry->d_name.name,
-                    inode->i_sb->s_type->name,
-                    inode->i_sb->s_id);
-            } else if (!IS_ROOT(new)) {
-                struct dentry *old_parent = dget(new->d_parent);
-                int err = __d_unalias(dentry, new);
-                write_sequnlock(&rename_lock);
-                if (err) {
-                    dput(new);
-                    new = ERR_PTR(err);
-                }
-                dput(old_parent);
-            } else {
-                __d_move(new, dentry, false);
-                write_sequnlock(&rename_lock);
-            }
-            iput(inode);
-            return new;
-        }
-    }
-out:
-    __d_add(dentry, inode, ops);
-    return NULL;
-}
 ```
 
 ### proc_create_xxx
@@ -16553,6 +16879,433 @@ struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
     p->state_size = state_size;
     return proc_register(parent, p);
 }
+```
+
+### proc_pid_instantiate
+
+```sh
+/proc/<pid>/
+```
+
+```c
+struct dentry *proc_pid_instantiate(struct dentry * dentry,
+                   struct task_struct *task, const void *ptr)
+{
+    struct inode *inode;
+
+    inode = proc_pid_make_base_inode(dentry->d_sb, task, S_IFDIR | S_IRUGO | S_IXUGO);
+    if (!inode)
+        return ERR_PTR(-ENOENT);
+
+    inode->i_op = &proc_tgid_base_inode_operations;
+    inode->i_fop = &proc_tgid_base_operations;
+    inode->i_flags|=S_IMMUTABLE;
+
+    set_nlink(inode, nlink_tgid);
+    pid_update_inode(task, inode);
+
+    return d_splice_alias_ops(inode, dentry, &pid_dentry_operations);
+}
+
+const struct dentry_operations pid_dentry_operations =
+{
+    .d_revalidate       = pid_revalidate,
+    .d_delete           = pid_delete_dentry,
+};
+
+static const struct inode_operations proc_tgid_base_inode_operations = {
+    .lookup             = proc_tgid_base_lookup,
+    .getattr            = pid_getattr,
+    .setattr            = proc_nochmod_setattr,
+    .permission         = proc_pid_permission,
+};
+
+static const struct file_operations proc_tgid_base_operations = {
+    .read               = generic_read_dir,
+    .iterate_shared     = proc_tgid_base_readdir,
+    .llseek             = generic_file_llseek,
+};
+
+int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
+{
+    return proc_pident_readdir(file, ctx,
+                   tgid_base_stuff, ARRAY_SIZE(tgid_base_stuff));
+}
+```
+
+#### tgid_base_stuff
+
+```c
+const struct pid_entry tgid_base_stuff[] = {
+    DIR("task",            S_IRUGO | S_IXUGO,           proc_task_inode_operations,         proc_task_operations),
+    DIR("fd",              S_IRUSR | S_IXUSR,           proc_fd_inode_operations,           proc_fd_operations),
+    DIR("map_files",       S_IRUSR | S_IXUSR,           proc_map_files_inode_operations,    proc_map_files_operations),
+    DIR("fdinfo",          S_IRUGO | S_IXUGO,           proc_fdinfo_inode_operations,       proc_fdinfo_operations),
+    DIR("ns",              S_IRUSR | S_IXUGO,           proc_ns_dir_inode_operations,       proc_ns_dir_operations),
+    DIR("net",             S_IRUGO | S_IXUGO,           proc_net_inode_operations,          proc_net_operations),
+    REG("environ",         S_IRUSR,                     proc_environ_operations),
+    REG("auxv",            S_IRUSR,                     proc_auxv_operations),
+    ONE("status",          S_IRUGO,                     proc_pid_status),
+    ONE("personality",     S_IRUSR,                     proc_pid_personality),
+    ONE("limits",          S_IRUGO,                     proc_pid_limits),
+    REG("sched",           S_IRUGO | S_IWUSR,           proc_pid_sched_operations),
+    REG("autogroup",       S_IRUGO | S_IWUSR,           proc_pid_sched_autogroup_operations),
+    REG("timens_offsets",  S_IRUGO | S_IWUSR,           proc_timens_offsets_operations),
+    REG("comm",            S_IRUGO | S_IWUSR,           proc_pid_set_comm_operations),
+    ONE("syscall",         S_IRUSR,                     proc_pid_syscall),
+    REG("cmdline",         S_IRUGO,                     proc_pid_cmdline_ops),
+    ONE("stat",            S_IRUGO,                     proc_tgid_stat),
+    ONE("statm",           S_IRUGO,                     proc_pid_statm),
+    REG("maps",            S_IRUGO,                     proc_pid_maps_operations),
+    REG("numa_maps",       S_IRUGO,                     proc_pid_numa_maps_operations),
+    REG("mem",             S_IRUSR | S_IWUSR,           proc_mem_operations),
+    LNK("cwd",                                          proc_cwd_link),
+    LNK("root",                                         proc_root_link),
+    LNK("exe",                                          proc_exe_link),
+    REG("mounts",          S_IRUGO,                     proc_mounts_operations),
+    REG("mountinfo",       S_IRUGO,                     proc_mountinfo_operations),
+    REG("mountstats",      S_IRUSR,                     proc_mountstats_operations),
+    REG("clear_refs",      S_IWUSR,                     proc_clear_refs_operations),
+    REG("smaps",           S_IRUGO,                     proc_pid_smaps_operations),
+    REG("smaps_rollup",    S_IRUGO,                     proc_pid_smaps_rollup_operations),
+    REG("pagemap",         S_IRUSR,                     proc_pagemap_operations),
+    DIR("attr",            S_IRUGO | S_IXUGO,           proc_attr_dir_inode_operations,      proc_attr_dir_operations),
+    ONE("wchan",           S_IRUGO,                     proc_pid_wchan),
+    ONE("stack",           S_IRUSR,                     proc_pid_stack),
+    ONE("schedstat",       S_IRUGO,                     proc_pid_schedstat),
+    REG("latency",         S_IRUGO,                     proc_lstats_operations),
+    ONE("cpuset",          S_IRUGO,                     proc_cpuset_show),
+    ONE("cgroup",          S_IRUGO,                     proc_cgroup_show),
+    ONE("cpu_resctrl_groups", S_IRUGO,                  proc_resctrl_show),
+    ONE("oom_score",       S_IRUGO,                     proc_oom_score),
+    REG("oom_adj",         S_IRUGO | S_IWUSR,           proc_oom_adj_operations),
+    REG("oom_score_adj",   S_IRUGO | S_IWUSR,           proc_oom_score_adj_operations),
+    REG("loginuid",        S_IWUSR | S_IRUGO,           proc_loginuid_operations),
+    REG("sessionid",       S_IRUGO,                     proc_sessionid_operations),
+    REG("make-it-fail",    S_IRUGO | S_IWUSR,           proc_fault_inject_operations),
+    REG("fail-nth",        0644,                        proc_fail_nth_operations),
+    REG("coredump_filter", S_IRUGO | S_IWUSR,           proc_coredump_filter_operations),
+    ONE("io",              S_IRUSR,                     proc_tgid_io_accounting),
+    REG("uid_map",         S_IRUGO | S_IWUSR,           proc_uid_map_operations),
+    REG("gid_map",         S_IRUGO | S_IWUSR,           proc_gid_map_operations),
+    REG("projid_map",      S_IRUGO | S_IWUSR,           proc_projid_map_operations),
+    REG("setgroups",       S_IRUGO | S_IWUSR,           proc_setgroups_operations),
+    REG("timers",          S_IRUGO,                     proc_timers_operations),
+    REG("timerslack_ns",   S_IRUGO | S_IWUGO,           proc_pid_set_timerslack_ns_operations),
+    ONE("patch_state",     S_IRUSR,                     proc_pid_patch_state),
+    ONE("stack_depth",     S_IRUGO,                     proc_stack_depth),
+    ONE("arch_status",     S_IRUGO,                     proc_pid_arch_status),
+    ONE("seccomp_cache",   S_IRUSR,                     proc_pid_seccomp_cache),
+    ONE("ksm_merging_pages", S_IRUSR,                    proc_pid_ksm_merging_pages),
+    ONE("ksm_stat",        S_IRUSR,                     proc_pid_ksm_stat),
+}
+```
+
+### proc_task_instantiate
+
+```sh
+/proc/<pid>/task/<tid>/
+```
+
+```c
+struct dentry *proc_task_instantiate(struct dentry *dentry,
+    struct task_struct *task, const void *ptr)
+{
+    struct inode *inode;
+    inode = proc_pid_make_base_inode(dentry->d_sb, task,
+                     S_IFDIR | S_IRUGO | S_IXUGO);
+    if (!inode)
+        return ERR_PTR(-ENOENT);
+
+    inode->i_op = &proc_tid_base_inode_operations;
+    inode->i_fop = &proc_tid_base_operations;
+    inode->i_flags |= S_IMMUTABLE;
+
+    set_nlink(inode, nlink_tid);
+    pid_update_inode(task, inode);
+
+    return d_splice_alias_ops(inode, dentry, &pid_dentry_operations);
+}
+
+static const struct file_operations proc_tid_base_operations = {
+    .read               = generic_read_dir,
+    .iterate_shared     = proc_tid_base_readdir,
+    .llseek             = generic_file_llseek,
+};
+
+static const struct inode_operations proc_tid_base_inode_operations = {
+    .lookup             = proc_tid_base_lookup,
+    .getattr            = pid_getattr,
+    .setattr            = proc_nochmod_setattr,
+};
+
+static int proc_tid_base_readdir(struct file *file, struct dir_context *ctx)
+{
+    return proc_pident_readdir(file, ctx, tid_base_stuff, ARRAY_SIZE(tid_base_stuff)) {
+        struct task_struct *task = get_proc_task(file_inode(file));
+        const struct pid_entry *p;
+
+        if (!task)
+            return -ENOENT;
+
+        if (!dir_emit_dots(file, ctx))
+            goto out;
+
+        if (ctx->pos >= nents + 2)
+            goto out;
+
+        for (p = ents + (ctx->pos - 2); p < ents + nents; p++) {
+            if (!proc_fill_cache(file, ctx, p->name, p->len,
+                    proc_pident_instantiate, task, p))
+                break;
+            ctx->pos++;
+        }
+    out:
+        put_task_struct(task);
+        return 0;
+    }
+}
+
+static struct dentry *proc_tid_base_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
+{
+    return proc_pident_lookup(dir, dentry,
+        tid_base_stuff,
+        tid_base_stuff + ARRAY_SIZE(tid_base_stuff))
+    {
+        struct task_struct *task = get_proc_task(dir);
+        struct dentry *res = ERR_PTR(-ENOENT);
+
+        if (!task)
+            goto out_no_task;
+
+        /* Yes, it does not scale. And it should not. Don't add
+        * new entries into /proc/<tgid>/ without very good reasons. */
+        for (; p < end; p++) {
+            if (p->len != dentry->d_name.len)
+                continue;
+            if (!memcmp(dentry->d_name.name, p->name, p->len)) {
+                res = proc_pident_instantiate(dentry, task, p);
+                break;
+            }
+        }
+        put_task_struct(task);
+    out_no_task:
+        return res;
+    }
+}
+```
+
+#### tid_base_stuff
+
+```c
+/* Tasks */
+static const struct pid_entry tid_base_stuff[] = {
+    DIR("fd",              S_IRUSR | S_IXUSR,           proc_fd_inode_operations,           proc_fd_operations),
+    DIR("fdinfo",          S_IRUGO | S_IXUGO,           proc_fdinfo_inode_operations,       proc_fdinfo_operations),
+    DIR("ns",              S_IRUSR | S_IXUGO,           proc_ns_dir_inode_operations,       proc_ns_dir_operations),
+    DIR("net",             S_IRUGO | S_IXUGO,           proc_net_inode_operations,          proc_net_operations),
+    REG("environ",         S_IRUSR,                     proc_environ_operations),
+    REG("auxv",            S_IRUSR,                     proc_auxv_operations),
+    ONE("status",          S_IRUGO,                     proc_pid_status),
+    ONE("personality",     S_IRUSR,                     proc_pid_personality),
+    ONE("limits",          S_IRUGO,                     proc_pid_limits),
+    REG("sched",           S_IRUGO | S_IWUSR,           proc_pid_sched_operations),
+    NOD("comm",            S_IFREG | S_IRUGO | S_IWUSR, &proc_tid_comm_inode_operations,    &proc_pid_set_comm_operations, {}),
+    ONE("syscall",         S_IRUSR,                     proc_pid_syscall),
+    REG("cmdline",         S_IRUGO,                     proc_pid_cmdline_ops),
+    ONE("stat",            S_IRUGO,                     proc_tid_stat),
+    ONE("statm",           S_IRUGO,                     proc_pid_statm),
+    REG("maps",            S_IRUGO,                     proc_pid_maps_operations),
+    REG("children",        S_IRUGO,                     proc_tid_children_operations),
+    REG("numa_maps",       S_IRUGO,                     proc_pid_numa_maps_operations),
+    REG("mem",             S_IRUSR | S_IWUSR,           proc_mem_operations),
+    LNK("cwd",                                            proc_cwd_link),
+    LNK("root",                                           proc_root_link),
+    LNK("exe",                                            proc_exe_link),
+    REG("mounts",          S_IRUGO,                     proc_mounts_operations),
+    REG("mountinfo",       S_IRUGO,                     proc_mountinfo_operations),
+    REG("clear_refs",      S_IWUSR,                     proc_clear_refs_operations),
+    REG("smaps",           S_IRUGO,                     proc_pid_smaps_operations),
+    REG("smaps_rollup",    S_IRUGO,                     proc_pid_smaps_rollup_operations),
+    REG("pagemap",         S_IRUSR,                     proc_pagemap_operations),
+    DIR("attr",            S_IRUGO | S_IXUGO,           proc_attr_dir_inode_operations,      proc_attr_dir_operations),
+    ONE("wchan",           S_IRUGO,                     proc_pid_wchan),
+    ONE("stack",           S_IRUSR,                     proc_pid_stack),
+    ONE("schedstat",       S_IRUGO,                     proc_pid_schedstat),
+    REG("latency",         S_IRUGO,                     proc_lstats_operations),
+    ONE("cpuset",          S_IRUGO,                     proc_cpuset_show),
+    ONE("cgroup",          S_IRUGO,                     proc_cgroup_show),
+    ONE("cpu_resctrl_groups", S_IRUGO,                  proc_resctrl_show),
+    ONE("oom_score",       S_IRUGO,                     proc_oom_score),
+    REG("oom_adj",         S_IRUGO | S_IWUSR,           proc_oom_adj_operations),
+    REG("oom_score_adj",   S_IRUGO | S_IWUSR,           proc_oom_score_adj_operations),
+    REG("loginuid",        S_IWUSR | S_IRUGO,           proc_loginuid_operations),
+    REG("sessionid",       S_IRUGO,                     proc_sessionid_operations),
+    REG("make-it-fail",    S_IRUGO | S_IWUSR,           proc_fault_inject_operations),
+    REG("fail-nth",        0644,                        proc_fail_nth_operations),
+    ONE("io",              S_IRUSR,                     proc_tid_io_accounting),
+    REG("uid_map",         S_IRUGO | S_IWUSR,           proc_uid_map_operations),
+    REG("gid_map",         S_IRUGO | S_IWUSR,           proc_gid_map_operations),
+    REG("projid_map",      S_IRUGO | S_IWUSR,           proc_projid_map_operations),
+    REG("setgroups",       S_IRUGO | S_IWUSR,           proc_setgroups_operations),
+    ONE("patch_state",     S_IRUSR,                     proc_pid_patch_state),
+    ONE("arch_status",     S_IRUGO,                     proc_pid_arch_status),
+    ONE("seccomp_cache",   S_IRUSR,                     proc_pid_seccomp_cache),
+    ONE("ksm_merging_pages", S_IRUSR,                    proc_pid_ksm_merging_pages),
+    ONE("ksm_stat",        S_IRUSR,                     proc_pid_ksm_stat),
+}
+```
+
+### proc_pident_instantiate
+
+```sh
+/proc/<pid>/<file-or-dir>
+```
+
+```c
+static struct dentry *proc_pident_instantiate(struct dentry *dentry,
+    struct task_struct *task, const void *ptr)
+{
+    const struct pid_entry *p = ptr;
+    struct inode *inode;
+    struct proc_inode *ei;
+
+    inode = proc_pid_make_inode(dentry->d_sb, task, p->mode);
+    if (!inode)
+        return ERR_PTR(-ENOENT);
+
+    ei = PROC_I(inode);
+    if (S_ISDIR(inode->i_mode))
+        set_nlink(inode, 2);    /* Use getattr to fix if necessary */
+    if (p->iop)
+        inode->i_op = p->iop;
+    if (p->fop)
+        inode->i_fop = p->fop;
+    ei->op = p->op;
+    pid_update_inode(task, inode);
+    return d_splice_alias_ops(inode, dentry, &pid_dentry_operations);
+}
+```
+
+### proc_map_files_instantiate
+
+```sh
+/proc/<pid>/map_files/<vma>
+```
+
+```c
+static struct dentry *
+proc_map_files_instantiate(struct dentry *dentry,
+               struct task_struct *task, const void *ptr)
+{
+    fmode_t mode = (fmode_t)(unsigned long)ptr;
+    struct proc_inode *ei;
+    struct inode *inode;
+
+    inode = proc_pid_make_inode(dentry->d_sb, task, S_IFLNK |
+                    ((mode & FMODE_READ ) ? S_IRUSR : 0) |
+                    ((mode & FMODE_WRITE) ? S_IWUSR : 0));
+    if (!inode)
+        return ERR_PTR(-ENOENT);
+
+    ei = PROC_I(inode);
+    ei->op.proc_get_link = map_files_get_link;
+
+    inode->i_op = &proc_map_files_link_inode_operations;
+    inode->i_size = 64;
+
+    return proc_splice_unmountable(inode, dentry, &tid_map_files_dentry_operations);
+}
+```
+
+### /proc/pid/net/
+
+```c
+proc_create_net_data("vlservers", 0444, dir,
+    &afs_proc_cell_vlservers_ops,
+    sizeof(struct afs_vl_seq_net_private),
+    cell);
+!proc_create_net_data("volumes", 0444, dir,
+    &afs_proc_cell_volumes_ops,
+    sizeof(struct seq_net_private),
+    cell);
+
+proc_create_net_data("tcp", 0444, net->proc_net,
+    &tcp4_seq_ops,
+    sizeof(struct tcp_iter_state), &tcp4_seq_afinfo)
+
+```
+
+```sh
+cat /proc/1234/net/tcp
+│
+├── open(2)
+│   └── do_sys_openat2
+│       └── do_filp_open
+│           └── path_openat
+│               └── link_path_walk          ← walk each component
+│                   │
+│                   ├── "1234"              lookup in /proc root
+│                   │   └── proc_root_inode_operations.lookup
+│                   │       └── proc_root_lookup                [root.c:415]
+│                   │           └── proc_pid_lookup             [base.c:3474]
+│                   │               ├── find_task_by_pid_ns(1234, ns)
+│                   │               └── proc_pid_instantiate    [base.c:3454]
+│                   │                   ├── proc_pid_make_base_inode
+│                   │                   ├── inode->i_op  = proc_tgid_base_inode_operations
+│                   │                   ├── inode->i_fop = proc_tgid_base_operations
+│                   │                   └── d_splice_alias_ops(inode, dentry, &pid_dentry_operations)
+│                   │
+│                   ├── "net"               lookup in /proc/1234/
+│                   │   └── proc_tgid_base_inode_operations.lookup
+│                   │       └── proc_tgid_base_lookup           [base.c:3416]
+│                   │           └── proc_pident_lookup(dir, dentry, tgid_base_stuff, end)  [base.c:2683]
+│                   │               ├── linear scan tgid_base_stuff[]
+│                   │               │   └── matches DIR("net", proc_net_inode_operations, proc_net_operations)
+│                   │               └── proc_pident_instantiate [base.c:2660]
+│                   │                   ├── proc_pid_make_inode
+│                   │                   ├── inode->i_op  = proc_net_inode_operations   ← .lookup=proc_tgid_net_lookup
+│                   │                   ├── inode->i_fop = proc_net_operations
+│                   │                   └── d_splice_alias_ops(inode, dentry, &pid_dentry_operations)
+│                   │
+│                   └── "tcp"               lookup in /proc/1234/net/
+│                       └── proc_net_inode_operations.lookup
+│                           └── proc_tgid_net_lookup            [proc_net.c:296]
+│                               ├── get_proc_task_net(dir)
+│                               │   └── task->nsproxy->net_ns   ← resolves net namespace of pid 1234
+│                               └── proc_lookup_de(dir, dentry, net->proc_net)  [generic.c:246]
+│                                   ├── pde_subdir_find(net->proc_net, "tcp", 3)  ← RB-tree search
+│                                   ├── proc_get_inode(sb, de)  [inode.c:628]
+│                                   │   ├── new_inode(sb)
+│                                   │   ├── PROC_I(inode)->pde = de   ← inode ↔ PDE bound
+│                                   │   └── inode->i_fop = &proc_reg_file_ops
+│                                   └── d_splice_alias_ops(inode, dentry, &proc_net_dentry_ops)
+│                                       └── proc_net_dentry_ops.d_revalidate always returns 0
+│                                           ← dentry NEVER cached; re-looked-up on every open
+│
+│   └── vfs_open → proc_reg_file_ops.open
+│       └── proc_reg_open                   [inode.c:469]
+│           └── pde->proc_ops->proc_open    ← proc_net_seq_ops.proc_open
+│               └── seq_open_net            [proc_net.c:40]
+│                   ├── get_proc_net(inode)
+│                   │   └── pde->parent->data   ← parent is net->proc_net, .data IS struct net *
+│                   └── __seq_open_private(file, &tcp4_seq_ops, sizeof(tcp_iter_state))
+│                       └── seq_file->op = &tcp4_seq_ops
+│
+└── read(2)
+    └── ksys_read
+        └── vfs_read
+            └── proc_reg_file_ops.proc_reg_read               [inode.c:312]
+                └── pde_read
+                    └── pde->proc_ops->proc_read  ← proc_net_seq_ops.proc_read = seq_read
+                        └── seq_read
+                            └── seq_read_iter
+                                ├── tcp4_seq_ops.start = tcp_seq_start    [tcp_ipv4.c:3297]
+                                │   └── iterates TCP hash table for the net namespace
+                                ├── tcp4_seq_ops.show  = tcp4_seq_show    [tcp_ipv4.c:3296]
+                                │   └── formats one socket entry into seq_file buffer
+                                ├── tcp4_seq_ops.next  = tcp_seq_next     [tcp_ipv4.c:3298]
+                                └── tcp4_seq_ops.stop  = tcp_seq_stop     [tcp_ipv4.c:3299]
 ```
 
 ## seq_file
@@ -17903,6 +18656,11 @@ int path_pivot_root(struct path *new, struct path *old)
     chroot_fs_refs(&root, new);
     return 0;
 }
+```
+
+## cgroupfs
+
+```c
 ```
 
 ## /sys/kernel/slab/
