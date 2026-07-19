@@ -15266,8 +15266,50 @@ static const struct proc_ops proc_single_ops = {
 
 ```sh
 /proc/
-├── self          → (symlink to current PID)
-├── thread-self   → (symlink to current TID)
+├── self                → (symlink to current PID)
+├── thread-self         → (symlink to current TID)
+├── mounts              → self/mounts  (symlink)
+├── net                 → self/net     (symlink)  [CONFIG_NET]
+│
+├── sys/                DIR  ← sysctl tree (proc_sys_init)
+├── fs/                 DIR
+│   └── nfsd/           MOUNTPOINT
+├── driver/             DIR
+├── tty/                DIR
+│   ├── ldisc/          DIR
+│   ├── driver/         DIR
+│   ├── ldiscs          SEQ
+│   └── drivers         SEQ
+├── bus/                DIR
+├── irq/                DIR
+│   ├── default_smp_affinity
+│   └── <N>/            DIR  (per-IRQ entries)
+├── openprom/           MOUNTPOINT  [CONFIG_SUN_OPENPROMFS]
+│
+├── bootconfig          REG  (fs/proc/bootconfig.c)
+├── buddyinfo           SEQ  (mm/vmstat.c)
+├── cmdline             REG
+├── consoles            SEQ
+├── cpuinfo             REG
+├── devices             SEQ
+├── interrupts          SEQ
+├── kcore               REG  (S_IRUSR)
+├── kmsg                REG  (S_IRUSR)
+├── kpagecgroup         REG  (S_IRUSR)  [CONFIG_MEMCG]
+├── kpagecount          REG  (S_IRUSR)
+├── kpageflags          REG  (S_IRUSR)
+├── loadavg             REG
+├── meminfo             REG
+├── pagetypeinfo        SEQ
+├── slabinfo            REG
+├── softirqs            REG
+├── stat                REG
+├── uptime              REG
+├── version             REG
+├── vmcore              REG  (S_IRUSR)  [CONFIG_PROC_VMCORE]
+├── vmstat              SEQ
+├── zoneinfo            SEQ
+│
 └── <pid>/                          ← tgid_base_stuff (line 3282)
     ├── task/                       DIR – proc_task_inode_operations
     │   └── <tid>/                  ← tid_base_stuff (line 3641)
@@ -15382,6 +15424,7 @@ static const struct proc_ops proc_single_ops = {
     ├── seccomp_cache               ONE  [CONFIG_SECCOMP_CACHE_DEBUG]
     ├── ksm_merging_pages           ONE  [CONFIG_KSM]
     └── ksm_stat                    ONE  [CONFIG_KSM]
+
 ```
 
 | Level | Table | Handler |
@@ -15624,6 +15667,7 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
 ```
 
 ### proc_root
+
 #### proc_root_inode_operations
 
 ```c
@@ -17307,6 +17351,126 @@ cat /proc/1234/net/tcp
                                 ├── tcp4_seq_ops.next  = tcp_seq_next     [tcp_ipv4.c:3298]
                                 └── tcp4_seq_ops.stop  = tcp_seq_stop     [tcp_ipv4.c:3299]
 ```
+
+### xxx_ops
+
+**Dentry ops**
+
+| Name | `d_revalidate` | `d_delete` | `d_compare` | Used on |
+|---|---|---|---|---|
+| *(none)* | — | — | — | `/proc` root dentry |
+| `proc_misc_dentry_ops` | 0 if `pde->in_use < 0` | same | — | static files: `/proc/interrupts` |
+| `proc_net_dentry_ops` | always 0 | always delete | — | net-ns files: `/proc/pid/net/tcp` |
+| `pid_dentry_operations` | checks task alive, refreshes uid/gid | delete if task dead | — | `/proc/pid/` dir and pid files |
+| `tid_fd_dentry_operations` | checks fd still open, refreshes mode | `pid_delete_dentry` | — | `/proc/pid/fd/N` symlinks |
+| `tid_map_files_dentry_operations` | checks vma still exists | `pid_delete_dentry` | — | `/proc/pid/map_files/addr-addr` |
+| `proc_sys_dentry_operations` | 0 if `sysctl->unregistering` | same | name-aware sysctl visibility check | `/proc/sys/**` |
+
+`proc_sys_dentry_operations` is the only one with **`d_compare`** — it checks whether the named sysctl entry is still visible to the current mount namespace, not just whether it exists.
+
+---
+
+**Inode ops**
+
+| Name | Key methods | Used on |
+|---|---|---|
+| `proc_root_inode_operations` | `lookup` (PID-first), `getattr` (+`nr_processes`) | `/proc` |
+| `proc_dir_inode_operations` | `lookup=proc_lookup`, `getattr`, `setattr` | static subdirs |
+| `proc_file_inode_operations` | `setattr` only | static files |
+| `proc_link_inode_operations` | `get_link` via pde->data | static symlinks (`/proc/net`) |
+| `proc_net_inode_operations` | `lookup` → task netns | `/proc/pid/net/` dir |
+| `proc_tgid_base_inode_operations` | `lookup=proc_tgid_base_lookup`, `getattr`, `permission` | `/proc/pid/` dir |
+| `proc_tid_base_inode_operations` | same for thread | `/proc/pid/task/tid/` dir |
+| `proc_task_inode_operations` | `lookup=proc_task_lookup`, `getattr`, `permission` | `/proc/pid/task/` dir |
+| `proc_pid_link_inode_operations` | `readlink`, `get_link` through task namespace | `/proc/pid/exe`, `cwd`, `root` |
+| `proc_ns_link_inode_operations` | `readlink`, `get_link` through `ns_ops` | `/proc/pid/ns/net`, `pid`, … |
+| `proc_ns_dir_inode_operations` | `lookup=proc_ns_dir_lookup`, `getattr`, `setattr` | `/proc/pid/ns/` dir |
+| `proc_fd_inode_operations` | `lookup`, `permission` (allows self-access after setuid), `getattr` (sets size=fd count) | `/proc/pid/fd/` dir |
+| `proc_fdinfo_inode_operations` | `lookup`, `permission` | `/proc/pid/fdinfo/` dir |
+| `proc_fdinfo_file_inode_operations` | `permission`, `setattr` (nochmod) | `/proc/pid/fdinfo/N` files |
+| `proc_map_files_inode_operations` | `lookup`, `permission`, `setattr` | `/proc/pid/map_files/` dir |
+| `proc_map_files_link_inode_operations` | `readlink`, `get_link` (CAP check) | `/proc/pid/map_files/addr-addr` |
+| `proc_def_inode_operations` | `setattr=proc_nochmod_setattr` | pid per-file fallback |
+| `proc_attr_dir_inode_operations` | `lookup`, `getattr`, `setattr` | `/proc/pid/attr/` dir |
+| `proc_sys_inode_operations` | `permission`, `setattr`, `getattr` | `/proc/sys/kernel/foo` files |
+| `proc_sys_dir_operations` | `lookup=proc_sys_lookup`, `permission`, `setattr`, `getattr` | `/proc/sys/kernel/` dirs |
+| `proc_self_inode_operations` | `get_link` → resolves to `/proc/self-pid/` | `/proc/self` symlink |
+| `proc_thread_self_inode_operations` | `get_link` → resolves to `/proc/self/task/tid/` | `/proc/thread-self` |
+
+---
+
+**File ops**
+
+| Name | `iterate_shared` / key op | Used on |
+|---|---|---|
+| `proc_root_operations` | `proc_root_readdir` (static + PIDs) | `/proc` |
+| `proc_dir_operations` | `proc_readdir` | static subdirs |
+| `proc_reg_file_ops` | `.read` + liveness guard | non-iter proc files |
+| `proc_iter_file_ops` | `.read_iter` + liveness guard | seq files (e.g. `/proc/interrupts`) |
+| `proc_net_operations` | `proc_tgid_net_readdir` → task netns | `/proc/pid/net/` dir |
+| `proc_tgid_base_operations` | `proc_tgid_base_readdir` (fixed `tgid_base_stuff` table) | `/proc/pid/` dir |
+| `proc_tid_base_operations` | `proc_tid_base_readdir` (fixed `tid_base_stuff` table) | `/proc/pid/task/tid/` dir |
+| `proc_task_operations` | `proc_task_readdir` (enumerates threads), `proc_dir_llseek` (cookie-based) | `/proc/pid/task/` dir |
+| `proc_single_file_operations` | `proc_single_open` → `proc_show` via `PROC_I(inode)->op` | `/proc/pid/status`, `stat`, … |
+| `proc_fd_operations` | `proc_fd_iterate` | `/proc/pid/fd/` dir |
+| `proc_fdinfo_operations` | `proc_fdinfo_iterate` | `/proc/pid/fdinfo/` dir |
+| `proc_fdinfo_file_operations` | `seq_fdinfo_open` → single_release | `/proc/pid/fdinfo/N` |
+| `proc_ns_dir_operations` | `proc_ns_dir_readdir` (fixed `ns_entries` array) | `/proc/pid/ns/` dir |
+| `proc_sys_file_operations` | `read_iter`, `write_iter` (direct, no seq_file) | `/proc/sys/**` leaf files |
+| `proc_sys_dir_file_operations` | `proc_sys_readdir` | `/proc/sys/**` dirs |
+| `proc_map_files_operations` | `proc_map_files_readdir` | `/proc/pid/map_files/` dir |
+| `proc_mem_operations` | `proc_mem_read/write` (direct `ptrace`-based access) | `/proc/pid/mem` |
+| `proc_pid_maps_operations` | `proc_pid_maps_open`, `seq_read` | `/proc/pid/maps` |
+| `proc_pid_smaps_operations` | smaps open, seq_read | `/proc/pid/smaps` |
+| `proc_pagemap_operations` | binary pagemap reader | `/proc/pid/pagemap` |
+
+---
+
+**proc_ops**
+
+| Name | open | Used on |
+|---|---|---|
+| `proc_seq_ops` | `seq_open_private` | global seq files |
+| `proc_single_ops` | `single_open` | global single files |
+| `proc_net_seq_ops` | `seq_open_net` (+ `get_net`) | per-netns seq files |
+| `proc_net_single_ops` | `single_open_net` (+ `get_net`) | per-netns single files |
+
+---
+
+**`super_operations` — `proc_sops`** (one global instance for the whole procfs):
+
+```c
+const struct super_operations proc_sops = {
+	.alloc_inode	= proc_alloc_inode,
+	.free_inode	= proc_free_inode,
+	.drop_inode	= inode_just_drop,
+	.evict_inode	= proc_evict_inode,
+	.statfs		= simple_statfs,
+	.show_options	= proc_show_options,
+};
+```
+
+`proc_alloc_inode` allocates `struct proc_inode` (which embeds `struct inode` plus proc-specific fields: `pde`, `pid`, `fd`, `ns_ops`, `op.proc_show`). `proc_evict_inode` drops the pde reference.
+
+**`proc_ns_operations`** — a proc-specific interface, one per namespace type:
+
+```c
+static const struct proc_ns_operations *const ns_entries[] = {
+	&netns_operations,
+	&utsns_operations,
+	&ipcns_operations,
+	&pidns_operations,
+	&userns_operations,
+	&mntns_operations,
+	&cgroupns_operations,
+	...
+};
+```
+
+Each implements `name`, `type`, `get`, `put`, `install`, `owner`, `get_parent`. This is how `/proc/pid/ns/net` knows to call `copy_net_ns()` on `setns()`. It's stored in `PROC_I(inode)->ns_ops` and dispatched from `proc_ns_link_inode_operations`.
+
+**`vm_operations_struct` — `vmcore_mmap_ops`** — only for `/proc/vmcore` (kdump), provides `fault` for mmap access to the crash dump image. Unique in all of procfs as the only entry that supports `mmap`.
+
 
 ## seq_file
 
