@@ -14238,6 +14238,270 @@ struct kernfs_open_node {
 };
 ```
 
+### kern_mount
+
+```c
+struct vfsmount *kern_mount(struct file_system_type *type)
+{
+    struct vfsmount *mnt;
+    mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
+    if (!IS_ERR(mnt)) {
+        /* it is a longterm mount, don't release mnt until
+         * we unmount before file sys is unregistered */
+        real_mount(mnt)->mnt_ns = MNT_NS_INTERNAL;
+    }
+    return mnt;
+}
+
+struct vfsmount *vfs_kern_mount(struct file_system_type *type,
+                int flags, const char *name,
+                void *data)
+{
+    struct fs_context *fc;
+    struct vfsmount *mnt;
+    int ret = 0;
+
+    fc = fs_context_for_mount(type, flags);
+        --->
+    if (name)
+        ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
+    if (!ret)
+        ret = parse_monolithic_mount_data(fc, data);
+
+    if (!ret) {
+        mnt = fc_mount(fc) {
+            int err = vfs_get_tree(fc);
+            if (!err) {
+                up_write(&fc->root->d_sb->s_umount);
+                return vfs_create_mount(fc);
+            }
+            return ERR_PTR(err);
+        }
+    } else {
+        mnt = ERR_PTR(ret);
+    }
+
+    put_fs_context(fc);
+    return mnt;
+}
+```
+
+### kernfs_get_tree
+
+```c
+const struct super_operations kernfs_sops = {
+    .statfs         = kernfs_statfs,
+    .drop_inode     = inode_just_drop,
+    .evict_inode    = kernfs_evict_inode,
+
+    .show_options   = kernfs_sop_show_options,
+    .show_path      = kernfs_sop_show_path,
+
+    /* sysfs is built on top of kernfs and sysfs provides the power
+     * management infrastructure to support suspend/hibernate by
+     * writing to various files in /sys/power/. As filesystems may
+     * be automatically frozen during suspend/hibernate implementing
+     * freeze/thaw support for kernfs generically will cause
+     * deadlocks as the suspending/hibernation initiating task will
+     * hold a VFS lock that it will then wait upon to be released.
+     * If freeze/thaw for kernfs is needed talk to the VFS. */
+    .freeze_fs      = NULL,
+    .unfreeze_fs    = NULL,
+    .freeze_super   = NULL,
+    .thaw_super     = NULL,
+};
+
+int kernfs_get_tree(struct fs_context *fc)
+{
+    struct kernfs_fs_context *kfc = fc->fs_private;
+    struct super_block *sb;
+    struct kernfs_super_info *info;
+    int error;
+
+    info = kzalloc(sizeof(*info), GFP_KERNEL);
+
+    info->root = kfc->root;
+    info->ns = kfc->ns_tag;
+    INIT_LIST_HEAD(&info->node);
+
+    fc->s_fs_info = info;
+    sb = sget_fc(fc, kernfs_test_super, kernfs_set_super);
+
+    if (!sb->s_root) {
+        struct kernfs_super_info *info = kernfs_info(sb) {
+            return sb->s_fs_info;
+        }
+        struct kernfs_root *root = kfc->root;
+
+        kfc->new_sb_created = true;
+
+        error = kernfs_fill_super(sb, kfc) {
+            struct kernfs_super_info *info = kernfs_info(sb);
+            struct kernfs_root *kf_root = kfc->root;
+            struct inode *inode;
+            struct dentry *root;
+
+            info->sb = sb;
+            /* Userspace would break if executables or devices appear on sysfs */
+            sb->s_iflags |= SB_I_NOEXEC | SB_I_NODEV;
+            sb->s_blocksize = PAGE_SIZE;
+            sb->s_blocksize_bits = PAGE_SHIFT;
+            sb->s_magic = kfc->magic;
+            sb->s_op = &kernfs_sops;
+            sb->s_xattr = kernfs_xattr_handlers;
+            if (info->root->flags & KERNFS_ROOT_SUPPORT_EXPORTOP)
+                sb->s_export_op = &kernfs_export_ops;
+            sb->s_time_gran = 1;
+
+            /* sysfs dentries and inodes don't require IO to create */
+            sb->s_shrink->seeks = 0;
+
+            /* get root inode, initialize and unlock it */
+            inode = kernfs_get_inode(sb, info->root->kn) {
+                struct inode *inode;
+
+                inode = iget_locked(sb, kernfs_ino(kn));
+                if (inode && (inode_state_read_once(inode) & I_NEW))
+                    kernfs_init_inode(kn, inode);
+
+                return inode;
+            }
+
+            /* instantiate and link root dentry */
+            root = d_make_root(inode) {
+                struct dentry *res = NULL;
+                if (root_inode) {
+                    res = d_alloc_anon(root_inode->i_sb);
+                    if (res)
+                        d_instantiate(res, root_inode);
+                    else
+                        iput(root_inode);
+                }
+                return res;
+            }
+            sb->s_root = root;
+            set_default_d_op(sb, &kernfs_dops) {
+                unsigned int flags = d_op_flags(ops);
+                s->__s_d_op = ops;
+                s->s_d_flags = (s->s_d_flags & ~DCACHE_OP_FLAGS) | flags;
+            }
+            return 0;
+        }
+        sb->s_flags |= SB_ACTIVE;
+
+        uuid_t uuid;
+        uuid_gen(&uuid);
+        super_set_uuid(sb, uuid.b, sizeof(uuid));
+
+        list_add(&info->node, &info->root->supers);
+    }
+
+    fc->root = dget(sb->s_root);
+    return 0;
+}
+
+int kernfs_set_super(struct super_block *sb, struct fs_context *fc)
+{
+    struct kernfs_fs_context *kfc = fc->fs_private;
+
+    kfc->ns_tag = NULL;
+    return set_anon_super_fc(sb, fc) {
+        return set_anon_super(sb, NULL) {
+            return get_anon_bdev(&s->s_dev) {
+                int dev;
+
+                dev = ida_alloc_range(&unnamed_dev_ida, 1, (1 << MINORBITS) - 1, GFP_ATOMIC);
+                if (dev == -ENOSPC)
+                    dev = -EMFILE;
+                if (dev < 0)
+                    return dev;
+
+                *p = MKDEV(0, dev);
+                return 0;
+            }
+        }
+    }
+}
+```
+
+### kernfs_get_inode
+
+```c
+struct inode *kernfs_get_inode(struct super_block *sb, struct kernfs_node *kn)
+{
+    struct inode *inode;
+
+    inode = iget_locked(sb, kernfs_ino(kn));
+    if (inode && (inode_state_read_once(inode) & I_NEW))
+        kernfs_init_inode(kn, inode);
+
+    return inode;
+}
+
+void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
+{
+    kernfs_get(kn);
+    inode->i_private = kn;
+    inode->i_mapping->a_ops = &ram_aops;
+    inode->i_op = &kernfs_iops;
+    inode->i_generation = kernfs_gen(kn);
+
+    set_default_inode_attr(inode, kn->mode) {
+        inode->i_mode = mode;
+        simple_inode_init_ts(inode) {
+            struct timespec64 ts = inode_set_ctime_current(inode);
+
+            inode_set_atime_to_ts(inode, ts);
+            inode_set_mtime_to_ts(inode, ts);
+            return ts;
+        }
+    }
+    kernfs_refresh_inode(kn, inode);
+
+    /* initialize inode according to type */
+    switch (kernfs_type(kn)) {
+    case KERNFS_DIR:
+        inode->i_op = &kernfs_dir_iops;
+        inode->i_fop = &kernfs_dir_fops;
+        if (kn->flags & KERNFS_EMPTY_DIR) {
+            make_empty_dir_inode(inode) {
+                set_nlink(inode, 2);
+                inode->i_mode = S_IFDIR | S_IRUGO | S_IXUGO;
+                inode->i_uid = GLOBAL_ROOT_UID;
+                inode->i_gid = GLOBAL_ROOT_GID;
+                inode->i_rdev = 0;
+                inode->i_size = 0;
+                inode->i_blkbits = PAGE_SHIFT;
+                inode->i_blocks = 0;
+
+                inode->i_op = &empty_dir_inode_operations;
+                inode->i_opflags &= ~IOP_XATTR;
+                inode->i_fop = &empty_dir_operations;
+            }
+        }
+        break;
+    case KERNFS_FILE:
+        inode->i_size = kn->attr.size;
+        inode->i_fop = &kernfs_file_fops;
+        break;
+    case KERNFS_LINK:
+        inode->i_op = &kernfs_symlink_iops;
+        break;
+    default:
+        BUG();
+    }
+
+    unlock_new_inode(inode) {
+        lockdep_annotate_inode_mutex_key(inode);
+        spin_lock(&inode->i_lock);
+        WARN_ON(!(inode_state_read(inode) & I_NEW));
+        inode_state_clear(inode, I_NEW | I_CREATING);
+        inode_wake_up_bit(inode, __I_NEW);
+        spin_unlock(&inode->i_lock);
+    }
+}
+```
+
 ### kernfs_create_root
 
 ```c
@@ -14868,267 +15132,73 @@ ssize_t kernfs_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 }
 ```
 
-### kern_mount
+### kernfs_seq_ops
 
 ```c
-struct vfsmount *kern_mount(struct file_system_type *type)
-{
-    struct vfsmount *mnt;
-    mnt = vfs_kern_mount(type, SB_KERNMOUNT, type->name, NULL);
-    if (!IS_ERR(mnt)) {
-        /* it is a longterm mount, don't release mnt until
-         * we unmount before file sys is unregistered */
-        real_mount(mnt)->mnt_ns = MNT_NS_INTERNAL;
-    }
-    return mnt;
-}
-
-struct vfsmount *vfs_kern_mount(struct file_system_type *type,
-                int flags, const char *name,
-                void *data)
-{
-    struct fs_context *fc;
-    struct vfsmount *mnt;
-    int ret = 0;
-
-    fc = fs_context_for_mount(type, flags);
-        --->
-    if (name)
-        ret = vfs_parse_fs_string(fc, "source", name, strlen(name));
-    if (!ret)
-        ret = parse_monolithic_mount_data(fc, data);
-
-    if (!ret) {
-        mnt = fc_mount(fc) {
-            int err = vfs_get_tree(fc);
-            if (!err) {
-                up_write(&fc->root->d_sb->s_umount);
-                return vfs_create_mount(fc);
-            }
-            return ERR_PTR(err);
-        }
-    } else {
-        mnt = ERR_PTR(ret);
-    }
-
-    put_fs_context(fc);
-    return mnt;
-}
-```
-
-### kernfs_get_tree
-
-```c
-const struct super_operations kernfs_sops = {
-    .statfs         = kernfs_statfs,
-    .drop_inode     = inode_just_drop,
-    .evict_inode    = kernfs_evict_inode,
-
-    .show_options   = kernfs_sop_show_options,
-    .show_path      = kernfs_sop_show_path,
-
-    /* sysfs is built on top of kernfs and sysfs provides the power
-     * management infrastructure to support suspend/hibernate by
-     * writing to various files in /sys/power/. As filesystems may
-     * be automatically frozen during suspend/hibernate implementing
-     * freeze/thaw support for kernfs generically will cause
-     * deadlocks as the suspending/hibernation initiating task will
-     * hold a VFS lock that it will then wait upon to be released.
-     * If freeze/thaw for kernfs is needed talk to the VFS. */
-    .freeze_fs      = NULL,
-    .unfreeze_fs    = NULL,
-    .freeze_super   = NULL,
-    .thaw_super     = NULL,
+static const struct seq_operations kernfs_seq_ops = {
+    .start      = kernfs_seq_start,
+    .next       = kernfs_seq_next,
+    .stop       = kernfs_seq_stop,
+    .show       = kernfs_seq_show,
 };
 
-int kernfs_get_tree(struct fs_context *fc)
+static void *kernfs_seq_start(struct seq_file *sf, loff_t *ppos)
 {
-    struct kernfs_fs_context *kfc = fc->fs_private;
-    struct super_block *sb;
-    struct kernfs_super_info *info;
-    int error;
+    struct kernfs_open_file *of = sf->private;
+    const struct kernfs_ops *ops;
 
-    info = kzalloc(sizeof(*info), GFP_KERNEL);
+    /* @of->mutex nests outside active ref and is primarily to ensure that
+     * the ops aren't called concurrently for the same open file. */
+    mutex_lock(&of->mutex);
+    if (!kernfs_get_active_of(of))
+        return ERR_PTR(-ENODEV);
 
-    info->root = kfc->root;
-    info->ns = kfc->ns_tag;
-    INIT_LIST_HEAD(&info->node);
-
-    fc->s_fs_info = info;
-    sb = sget_fc(fc, kernfs_test_super, kernfs_set_super);
-
-    if (!sb->s_root) {
-        struct kernfs_super_info *info = kernfs_info(sb) {
-            return sb->s_fs_info;
-        }
-        struct kernfs_root *root = kfc->root;
-
-        kfc->new_sb_created = true;
-
-        error = kernfs_fill_super(sb, kfc) {
-            struct kernfs_super_info *info = kernfs_info(sb);
-            struct kernfs_root *kf_root = kfc->root;
-            struct inode *inode;
-            struct dentry *root;
-
-            info->sb = sb;
-            /* Userspace would break if executables or devices appear on sysfs */
-            sb->s_iflags |= SB_I_NOEXEC | SB_I_NODEV;
-            sb->s_blocksize = PAGE_SIZE;
-            sb->s_blocksize_bits = PAGE_SHIFT;
-            sb->s_magic = kfc->magic;
-            sb->s_op = &kernfs_sops;
-            sb->s_xattr = kernfs_xattr_handlers;
-            if (info->root->flags & KERNFS_ROOT_SUPPORT_EXPORTOP)
-                sb->s_export_op = &kernfs_export_ops;
-            sb->s_time_gran = 1;
-
-            /* sysfs dentries and inodes don't require IO to create */
-            sb->s_shrink->seeks = 0;
-
-            /* get root inode, initialize and unlock it */
-            inode = kernfs_get_inode(sb, info->root->kn) {
-                struct inode *inode;
-
-                inode = iget_locked(sb, kernfs_ino(kn));
-                if (inode && (inode_state_read_once(inode) & I_NEW))
-                    kernfs_init_inode(kn, inode);
-
-                return inode;
-            }
-
-            /* instantiate and link root dentry */
-            root = d_make_root(inode) {
-                struct dentry *res = NULL;
-                if (root_inode) {
-                    res = d_alloc_anon(root_inode->i_sb);
-                    if (res)
-                        d_instantiate(res, root_inode);
-                    else
-                        iput(root_inode);
-                }
-                return res;
-            }
-            sb->s_root = root;
-            set_default_d_op(sb, &kernfs_dops) {
-                unsigned int flags = d_op_flags(ops);
-                s->__s_d_op = ops;
-                s->s_d_flags = (s->s_d_flags & ~DCACHE_OP_FLAGS) | flags;
-            }
-            return 0;
-        }
-        sb->s_flags |= SB_ACTIVE;
-
-        uuid_t uuid;
-        uuid_gen(&uuid);
-        super_set_uuid(sb, uuid.b, sizeof(uuid));
-
-        list_add(&info->node, &info->root->supers);
+    ops = kernfs_ops(of->kn);
+    if (ops->seq_start) {
+        void *next = ops->seq_start(sf, ppos);
+        /* see the comment above kernfs_seq_stop_active() */
+        if (next == ERR_PTR(-ENODEV))
+            kernfs_seq_stop_active(sf, next);
+        return next;
     }
-
-    fc->root = dget(sb->s_root);
-    return 0;
+    return single_start(sf, ppos);
 }
 
-int kernfs_set_super(struct super_block *sb, struct fs_context *fc)
+static void *kernfs_seq_next(struct seq_file *sf, void *v, loff_t *ppos)
 {
-    struct kernfs_fs_context *kfc = fc->fs_private;
+    struct kernfs_open_file *of = sf->private;
+    const struct kernfs_ops *ops = kernfs_ops(of->kn);
 
-    kfc->ns_tag = NULL;
-    return set_anon_super_fc(sb, fc) {
-        return set_anon_super(sb, NULL) {
-            return get_anon_bdev(&s->s_dev) {
-                int dev;
-
-                dev = ida_alloc_range(&unnamed_dev_ida, 1, (1 << MINORBITS) - 1, GFP_ATOMIC);
-                if (dev == -ENOSPC)
-                    dev = -EMFILE;
-                if (dev < 0)
-                    return dev;
-
-                *p = MKDEV(0, dev);
-                return 0;
-            }
-        }
+    if (ops->seq_next) {
+        void *next = ops->seq_next(sf, v, ppos);
+        /* see the comment above kernfs_seq_stop_active() */
+        if (next == ERR_PTR(-ENODEV))
+            kernfs_seq_stop_active(sf, next);
+        return next;
+    } else {
+        /* The same behavior and code as single_open(), always
+         * terminate after the initial read. */
+        ++*ppos;
+        return NULL;
     }
 }
-```
 
-### kernfs_get_inode
-
-```c
-struct inode *kernfs_get_inode(struct super_block *sb, struct kernfs_node *kn)
+static void kernfs_seq_stop(struct seq_file *sf, void *v)
 {
-    struct inode *inode;
+    struct kernfs_open_file *of = sf->private;
 
-    inode = iget_locked(sb, kernfs_ino(kn));
-    if (inode && (inode_state_read_once(inode) & I_NEW))
-        kernfs_init_inode(kn, inode);
-
-    return inode;
+    if (v != ERR_PTR(-ENODEV))
+        kernfs_seq_stop_active(sf, v);
+    mutex_unlock(&of->mutex);
 }
 
-void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
+static int kernfs_seq_show(struct seq_file *sf, void *v)
 {
-    kernfs_get(kn);
-    inode->i_private = kn;
-    inode->i_mapping->a_ops = &ram_aops;
-    inode->i_op = &kernfs_iops;
-    inode->i_generation = kernfs_gen(kn);
+    struct kernfs_open_file *of = sf->private;
 
-    set_default_inode_attr(inode, kn->mode) {
-        inode->i_mode = mode;
-        simple_inode_init_ts(inode) {
-            struct timespec64 ts = inode_set_ctime_current(inode);
+    of->event = atomic_read(&of_on(of)->event);
 
-            inode_set_atime_to_ts(inode, ts);
-            inode_set_mtime_to_ts(inode, ts);
-            return ts;
-        }
-    }
-    kernfs_refresh_inode(kn, inode);
-
-    /* initialize inode according to type */
-    switch (kernfs_type(kn)) {
-    case KERNFS_DIR:
-        inode->i_op = &kernfs_dir_iops;
-        inode->i_fop = &kernfs_dir_fops;
-        if (kn->flags & KERNFS_EMPTY_DIR) {
-            make_empty_dir_inode(inode) {
-                set_nlink(inode, 2);
-                inode->i_mode = S_IFDIR | S_IRUGO | S_IXUGO;
-                inode->i_uid = GLOBAL_ROOT_UID;
-                inode->i_gid = GLOBAL_ROOT_GID;
-                inode->i_rdev = 0;
-                inode->i_size = 0;
-                inode->i_blkbits = PAGE_SHIFT;
-                inode->i_blocks = 0;
-
-                inode->i_op = &empty_dir_inode_operations;
-                inode->i_opflags &= ~IOP_XATTR;
-                inode->i_fop = &empty_dir_operations;
-            }
-        }
-        break;
-    case KERNFS_FILE:
-        inode->i_size = kn->attr.size;
-        inode->i_fop = &kernfs_file_fops;
-        break;
-    case KERNFS_LINK:
-        inode->i_op = &kernfs_symlink_iops;
-        break;
-    default:
-        BUG();
-    }
-
-    unlock_new_inode(inode) {
-        lockdep_annotate_inode_mutex_key(inode);
-        spin_lock(&inode->i_lock);
-        WARN_ON(!(inode_state_read(inode) & I_NEW));
-        inode_state_clear(inode, I_NEW | I_CREATING);
-        inode_wake_up_bit(inode, __I_NEW);
-        spin_unlock(&inode->i_lock);
-    }
+    return of->kn->attr.ops->seq_show(sf, v);
 }
 ```
 
@@ -15687,37 +15757,37 @@ static const struct inode_operations proc_root_inode_operations = {
 ```c
 struct dentry *proc_pid_lookup(struct dentry *dentry, unsigned int flags)
 {
-	struct task_struct *task;
-	unsigned tgid;
-	struct proc_fs_info *fs_info;
-	struct pid_namespace *ns;
-	struct dentry *result = ERR_PTR(-ENOENT);
+    struct task_struct *task;
+    unsigned tgid;
+    struct proc_fs_info *fs_info;
+    struct pid_namespace *ns;
+    struct dentry *result = ERR_PTR(-ENOENT);
 
-	tgid = name_to_int(&dentry->d_name);
-	if (tgid == ~0U)
-		goto out;
+    tgid = name_to_int(&dentry->d_name);
+    if (tgid == ~0U)
+        goto out;
 
-	fs_info = proc_sb_info(dentry->d_sb);
-	ns = fs_info->pid_ns;
-	rcu_read_lock();
-	task = find_task_by_pid_ns(tgid, ns);
-	if (task)
-		get_task_struct(task);
-	rcu_read_unlock();
-	if (!task)
-		goto out;
+    fs_info = proc_sb_info(dentry->d_sb);
+    ns = fs_info->pid_ns;
+    rcu_read_lock();
+    task = find_task_by_pid_ns(tgid, ns);
+    if (task)
+        get_task_struct(task);
+    rcu_read_unlock();
+    if (!task)
+        goto out;
 
-	/* Limit procfs to only ptraceable tasks */
-	if (fs_info->hide_pid == HIDEPID_NOT_PTRACEABLE) {
-		if (!has_pid_permissions(fs_info, task, HIDEPID_NO_ACCESS))
-			goto out_put_task;
-	}
+    /* Limit procfs to only ptraceable tasks */
+    if (fs_info->hide_pid == HIDEPID_NOT_PTRACEABLE) {
+        if (!has_pid_permissions(fs_info, task, HIDEPID_NO_ACCESS))
+            goto out_put_task;
+    }
 
-	result = proc_pid_instantiate(dentry, task, NULL);
+    result = proc_pid_instantiate(dentry, task, NULL);
 out_put_task:
-	put_task_struct(task);
+    put_task_struct(task);
 out:
-	return result;
+    return result;
 }
 ```
 
@@ -17441,12 +17511,12 @@ cat /proc/1234/net/tcp
 
 ```c
 const struct super_operations proc_sops = {
-	.alloc_inode	= proc_alloc_inode,
-	.free_inode	= proc_free_inode,
-	.drop_inode	= inode_just_drop,
-	.evict_inode	= proc_evict_inode,
-	.statfs		= simple_statfs,
-	.show_options	= proc_show_options,
+    .alloc_inode    = proc_alloc_inode,
+    .free_inode    = proc_free_inode,
+    .drop_inode    = inode_just_drop,
+    .evict_inode    = proc_evict_inode,
+    .statfs        = simple_statfs,
+    .show_options    = proc_show_options,
 };
 ```
 
@@ -17456,14 +17526,14 @@ const struct super_operations proc_sops = {
 
 ```c
 static const struct proc_ns_operations *const ns_entries[] = {
-	&netns_operations,
-	&utsns_operations,
-	&ipcns_operations,
-	&pidns_operations,
-	&userns_operations,
-	&mntns_operations,
-	&cgroupns_operations,
-	...
+    &netns_operations,
+    &utsns_operations,
+    &ipcns_operations,
+    &pidns_operations,
+    &userns_operations,
+    &mntns_operations,
+    &cgroupns_operations,
+    ...
 };
 ```
 
