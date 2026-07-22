@@ -469,47 +469,6 @@ int __init cgroup_init(void)
 }
 ```
 
-#### cgroup_init_cftypes
-
-```c
-int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
-{
-    struct cftype *cft;
-    int ret = 0;
-
-    for (cft = cfts; cft->name[0] != '\0'; cft++) {
-        struct kernfs_ops *kf_ops;
-
-        if (cft->flags & __CFTYPE_ADDED) {
-            ret = -EBUSY;
-            break;
-        }
-
-        if (cft->seq_start)
-            kf_ops = &cgroup_kf_ops;
-        else
-            kf_ops = &cgroup_kf_single_ops;
-
-        if (cft->max_write_len && cft->max_write_len != PAGE_SIZE) {
-            kf_ops = kmemdup(kf_ops, sizeof(*kf_ops), GFP_KERNEL);
-            if (!kf_ops) {
-                ret = -ENOMEM;
-                break;
-            }
-            kf_ops->atomic_write_len = cft->max_write_len;
-        }
-
-        cft->kf_ops = kf_ops;
-        cft->ss = ss;
-        cft->flags |= __CFTYPE_ADDED;
-    }
-
-    if (ret)
-        cgroup_exit_cftypes(cfts);
-    return ret;
-}
-```
-
 #### cgroup_init_subsys
 
 ```c
@@ -594,6 +553,95 @@ int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
 
     ret = 0;
 }
+```
+
+#### cgroup_base_files
+
+```c
+
+/* cgroup core interface files for the default hierarchy */
+static struct cftype cgroup_base_files[] = {
+    {
+        .name        = "cgroup.type",
+        .flags       = CFTYPE_NOT_ON_ROOT,
+        .seq_show    = cgroup_type_show,
+        .write       = cgroup_type_write,
+    },
+    {
+        .name        = "cgroup.procs",
+        .flags       = CFTYPE_NS_DELEGATABLE,
+        .file_offset = offsetof(struct cgroup, procs_file),
+        .release     = cgroup_procs_release,
+        .seq_start   = cgroup_procs_start,
+        .seq_next    = cgroup_procs_next,
+        .seq_show    = cgroup_procs_show,
+        .write       = cgroup_procs_write,
+    },
+    {
+        .name        = "cgroup.threads",
+        .flags       = CFTYPE_NS_DELEGATABLE,
+        .release     = cgroup_procs_release,
+        .seq_start   = cgroup_threads_start,
+        .seq_next    = cgroup_procs_next,
+        .seq_show    = cgroup_procs_show,
+        .write       = cgroup_threads_write,
+    },
+    {
+        .name        = "cgroup.controllers",
+        .seq_show    = cgroup_controllers_show,
+    },
+    {
+        .name        = "cgroup.subtree_control",
+        .flags       = CFTYPE_NS_DELEGATABLE,
+        .seq_show    = cgroup_subtree_control_show,
+        .write       = cgroup_subtree_control_write,
+    },
+    {
+        .name        = "cgroup.events",
+        .flags       = CFTYPE_NOT_ON_ROOT,
+        .file_offset = offsetof(struct cgroup, events_file),
+        .seq_show    = cgroup_events_show,
+    },
+    {
+        .name        = "cgroup.max.descendants",
+        .seq_show    = cgroup_max_descendants_show,
+        .write       = cgroup_max_descendants_write,
+    },
+    {
+        .name        = "cgroup.max.depth",
+        .seq_show    = cgroup_max_depth_show,
+        .write       = cgroup_max_depth_write,
+    },
+    {
+        .name        = "cgroup.stat",
+        .seq_show    = cgroup_stat_show,
+    },
+    {
+        .name        = "cgroup.stat.local",
+        .flags       = CFTYPE_NOT_ON_ROOT,
+        .seq_show    = cgroup_core_local_stat_show,
+    },
+    {
+        .name        = "cgroup.freeze",
+        .flags       = CFTYPE_NOT_ON_ROOT,
+        .seq_show    = cgroup_freeze_show,
+        .write       = cgroup_freeze_write,
+    },
+    {
+        .name        = "cgroup.kill",
+        .flags       = CFTYPE_NOT_ON_ROOT,
+        .write       = cgroup_kill_write,
+    },
+    {
+        .name        = "cpu.stat",
+        .seq_show    = cpu_stat_show,
+    },
+    {
+        .name        = "cpu.stat.local",
+        .seq_show    = cpu_local_stat_show,
+    },
+    { }    /* terminate */
+};
 ```
 
 ### cgroup_mkdir
@@ -884,6 +932,310 @@ err_free_css:
     queue_rcu_work(cgroup_free_wq, &css->destroy_rwork);
     return ERR_PTR(err);
 }
+```
+
+### cgroup_rmdir
+
+```sh
+# Stage 1 — kill_css(): Initiate Destruction
+userspace: rmdir /sys/fs/cgroup/memory/foo
+    │
+    └─ kernfs → cgroup_rmdir()                         cgroup.c:5981
+        └─ cgroup_destroy_locked()                   cgroup.c:5908
+            │
+            ├─ checks: no tasks (populated=0), no online children
+            │
+            ├─ for_each_css(css, ssid, cgrp):
+            │    kill_css(css)                      cgroup.c:5850
+            │      css->flags |= CSS_DYING
+            │      css_get(css)  ← take extra ref to keep alive until css_offline
+            │      percpu_ref_kill_and_confirm(
+            │        &css->refcnt,
+            │        css_killed_ref_fn)   ← fires when killed on ALL CPUs
+            │
+            └─ percpu_ref_kill(&cgrp->self.refcnt)
+
+# Stage 2 — css_offline (mem_cgroup_css_offline): Go Offline
+
+percpu_ref confirmed killed on all CPUs
+    │
+    └─ css_killed_ref_fn()                             cgroup.c:5830
+        atomic_dec_and_test(&css->online_cnt)
+        │
+        └─ INIT_WORK(&css->destroy_work, css_killed_work_fn)
+            queue_work(cgroup_offline_wq, ...)   ← flags=0, NOT WQ_FREEZABLE
+                │
+                └─ css_killed_work_fn()              cgroup.c:5812
+                    cgroup_lock()
+                    do {
+                        offline_css(css)             cgroup.c:5532
+                        │
+                        └─ ss->css_offline(css)
+                                mem_cgroup_css_offline()  ← called HERE
+                                    event cleanup
+                                    page_counter reset
+                                    memcg_offline_kmem()
+                                    wb_memcg_offline()
+                                    drain_all_stock()
+                                    mem_cgroup_id_put()
+                                    ← NO cancel of pgcache_limit_work!
+                                    ← NO clear of allow_pgcache_limit!
+                            css->flags &= ~CSS_ONLINE
+                            css->cgroup->subsys[ss->id] = NULL
+
+                        css_put(css)  ← drop the extra ref from kill_css()
+                            │           ← if this is the LAST ref, triggers:
+                            └─ css_release()  (refcount → 0)
+                    } while (parent && online_cnt reaches 0)
+
+# Stage 3 — css_release: Schedule RCU Callback
+
+css_put(css)  [last reference dropped]
+    └─ percpu_ref → 0
+        └─ css_release()                              cgroup.c:5473
+            INIT_WORK(&css->destroy_work, css_release_work_fn)
+            queue_work(cgroup_release_wq, ...)  ← flags=0, NOT WQ_FREEZABLE
+                │
+                └─ css_release_work_fn()           cgroup.c:5419
+                    list_del_rcu(&css->sibling)  ← removed from cgroup tree
+                    ss->css_released(css)
+                        mem_cgroup_css_released()
+                        invalidate_reclaim_iterators(memcg)
+                    INIT_RCU_WORK(&css->destroy_rwork, css_free_rwork_fn)
+                    queue_rcu_work(cgroup_free_wq, ...)
+                        │
+                        │  ← waits for RCU grace period
+
+# Stage 4 — css_free (mem_cgroup_css_free): Free Memory
+
+[RCU grace period elapsed]
+    │
+    └─ css_free_rwork_fn()                             cgroup.c:5370
+        percpu_ref_exit(&css->refcnt)
+        ss->css_free(css)
+            mem_cgroup_css_free()                   ← called HERE
+                wb_wait_for_completion()
+                vmpressure_cleanup()
+                cancel_work_sync(&memcg->high_work)
+                cancel_delayed_work_sync(                ← line 5761
+                    &memcg->pgcache_limit_work)
+                mem_cgroup_remove_from_trees()
+                free_shrinker_info()
+                mem_cgroup_free(memcg)
+                    └─ kfree(memcg)  ← struct FREED here
+```
+
+
+```c
+int cgroup_rmdir(struct kernfs_node *kn)
+{
+    struct cgroup *cgrp;
+    int ret = 0;
+
+    cgrp = cgroup_kn_lock_live(kn, false);
+    if (!cgrp)
+        return 0;
+
+    ret = cgroup_destroy_locked(cgrp);
+    if (!ret)
+        TRACE_CGROUP_PATH(rmdir, cgrp);
+
+    cgroup_kn_unlock(kn);
+    return ret;
+}
+
+int cgroup_destroy_locked(struct cgroup *cgrp)
+    __releases(&cgroup_mutex) __acquires(&cgroup_mutex)
+{
+    struct cgroup *tcgrp, *parent = cgroup_parent(cgrp);
+    struct cgroup_subsys_state *css;
+    struct cgrp_cset_link *link;
+    int ssid, ret;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    /* Only migration can raise populated from zero and we're already
+     * holding cgroup_mutex. */
+    if (cgroup_is_populated(cgrp))
+        return -EBUSY;
+
+    /* Make sure there's no live children.  We can't test emptiness of
+     * ->self.children as dead children linger on it while being
+     * drained; otherwise, "rmdir parent/child parent" may fail. */
+    if (css_has_online_children(&cgrp->self))
+        return -EBUSY;
+
+    /* Mark @cgrp and the associated csets dead.  The former prevents
+     * further task migration and child creation by disabling
+     * cgroup_kn_lock_live().  The latter makes the csets ignored by
+     * the migration path. */
+    cgrp->self.flags &= ~CSS_ONLINE;
+
+    spin_lock_irq(&css_set_lock);
+    list_for_each_entry(link, &cgrp->cset_links, cset_link)
+        link->cset->dead = true;
+    spin_unlock_irq(&css_set_lock);
+
+    /* initiate massacre of all css's */
+    for_each_css(css, ssid, cgrp) {
+        kill_css(css) {
+            if (css->flags & CSS_DYING)
+                return;
+
+            /* Call css_killed(), if defined, before setting the CSS_DYING flag */
+            if (css->ss->css_killed)
+                css->ss->css_killed(css);
+
+            css->flags |= CSS_DYING;
+
+            /* This must happen before css is disassociated with its cgroup.
+            * See seq_css() for details. */
+            css_clear_dir(css);
+
+            /* Killing would put the base ref, but we need to keep it alive
+            * until after ->css_offline(). */
+            css_get(css);
+
+            /* cgroup core guarantees that, by the time ->css_offline() is
+            * invoked, no new css reference will be given out via
+            * css_tryget_online().  We can't simply call percpu_ref_kill() and
+            * proceed to offlining css's because percpu_ref_kill() doesn't
+            * guarantee that the ref is seen as killed on all CPUs on return.
+            *
+            * Use percpu_ref_kill_and_confirm() to get notifications as each
+            * css is confirmed to be seen as killed on all CPUs. */
+            percpu_ref_kill_and_confirm(&css->refcnt, css_killed_ref_fn);
+        }
+    }
+
+    /* clear and remove @cgrp dir, @cgrp has an extra ref on its kn */
+    css_clear_dir(&cgrp->self);
+    kernfs_remove(cgrp->kn);
+
+    if (cgroup_is_threaded(cgrp))
+        parent->nr_threaded_children--;
+
+    spin_lock_irq(&css_set_lock);
+    for (tcgrp = parent; tcgrp; tcgrp = cgroup_parent(tcgrp)) {
+        tcgrp->nr_descendants--;
+        tcgrp->nr_dying_descendants++;
+        /* If the dying cgroup is frozen, decrease frozen descendants
+         * counters of ancestor cgroups. */
+        if (test_bit(CGRP_FROZEN, &cgrp->flags))
+            tcgrp->freezer.nr_frozen_descendants--;
+    }
+    spin_unlock_irq(&css_set_lock);
+
+    cgroup1_check_for_release(parent);
+
+    ret = blocking_notifier_call_chain(&cgroup_lifetime_notifier,
+                       CGROUP_LIFETIME_OFFLINE, cgrp);
+    WARN_ON_ONCE(notifier_to_errno(ret));
+
+    /* put the base reference */
+    percpu_ref_kill(&cgrp->self.refcnt);
+
+    return 0;
+};
+```
+
+##### percpu_ref_kill_and_confirm
+
+```c
+void percpu_ref_kill_and_confirm(struct percpu_ref *ref,
+                 percpu_ref_func_t *confirm_kill)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&percpu_ref_switch_lock, flags);
+
+    WARN_ONCE(percpu_ref_is_dying(ref),
+          "%s called more than once on %ps!", __func__,
+          ref->data->release);
+
+    ref->percpu_count_ptr |= __PERCPU_REF_DEAD;
+    __percpu_ref_switch_mode(ref, confirm_kill) {
+        struct percpu_ref_data *data = ref->data;
+
+        lockdep_assert_held(&percpu_ref_switch_lock);
+
+        /* If the previous ATOMIC switching hasn't finished yet, wait for
+        * its completion.  If the caller ensures that ATOMIC switching
+        * isn't in progress, this function can be called from any context. */
+        wait_event_lock_irq(percpu_ref_switch_waitq, !data->confirm_switch,
+                    percpu_ref_switch_lock);
+
+        if (data->force_atomic || percpu_ref_is_dying(ref)) {
+            __percpu_ref_switch_to_atomic(ref, confirm_switch);
+
+        } else {
+            __percpu_ref_switch_to_percpu(ref) {
+                unsigned long __percpu *percpu_count = percpu_count_ptr(ref);
+                int cpu;
+
+                BUG_ON(!percpu_count);
+
+                if (!(ref->percpu_count_ptr & __PERCPU_REF_ATOMIC))
+                    return;
+
+                if (WARN_ON_ONCE(!ref->data->allow_reinit))
+                    return;
+
+                atomic_long_add(PERCPU_COUNT_BIAS, &ref->data->count);
+
+                /* Restore per-cpu operation.  smp_store_release() is paired
+                * with READ_ONCE() in __ref_is_percpu() and guarantees that the
+                * zeroing is visible to all percpu accesses which can see the
+                * following __PERCPU_REF_ATOMIC clearing. */
+                for_each_possible_cpu(cpu)
+                    *per_cpu_ptr(percpu_count, cpu) = 0;
+
+                smp_store_release(&ref->percpu_count_ptr,
+                        ref->percpu_count_ptr & ~__PERCPU_REF_ATOMIC);
+            }
+        }
+    }
+    percpu_ref_put(ref);
+
+    spin_unlock_irqrestore(&percpu_ref_switch_lock, flags);
+}
+
+static void __percpu_ref_switch_to_atomic(struct percpu_ref *ref,
+                      percpu_ref_func_t *confirm_switch)
+{
+    if (ref->percpu_count_ptr & __PERCPU_REF_ATOMIC) {
+        if (confirm_switch)
+            confirm_switch(ref);
+        return;
+    }
+
+    /* switching from percpu to atomic */
+    ref->percpu_count_ptr |= __PERCPU_REF_ATOMIC;
+
+    /* Non-NULL ->confirm_switch is used to indicate that switching is
+     * in progress.  Use noop one if unspecified. */
+    ref->data->confirm_switch = confirm_switch ?:
+        percpu_ref_noop_confirm_switch;
+
+    percpu_ref_get(ref);    /* put after confirmation */
+    call_rcu_hurry(&ref->data->rcu,
+               percpu_ref_switch_to_atomic_rcu);
+}
+```
+
+##### css_killed_ref_fn
+
+```c
+```
+
+##### css_release_work_fn
+
+```c
+```
+
+##### css_free_rwork_fn
+
+```c
 ```
 
 ### cgroup_procs_write
@@ -1928,397 +2280,6 @@ void cgroup_propagate_control(struct cgroup *cgrp)
             }
     }
 }
-```
-
-### cgroup_get_tree
-
-```c
-mount(dev_name, dir_name, type, flags, data) {
-    copy_mount_string(); /* type, dev_name, data */
-    do_mount() {
-        struct path path;
-        user_path_at(&path);
-        path_mount(&path) {
-            do_new_mount() {
-                struct file_system_type *type = get_fs_type(fstype);
-                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
-                vfs_parse_fs_string();
-
-                /* Get the mountable root */
-                vfs_get_tree(fc) {
-                    fc->ops->get_tree(fc); /* cgroup_get_tree */
-                    struct super_block *sb = fc->root->d_sb;
-                }
-
-                do_new_mount_fc(fc, path, mnt_flags);
-            }
-        }
-    }
-}
-```
-
-```c
-int cgroup_get_tree(struct fs_context *fc)
-{
-    struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
-    int ret;
-
-    WRITE_ONCE(cgrp_dfl_visible, true);
-    cgroup_get_live(&cgrp_dfl_root.cgrp);
-    ctx->root = &cgrp_dfl_root;
-
-    ret = cgroup_do_get_tree(fc) {
-        struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
-        int ret;
-
-        ctx->kfc.root = ctx->root->kf_root;
-        if (fc->fs_type == &cgroup2_fs_type)
-            ctx->kfc.magic = CGROUP2_SUPER_MAGIC;
-        else
-            ctx->kfc.magic = CGROUP_SUPER_MAGIC;
-
-        ret = kernfs_get_tree(fc);
-
-        if (!ret && ctx->ns != &init_cgroup_ns) {
-            struct dentry *nsdentry;
-            struct super_block *sb = fc->root->d_sb;
-            struct cgroup *cgrp;
-
-            cgroup_lock();
-            spin_lock_irq(&css_set_lock);
-
-            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/);
-                --->
-
-            nsdentry = kernfs_node_dentry(cgrp->kn, sb);
-            fc->root = nsdentry;
-        }
-
-        if (!ctx->kfc.new_sb_created)
-            cgroup_put(&ctx->root->cgrp);
-
-        return ret;
-    }
-    if (!ret) {
-        apply_cgroup_root_flags(ctx->flags);
-    }
-    return ret;
-}
-```
-
-### cgroup_kf_syscall_ops
-
-```c
-static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
-    .show_options       = cgroup_show_options,
-    .mkdir              = cgroup_mkdir,
-    .rmdir              = cgroup_rmdir,
-    .show_path          = cgroup_show_path,
-};
-```
-
-#### cgroup_rmdir
-
-```sh
-# Stage 1 — kill_css(): Initiate Destruction
-userspace: rmdir /sys/fs/cgroup/memory/foo
-    │
-    └─ kernfs → cgroup_rmdir()                         cgroup.c:5981
-        └─ cgroup_destroy_locked()                   cgroup.c:5908
-            │
-            ├─ checks: no tasks (populated=0), no online children
-            │
-            ├─ for_each_css(css, ssid, cgrp):
-            │    kill_css(css)                      cgroup.c:5850
-            │      css->flags |= CSS_DYING
-            │      css_get(css)  ← take extra ref to keep alive until css_offline
-            │      percpu_ref_kill_and_confirm(
-            │        &css->refcnt,
-            │        css_killed_ref_fn)   ← fires when killed on ALL CPUs
-            │
-            └─ percpu_ref_kill(&cgrp->self.refcnt)
-
-# Stage 2 — css_offline (mem_cgroup_css_offline): Go Offline
-
-percpu_ref confirmed killed on all CPUs
-    │
-    └─ css_killed_ref_fn()                             cgroup.c:5830
-        atomic_dec_and_test(&css->online_cnt)
-        │
-        └─ INIT_WORK(&css->destroy_work, css_killed_work_fn)
-            queue_work(cgroup_offline_wq, ...)   ← flags=0, NOT WQ_FREEZABLE
-                │
-                └─ css_killed_work_fn()              cgroup.c:5812
-                    cgroup_lock()
-                    do {
-                        offline_css(css)             cgroup.c:5532
-                        │
-                        └─ ss->css_offline(css)
-                                mem_cgroup_css_offline()  ← called HERE
-                                    event cleanup
-                                    page_counter reset
-                                    memcg_offline_kmem()
-                                    wb_memcg_offline()
-                                    drain_all_stock()
-                                    mem_cgroup_id_put()
-                                    ← NO cancel of pgcache_limit_work!
-                                    ← NO clear of allow_pgcache_limit!
-                            css->flags &= ~CSS_ONLINE
-                            css->cgroup->subsys[ss->id] = NULL
-
-                        css_put(css)  ← drop the extra ref from kill_css()
-                            │           ← if this is the LAST ref, triggers:
-                            └─ css_release()  (refcount → 0)
-                    } while (parent && online_cnt reaches 0)
-
-# Stage 3 — css_release: Schedule RCU Callback
-
-css_put(css)  [last reference dropped]
-    └─ percpu_ref → 0
-        └─ css_release()                              cgroup.c:5473
-            INIT_WORK(&css->destroy_work, css_release_work_fn)
-            queue_work(cgroup_release_wq, ...)  ← flags=0, NOT WQ_FREEZABLE
-                │
-                └─ css_release_work_fn()           cgroup.c:5419
-                    list_del_rcu(&css->sibling)  ← removed from cgroup tree
-                    ss->css_released(css)
-                        mem_cgroup_css_released()
-                        invalidate_reclaim_iterators(memcg)
-                    INIT_RCU_WORK(&css->destroy_rwork, css_free_rwork_fn)
-                    queue_rcu_work(cgroup_free_wq, ...)
-                        │
-                        │  ← waits for RCU grace period
-
-# Stage 4 — css_free (mem_cgroup_css_free): Free Memory
-
-[RCU grace period elapsed]
-    │
-    └─ css_free_rwork_fn()                             cgroup.c:5370
-        percpu_ref_exit(&css->refcnt)
-        ss->css_free(css)
-            mem_cgroup_css_free()                   ← called HERE
-                wb_wait_for_completion()
-                vmpressure_cleanup()
-                cancel_work_sync(&memcg->high_work)
-                cancel_delayed_work_sync(                ← line 5761
-                    &memcg->pgcache_limit_work)
-                mem_cgroup_remove_from_trees()
-                free_shrinker_info()
-                mem_cgroup_free(memcg)
-                    └─ kfree(memcg)  ← struct FREED here
-```
-
-
-```c
-int cgroup_rmdir(struct kernfs_node *kn)
-{
-    struct cgroup *cgrp;
-    int ret = 0;
-
-    cgrp = cgroup_kn_lock_live(kn, false);
-    if (!cgrp)
-        return 0;
-
-    ret = cgroup_destroy_locked(cgrp);
-    if (!ret)
-        TRACE_CGROUP_PATH(rmdir, cgrp);
-
-    cgroup_kn_unlock(kn);
-    return ret;
-}
-
-int cgroup_destroy_locked(struct cgroup *cgrp)
-    __releases(&cgroup_mutex) __acquires(&cgroup_mutex)
-{
-    struct cgroup *tcgrp, *parent = cgroup_parent(cgrp);
-    struct cgroup_subsys_state *css;
-    struct cgrp_cset_link *link;
-    int ssid, ret;
-
-    lockdep_assert_held(&cgroup_mutex);
-
-    /* Only migration can raise populated from zero and we're already
-     * holding cgroup_mutex. */
-    if (cgroup_is_populated(cgrp))
-        return -EBUSY;
-
-    /* Make sure there's no live children.  We can't test emptiness of
-     * ->self.children as dead children linger on it while being
-     * drained; otherwise, "rmdir parent/child parent" may fail. */
-    if (css_has_online_children(&cgrp->self))
-        return -EBUSY;
-
-    /* Mark @cgrp and the associated csets dead.  The former prevents
-     * further task migration and child creation by disabling
-     * cgroup_kn_lock_live().  The latter makes the csets ignored by
-     * the migration path. */
-    cgrp->self.flags &= ~CSS_ONLINE;
-
-    spin_lock_irq(&css_set_lock);
-    list_for_each_entry(link, &cgrp->cset_links, cset_link)
-        link->cset->dead = true;
-    spin_unlock_irq(&css_set_lock);
-
-    /* initiate massacre of all css's */
-    for_each_css(css, ssid, cgrp) {
-        kill_css(css) {
-            if (css->flags & CSS_DYING)
-                return;
-
-            /* Call css_killed(), if defined, before setting the CSS_DYING flag */
-            if (css->ss->css_killed)
-                css->ss->css_killed(css);
-
-            css->flags |= CSS_DYING;
-
-            /* This must happen before css is disassociated with its cgroup.
-            * See seq_css() for details. */
-            css_clear_dir(css);
-
-            /* Killing would put the base ref, but we need to keep it alive
-            * until after ->css_offline(). */
-            css_get(css);
-
-            /* cgroup core guarantees that, by the time ->css_offline() is
-            * invoked, no new css reference will be given out via
-            * css_tryget_online().  We can't simply call percpu_ref_kill() and
-            * proceed to offlining css's because percpu_ref_kill() doesn't
-            * guarantee that the ref is seen as killed on all CPUs on return.
-            *
-            * Use percpu_ref_kill_and_confirm() to get notifications as each
-            * css is confirmed to be seen as killed on all CPUs. */
-            percpu_ref_kill_and_confirm(&css->refcnt, css_killed_ref_fn);
-        }
-    }
-
-    /* clear and remove @cgrp dir, @cgrp has an extra ref on its kn */
-    css_clear_dir(&cgrp->self);
-    kernfs_remove(cgrp->kn);
-
-    if (cgroup_is_threaded(cgrp))
-        parent->nr_threaded_children--;
-
-    spin_lock_irq(&css_set_lock);
-    for (tcgrp = parent; tcgrp; tcgrp = cgroup_parent(tcgrp)) {
-        tcgrp->nr_descendants--;
-        tcgrp->nr_dying_descendants++;
-        /* If the dying cgroup is frozen, decrease frozen descendants
-         * counters of ancestor cgroups. */
-        if (test_bit(CGRP_FROZEN, &cgrp->flags))
-            tcgrp->freezer.nr_frozen_descendants--;
-    }
-    spin_unlock_irq(&css_set_lock);
-
-    cgroup1_check_for_release(parent);
-
-    ret = blocking_notifier_call_chain(&cgroup_lifetime_notifier,
-                       CGROUP_LIFETIME_OFFLINE, cgrp);
-    WARN_ON_ONCE(notifier_to_errno(ret));
-
-    /* put the base reference */
-    percpu_ref_kill(&cgrp->self.refcnt);
-
-    return 0;
-};
-```
-
-##### percpu_ref_kill_and_confirm
-
-```c
-void percpu_ref_kill_and_confirm(struct percpu_ref *ref,
-                 percpu_ref_func_t *confirm_kill)
-{
-    unsigned long flags;
-
-    spin_lock_irqsave(&percpu_ref_switch_lock, flags);
-
-    WARN_ONCE(percpu_ref_is_dying(ref),
-          "%s called more than once on %ps!", __func__,
-          ref->data->release);
-
-    ref->percpu_count_ptr |= __PERCPU_REF_DEAD;
-    __percpu_ref_switch_mode(ref, confirm_kill) {
-        struct percpu_ref_data *data = ref->data;
-
-        lockdep_assert_held(&percpu_ref_switch_lock);
-
-        /* If the previous ATOMIC switching hasn't finished yet, wait for
-        * its completion.  If the caller ensures that ATOMIC switching
-        * isn't in progress, this function can be called from any context. */
-        wait_event_lock_irq(percpu_ref_switch_waitq, !data->confirm_switch,
-                    percpu_ref_switch_lock);
-
-        if (data->force_atomic || percpu_ref_is_dying(ref)) {
-            __percpu_ref_switch_to_atomic(ref, confirm_switch);
-
-        } else {
-            __percpu_ref_switch_to_percpu(ref) {
-                unsigned long __percpu *percpu_count = percpu_count_ptr(ref);
-                int cpu;
-
-                BUG_ON(!percpu_count);
-
-                if (!(ref->percpu_count_ptr & __PERCPU_REF_ATOMIC))
-                    return;
-
-                if (WARN_ON_ONCE(!ref->data->allow_reinit))
-                    return;
-
-                atomic_long_add(PERCPU_COUNT_BIAS, &ref->data->count);
-
-                /* Restore per-cpu operation.  smp_store_release() is paired
-                * with READ_ONCE() in __ref_is_percpu() and guarantees that the
-                * zeroing is visible to all percpu accesses which can see the
-                * following __PERCPU_REF_ATOMIC clearing. */
-                for_each_possible_cpu(cpu)
-                    *per_cpu_ptr(percpu_count, cpu) = 0;
-
-                smp_store_release(&ref->percpu_count_ptr,
-                        ref->percpu_count_ptr & ~__PERCPU_REF_ATOMIC);
-            }
-        }
-    }
-    percpu_ref_put(ref);
-
-    spin_unlock_irqrestore(&percpu_ref_switch_lock, flags);
-}
-
-static void __percpu_ref_switch_to_atomic(struct percpu_ref *ref,
-                      percpu_ref_func_t *confirm_switch)
-{
-    if (ref->percpu_count_ptr & __PERCPU_REF_ATOMIC) {
-        if (confirm_switch)
-            confirm_switch(ref);
-        return;
-    }
-
-    /* switching from percpu to atomic */
-    ref->percpu_count_ptr |= __PERCPU_REF_ATOMIC;
-
-    /* Non-NULL ->confirm_switch is used to indicate that switching is
-     * in progress.  Use noop one if unspecified. */
-    ref->data->confirm_switch = confirm_switch ?:
-        percpu_ref_noop_confirm_switch;
-
-    percpu_ref_get(ref);    /* put after confirmation */
-    call_rcu_hurry(&ref->data->rcu,
-               percpu_ref_switch_to_atomic_rcu);
-}
-```
-
-##### css_killed_ref_fn
-
-```c
-```
-
-##### css_release_work_fn
-
-```c
-```
-
-##### css_free_rwork_fn
-
-```c
 ```
 
 ## mem_cgroup
@@ -7887,7 +7848,7 @@ static __net_init int proc_net_ns_init(struct net *net)
     /* Seed dentry revalidation for /proc/${pid}/net */
     pde_force_lookup(netd) {
         /* /proc/net/ entries can be changed under us by setns(CLONE_NEWNET) */
-	    pde->flags |= PROC_ENTRY_FORCE_LOOKUP;
+        pde->flags |= PROC_ENTRY_FORCE_LOOKUP;
     }
 
     err = -EEXIST;
@@ -8181,498 +8142,4 @@ misc                0           237             1
 ├── pids.peak # Reports the historical maximum PID count since the cgroup was created.
 ├──
 └── io.pressure
-```
-
-## cgroup2_fs_type
-
-```c
-static struct file_system_type cgroup2_fs_type = {
-    .name               = "cgroup2",
-    .init_fs_context    = cgroup_init_fs_context,
-    .parameters         = cgroup2_fs_parameters,
-    .kill_sb            = cgroup_kill_sb,
-    .fs_flags           = FS_USERNS_MOUNT,
-};
-
-static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
-    .show_options   = cgroup_show_options,
-    .mkdir          = cgroup_mkdir,
-    .rmdir          = cgroup_rmdir,
-    .show_path      = cgroup_show_path,
-};
-
-/* cgroup v2 base files */
-static struct cftype cgroup_base_files[] = {
-    {
-        .name = "cgroup.type",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cgroup_type_show,
-        .write = cgroup_type_write,
-    },
-    {
-        .name = "cgroup.procs",
-        .flags = CFTYPE_NS_DELEGATABLE,
-        .file_offset = offsetof(struct cgroup, procs_file),
-        .release = cgroup_procs_release,
-        .seq_start = cgroup_procs_start,
-        .seq_next = cgroup_procs_next,
-        .seq_show = cgroup_procs_show,
-        .write = cgroup_procs_write,
-    },
-}
-
-/* cgroup v1 base files */
-struct cftype cgroup1_base_files[] = {
-    {
-        .name = "cgroup.procs",
-        .seq_start = cgroup_pidlist_start,
-        .seq_next = cgroup_pidlist_next,
-        .seq_stop = cgroup_pidlist_stop,
-        .seq_show = cgroup_pidlist_show,
-        .private = CGROUP_FILE_PROCS,
-        .write = cgroup1_procs_write,
-    },
-};
-
-static struct kernfs_ops cgroup_kf_ops = {
-    .atomic_write_len   = PAGE_SIZE,
-    .open               = cgroup_file_open,
-    .release            = cgroup_file_release,
-    .write              = cgroup_file_write,
-    .poll               = cgroup_file_poll,
-    .seq_start          = cgroup_seqfile_start,
-    .seq_next           = cgroup_seqfile_next,
-    .seq_stop           = cgroup_seqfile_stop,
-    .seq_show           = cgroup_seqfile_show,
-};
-```
-
-## cpu_files
-
-```c
-static struct cftype cpu_files[] = {
-#ifdef CONFIG_GROUP_SCHED_WEIGHT
-    {
-        .name = "weight",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = cpu_weight_read_u64,
-        .write_u64 = cpu_weight_write_u64,
-    },
-    {
-        .name = "weight.nice",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_s64 = cpu_weight_nice_read_s64,
-        .write_s64 = cpu_weight_nice_write_s64,
-    },
-    {
-        .name = "idle",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_s64 = cpu_idle_read_s64,
-        .write_s64 = cpu_idle_write_s64,
-    },
-#endif
-#ifdef CONFIG_GROUP_SCHED_BANDWIDTH
-    {
-        .name = "max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_max_show,
-        .write = cpu_max_write,
-    },
-    {
-        .name = "max.burst",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = cpu_burst_read_u64,
-        .write_u64 = cpu_burst_write_u64,
-    },
-#endif /* CONFIG_CFS_BANDWIDTH */
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-    {
-        .name = "uclamp.min",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_uclamp_min_show,
-        .write = cpu_uclamp_min_write,
-    },
-    {
-        .name = "uclamp.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_uclamp_max_show,
-        .write = cpu_uclamp_max_write,
-    },
-#endif /* CONFIG_UCLAMP_TASK_GROUP */
-    { }    /* terminate */
-};
-```
-
-## memory_files
-
-```c
-static int __init mem_cgroup_swap_init(void)
-{
-    if (mem_cgroup_disabled())
-        return 0;
-
-    WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, swap_files));
-#ifdef CONFIG_MEMCG_V1
-    WARN_ON(cgroup_add_legacy_cftypes(&memory_cgrp_subsys, memsw_files));
-#endif
-#ifdef CONFIG_ZSWAP
-    WARN_ON(cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files));
-#endif
-    return 0;
-}
-
-static struct cftype mem_cgroup_legacy_files[] = {
-    {
-        .name = "usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_MEM, RES_USAGE),
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "kmem.limit_in_bytes",
-        .private = MEMFILE_PRIVATE(_KMEM, RES_LIMIT),
-        .write = mem_cgroup_write,
-        .read_u64 = mem_cgroup_read_u64,
-    },
-    {
-        .name = "kmem.usage_in_bytes",
-        .private = MEMFILE_PRIVATE(_KMEM, RES_USAGE),
-        .read_u64 = mem_cgroup_read_u64,
-    }
-    { },
-};
-
-static struct cftype memory_files[] = {
-    {
-        .name = "current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = memory_current_read,
-    },
-    {
-        .name = "peak",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .open = peak_open,
-        .release = peak_release,
-        .seq_show = memory_peak_show,
-        .write = memory_peak_write,
-    },
-    {
-        .name = "min",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_min_show,
-        .write = memory_min_write,
-    },
-    {
-        .name = "low",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_low_show,
-        .write = memory_low_write,
-    },
-    {
-        .name = "high",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_high_show,
-        .write = memory_high_write,
-    },
-    {
-        .name = "max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_max_show,
-        .write = memory_max_write,
-    },
-    {
-        .name = "events",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .file_offset = offsetof(struct mem_cgroup, events_file),
-        .seq_show = memory_events_show,
-    },
-    {
-        .name = "events.local",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .file_offset = offsetof(struct mem_cgroup, events_local_file),
-        .seq_show = memory_events_local_show,
-    },
-    {
-        .name = "stat",
-        .seq_show = memory_stat_show,
-    },
-#ifdef CONFIG_NUMA
-    {
-        .name = "numa_stat",
-        .seq_show = memory_numa_stat_show,
-    },
-#endif
-    {
-        .name = "oom.group",
-        .flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
-        .seq_show = memory_oom_group_show,
-        .write = memory_oom_group_write,
-    },
-    {
-        .name = "reclaim",
-        .flags = CFTYPE_NS_DELEGATABLE,
-        .write = memory_reclaim,
-    },
-    { }    /* terminate */
-};
-
-static struct cftype swap_files[] = {
-    {
-        .name = "swap.current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = swap_current_read,
-    },
-    {
-        .name = "swap.high",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = swap_high_show,
-        .write = swap_high_write,
-    },
-    {
-        .name = "swap.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = swap_max_show,
-        .write = swap_max_write,
-    },
-};
-
-static struct cftype zswap_files[] = {
-    {
-        .name = "zswap.current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = zswap_current_read,
-    },
-    {
-        .name = "zswap.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = zswap_max_show,
-        .write = zswap_max_write,
-    },
-    {
-        .name = "zswap.writeback",
-        .seq_show = zswap_writeback_show,
-        .write = zswap_writeback_write,
-    },
-    { } /* terminate */
-};
-```
-
-### memory.stat
-
-```c
-int memory_stat_show(struct seq_file *m, void *v)
-{
-    struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
-    char *buf = kmalloc(SEQ_BUF_SIZE, GFP_KERNEL);
-    struct seq_buf s;
-
-    if (!buf)
-        return -ENOMEM;
-    seq_buf_init(&s, buf, SEQ_BUF_SIZE);
-    memory_stat_format(memcg, &s) {
-        if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-            memcg_stat_format(memcg, s);
-        else
-            memcg1_stat_format(memcg, s);
-        if (seq_buf_has_overflowed(s))
-            pr_warn("%s: Warning, stat buffer overflow, please report\n", __func__);
-    }
-    seq_puts(m, buf);
-    kfree(buf);
-    return 0;
-}
-
-void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
-{
-    int i;
-
-    /* Provide statistics on the state of the memory subsystem as
-     * well as cumulative event counters that show past behavior.
-     *
-     * This list is ordered following a combination of these gradients:
-     * 1) generic big picture -> specifics and details
-     * 2) reflecting userspace activity -> reflecting kernel heuristics
-     *
-     * Current memory state: */
-    mem_cgroup_flush_stats(memcg) {
-        bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats);
-
-        trace_memcg_flush_stats(memcg, atomic_read(&memcg->vmstats->stats_updates),
-            force, needs_flush);
-
-        if (!force && !needs_flush)
-            return;
-
-        if (mem_cgroup_is_root(memcg))
-            WRITE_ONCE(flush_last_time, jiffies_64);
-
-        css_rstat_flush(&memcg->css) {
-            int cpu;
-            bool is_self = css_is_self(css);
-
-            /* Since bpf programs can call this function, prevent access to
-            * uninitialized rstat pointers. */
-            if (!css_uses_rstat(css))
-                return;
-
-            might_sleep();
-            for_each_possible_cpu(cpu) {
-                struct cgroup_subsys_state *pos;
-
-                /* Reacquire for each CPU to avoid disabling IRQs too long */
-                __css_rstat_lock(css, cpu);
-                pos = css_rstat_updated_list(css, cpu);
-                for (; pos; pos = pos->rstat_flush_next) {
-                    if (is_self) {
-                        cgroup_base_stat_flush(pos->cgroup, cpu);
-                        bpf_rstat_flush(pos->cgroup, cgroup_parent(pos->cgroup), cpu);
-                    } else
-                        pos->ss->css_rstat_flush(pos, cpu);
-                }
-                __css_rstat_unlock(css, cpu);
-                if (!cond_resched())
-                    cpu_relax();
-            }
-        }
-    }
-
-    for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
-        u64 size;
-
-#ifdef CONFIG_HUGETLB_PAGE
-        if (unlikely(memory_stats[i].idx == NR_HUGETLB) &&
-            !memcg_accounts_hugetlb())
-            continue;
-#endif
-        size = memcg_page_state_output(memcg, memory_stats[i].idx);
-        seq_buf_printf(s, "%s %llu\n", memory_stats[i].name, size);
-
-        if (unlikely(memory_stats[i].idx == NR_SLAB_UNRECLAIMABLE_B)) {
-            size += memcg_page_state_output(memcg,
-                            NR_SLAB_RECLAIMABLE_B);
-            seq_buf_printf(s, "slab %llu\n", size);
-        }
-    }
-
-    /* Accumulated memory events */
-    seq_buf_printf(s, "pgscan %lu\n",
-               memcg_events(memcg, PGSCAN_KSWAPD) +
-               memcg_events(memcg, PGSCAN_DIRECT) +
-               memcg_events(memcg, PGSCAN_PROACTIVE) +
-               memcg_events(memcg, PGSCAN_KHUGEPAGED));
-    seq_buf_printf(s, "pgsteal %lu\n",
-               memcg_events(memcg, PGSTEAL_KSWAPD) +
-               memcg_events(memcg, PGSTEAL_DIRECT) +
-               memcg_events(memcg, PGSTEAL_PROACTIVE) +
-               memcg_events(memcg, PGSTEAL_KHUGEPAGED));
-
-    for (i = 0; i < ARRAY_SIZE(memcg_vm_event_stat); i++) {
-#ifdef CONFIG_MEMCG_V1
-        if (memcg_vm_event_stat[i] == PGPGIN ||
-            memcg_vm_event_stat[i] == PGPGOUT)
-            continue;
-#endif
-        seq_buf_printf(s, "%s %lu\n",
-                   vm_event_name(memcg_vm_event_stat[i]),
-                   memcg_events(memcg, memcg_vm_event_stat[i]));
-    }
-}
-```
-
-```c
-void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
-{
-    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
-    struct mem_cgroup *parent = parent_mem_cgroup(memcg);
-    struct memcg_vmstats_percpu *statc;
-    struct aggregate_control ac;
-    int nid;
-
-    flush_nmi_stats(memcg, parent, cpu);
-
-    statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
-
-    ac = (struct aggregate_control) {
-        .aggregate = memcg->vmstats->state,
-        .local = memcg->vmstats->state_local,
-        .pending = memcg->vmstats->state_pending,
-        .ppending = parent ? parent->vmstats->state_pending : NULL,
-        .cstat = statc->state,
-        .cstat_prev = statc->state_prev,
-        .size = MEMCG_VMSTAT_SIZE,
-    };
-    mem_cgroup_stat_aggregate(&ac);
-
-    ac = (struct aggregate_control) {
-        .aggregate = memcg->vmstats->events,
-        .local = memcg->vmstats->events_local,
-        .pending = memcg->vmstats->events_pending,
-        .ppending = parent ? parent->vmstats->events_pending : NULL,
-        .cstat = statc->events,
-        .cstat_prev = statc->events_prev,
-        .size = NR_MEMCG_EVENTS,
-    };
-    mem_cgroup_stat_aggregate(&ac);
-
-    for_each_node_state(nid, N_MEMORY) {
-        struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
-        struct lruvec_stats *lstats = pn->lruvec_stats;
-        struct lruvec_stats *plstats = NULL;
-        struct lruvec_stats_percpu *lstatc;
-
-        if (parent)
-            plstats = parent->nodeinfo[nid]->lruvec_stats;
-
-        lstatc = per_cpu_ptr(pn->lruvec_stats_percpu, cpu);
-
-        ac = (struct aggregate_control) {
-            .aggregate = lstats->state,
-            .local = lstats->state_local,
-            .pending = lstats->state_pending,
-            .ppending = plstats ? plstats->state_pending : NULL,
-            .cstat = lstatc->state,
-            .cstat_prev = lstatc->state_prev,
-            .size = NR_MEMCG_NODE_STAT_ITEMS,
-        };
-        mem_cgroup_stat_aggregate(&ac);
-
-    }
-    WRITE_ONCE(statc->stats_updates, 0);
-    /* We are in a per-cpu loop here, only do the atomic write once */
-    if (atomic_read(&memcg->vmstats->stats_updates))
-        atomic_set(&memcg->vmstats->stats_updates, 0);
-}
-
-mem_cgroup_stat_aggregate(struct aggregate_control *ac)
-{
-    int i;
-    long delta, delta_cpu, v;
-
-    for (i = 0; i < ac->size; i++) {
-        /* Collect the aggregated propagation counts of groups
-         * below us. We're in a per-cpu loop here and this is
-         * a global counter, so the first cycle will get them. */
-        delta = ac->pending[i];
-        if (delta)
-            ac->pending[i] = 0;
-
-        /* Add CPU changes on this level since the last flush */
-        delta_cpu = 0;
-        v = READ_ONCE(ac->cstat[i]);
-        if (v != ac->cstat_prev[i]) {
-            delta_cpu = v - ac->cstat_prev[i];
-            delta += delta_cpu;
-            ac->cstat_prev[i] = v;
-        }
-
-        /* Aggregate counts on this level and propagate upwards */
-        if (delta_cpu)
-            ac->local[i] += delta_cpu;
-
-        if (delta) {
-            ac->aggregate[i] += delta;
-            if (ac->ppending)
-                ac->ppending[i] += delta;
-        }
-    }
-}
 ```

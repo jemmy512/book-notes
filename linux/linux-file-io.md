@@ -2305,6 +2305,28 @@ all_done: // pure jump
 ### open_last_lookups
 
 ```c
+open("a/b/c", O_CREAT)
+│
+├─ walk "a", "b"  (intermediate):
+│    lookup_fast()  ─── hit ──→ step_into()  ✓
+│         │
+│        miss
+│         ↓
+│    lookup_slow()  ─── calls i_op->lookup() → populates dcache ✓
+│
+└─ walk "c"  (last):
+     lookup_fast_for_open()  ─── hit + positive ──→ finish_lookup ✓
+          │
+     miss / O_EXCL / O_CREAT
+          ↓
+     lookup_open()
+          ├─ d_lookup() hit + positive  →  return (open later in do_open)
+          ├─ negative + atomic_open     →  create+open atomically  ✓
+          ├─ negative + i_op->lookup    →  populate dcache
+          └─ negative + O_CREAT        →  i_op->create() → new file ✓
+```
+
+```c
 static const char *open_last_lookups(struct nameidata *nd,
            struct file *file, const struct open_flags *op)
 {
@@ -2485,6 +2507,8 @@ struct dentry *lookup_open(struct nameidata *nd, struct file *file,
     }
     if (create_error)
         open_flag &= ~O_CREAT;
+
+    /* Filesystem supports create+open in one shot (ext4, btrfs, ceph...) */
     if (dir_inode->i_op->atomic_open) {
         if (nd->flags & LOOKUP_DIRECTORY)
             open_flag |= O_DIRECTORY;
@@ -2685,7 +2709,7 @@ static noinline struct dentry *lookup_slow(const struct qstr *name,
 {
     struct inode *inode = dir->d_inode;
     struct dentry *res;
-    inode_lock_shared(inode);
+    inode_lock_shared(inode); /* take dir's rwsem (shared = read lock) */
     res = __lookup_slow(name, dir, flags);
     inode_unlock_shared(inode);
     return res;
@@ -13487,6 +13511,39 @@ struct kset *kset_create_and_add(const char *name,
 }
 ```
 
+### kobject_init_and_add
+
+```c
+
+int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
+			 struct kobject *parent, const char *fmt, ...)
+{
+	va_list args;
+	int retval;
+
+	kobject_init(kobj, ktype) {
+        kobject_init_internal(kobj) {
+            if (!kobj)
+                return;
+            kref_init(&kobj->kref);
+            INIT_LIST_HEAD(&kobj->entry);
+            kobj->state_in_sysfs = 0;
+            kobj->state_add_uevent_sent = 0;
+            kobj->state_remove_uevent_sent = 0;
+            kobj->state_initialized = 1;
+        }
+
+	    kobj->ktype = ktype;
+    }
+
+	va_start(args, fmt);
+	retval = kobject_add_varg(kobj, parent, fmt, args);
+	va_end(args);
+
+	return retval;
+}
+```
+
 ### kobject_add
 
 ```c
@@ -13604,7 +13661,9 @@ static __printf(3, 0) int kobject_add_varg(
 
 int create_dir(struct kobject *kobj)
 {
-    const struct kobj_type *ktype = get_ktype(kobj);
+    const struct kobj_type *ktype = get_ktype(kobj) {
+        return kobj->ktype;
+    }
     const struct kobj_ns_type_operations *ops;
     int error;
 
@@ -13785,8 +13844,47 @@ int sysfs_init_fs_context(struct fs_context *fc)
 
 static const struct fs_context_operations sysfs_fs_context_ops = {
     .free        = sysfs_fs_context_free,
-    .get_tree    = sysfs_get_tree,
+    .get_tree    = kernfs_get_tree,
 };
+```
+
+### sysfs_create_mount_point
+
+```c
+int sysfs_create_mount_point(struct kobject *parent_kobj, const char *name)
+{
+    struct kernfs_node *kn, *parent = parent_kobj->sd;
+
+    kn = kernfs_create_empty_dir(parent, name) {
+        struct kernfs_node *kn;
+        int rc;
+
+        /* allocate */
+        kn = kernfs_new_node(parent, name, S_IRUGO|S_IXUGO|S_IFDIR, GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, KERNFS_DIR);
+        if (!kn)
+            return ERR_PTR(-ENOMEM);
+
+        kn->flags |= KERNFS_EMPTY_DIR;
+        kn->dir.root = parent->dir.root;
+        kn->ns = NULL;
+        kn->priv = NULL;
+
+        /* link in */
+        rc = kernfs_add_one(kn);
+        if (!rc)
+            return kn;
+
+        kernfs_put(kn);
+        return ERR_PTR(rc);
+    }
+    if (IS_ERR(kn)) {
+        if (PTR_ERR(kn) == -EEXIST)
+            sysfs_warn_dup(parent, name);
+        return PTR_ERR(kn);
+    }
+
+    return 0;
+}
 ```
 
 ### sysfs_create_dir_ns
@@ -13820,6 +13918,197 @@ int sysfs_create_dir_ns(struct kobject *kobj, const void *ns)
 
     kobj->sd = kn;
     return 0;
+}
+```
+
+### sysfs_create_groups
+
+```c
+int sysfs_create_groups(struct kobject *kobj,
+            const struct attribute_group **groups)
+{
+    return internal_create_groups(kobj, 0, groups);
+}
+
+int internal_create_groups(struct kobject *kobj, int update,
+                  const struct attribute_group **groups)
+{
+    int error = 0;
+    int i;
+
+    if (!groups)
+        return 0;
+
+    for (i = 0; groups[i]; i++) {
+        error = internal_create_group(kobj, update, groups[i]);
+        if (error) {
+            while (--i >= 0)
+                sysfs_remove_group(kobj, groups[i]);
+            break;
+        }
+    }
+    return error;
+}
+
+int internal_create_group(struct kobject *kobj, int update,
+    const struct attribute_group *grp)
+{
+    struct kernfs_node *kn;
+    kuid_t uid;
+    kgid_t gid;
+    int error;
+
+    if (WARN_ON(!kobj || (!update && !kobj->sd)))
+        return -EINVAL;
+
+    /* Updates may happen before the object has been instantiated */
+    if (unlikely(update && !kobj->sd))
+        return -EINVAL;
+
+    if (!grp->attrs && !grp->bin_attrs) {
+        pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
+             kobj->name, grp->name ?: "");
+        return 0;
+    }
+
+    kobject_get_ownership(kobj, &uid, &gid);
+    if (grp->name) {
+        umode_t mode = __first_visible(grp, kobj) {
+            if (grp->attrs && grp->attrs[0] && grp->is_visible)
+                return grp->is_visible(kobj, grp->attrs[0], 0);
+
+            if (grp->attrs && grp->attrs[0] && grp->is_visible_const)
+                return grp->is_visible_const(kobj, grp->attrs[0], 0);
+
+            if (grp->bin_attrs && grp->bin_attrs[0] && grp->is_bin_visible)
+                return grp->is_bin_visible(kobj, grp->bin_attrs[0], 0);
+
+            return 0;
+        }
+
+        if (mode & SYSFS_GROUP_INVISIBLE)
+            mode = 0;
+        else
+            mode = S_IRWXU | S_IRUGO | S_IXUGO;
+
+        if (update) {
+            kn = kernfs_find_and_get(kobj->sd, grp->name);
+            if (!kn) {
+                pr_debug("attr grp %s/%s not created yet\n",
+                     kobj->name, grp->name);
+                /* may have been invisible prior to this update */
+                update = 0;
+            } else if (!mode) {
+                sysfs_remove_group(kobj, grp);
+                kernfs_put(kn);
+                return 0;
+            }
+        }
+
+        if (!update) {
+            if (!mode)
+                return 0;
+            kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode, uid, gid, kobj, NULL);
+            if (IS_ERR(kn)) {
+                if (PTR_ERR(kn) == -EEXIST)
+                    sysfs_warn_dup(kobj->sd, grp->name);
+                return PTR_ERR(kn);
+            }
+        }
+    } else {
+        kn = kobj->sd;
+    }
+
+    kernfs_get(kn);
+    error = create_files(kn, kobj, uid, gid, grp, update);
+    if (error) {
+        if (grp->name)
+            kernfs_remove(kn);
+    }
+    kernfs_put(kn);
+
+    if (grp->name && update)
+        kernfs_put(kn);
+
+    return error;
+}
+```
+
+#### create_files
+
+```c
+int create_files(struct kernfs_node *parent, struct kobject *kobj,
+            kuid_t uid, kgid_t gid,
+            const struct attribute_group *grp, int update)
+{
+    struct attribute *const *attr;
+    const struct bin_attribute *const *bin_attr;
+    int error = 0, i;
+
+    if (grp->attrs) {
+        for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) {
+            umode_t mode = (*attr)->mode;
+
+            /* In update mode, we're changing the permissions or
+             * visibility.  Do this by first removing then
+             * re-adding (if required) the file. */
+            if (update)
+                kernfs_remove_by_name(parent, (*attr)->name);
+            if (grp->is_visible || grp->is_visible_const) {
+                if (grp->is_visible)
+                    mode = grp->is_visible(kobj, *attr, i);
+                else
+                    mode = grp->is_visible_const(kobj, *attr, i);
+                mode &= ~SYSFS_GROUP_INVISIBLE;
+                if (!mode)
+                    continue;
+            }
+
+            WARN(mode & ~(SYSFS_PREALLOC | 0664),
+                 "Attribute %s: Invalid permissions 0%o\n",
+                 (*attr)->name, mode);
+
+            mode &= SYSFS_PREALLOC | 0664;
+            error = sysfs_add_file_mode_ns(parent, *attr, mode, uid, gid, NULL);
+            if (unlikely(error))
+                break;
+        }
+        if (error) {
+            remove_files(parent, grp);
+            goto exit;
+        }
+    }
+
+    if (grp->bin_attrs) {
+        for (i = 0, bin_attr = grp->bin_attrs; *bin_attr; i++, bin_attr++) {
+            umode_t mode = (*bin_attr)->attr.mode;
+            size_t size = (*bin_attr)->size;
+
+            if (update)
+                kernfs_remove_by_name(parent, (*bin_attr)->attr.name);
+            if (grp->is_bin_visible) {
+                mode = grp->is_bin_visible(kobj, *bin_attr, i);
+                mode &= ~SYSFS_GROUP_INVISIBLE;
+                if (!mode)
+                    continue;
+            }
+            if (grp->bin_size)
+                size = grp->bin_size(kobj, *bin_attr, i);
+
+            WARN(mode & ~(SYSFS_PREALLOC | 0664),
+                 "Attribute %s: Invalid permissions 0%o\n",
+                 (*bin_attr)->attr.name, mode);
+
+            mode &= SYSFS_PREALLOC | 0664;
+            error = sysfs_add_bin_file_mode_ns(parent, *bin_attr, mode, size, uid, gid, NULL);
+            if (error)
+                break;
+        }
+        if (error)
+            remove_files(parent, grp);
+    }
+exit:
+    return error;
 }
 ```
 
@@ -13935,232 +14224,6 @@ struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
         return ERR_PTR(rc);
     }
     return kn;
-}
-```
-
-### sysfs_create_groups
-
-```c
-int sysfs_create_groups(struct kobject *kobj,
-            const struct attribute_group **groups)
-{
-    return internal_create_groups(kobj, 0, groups);
-}
-
-int internal_create_groups(struct kobject *kobj, int update,
-                  const struct attribute_group **groups)
-{
-    int error = 0;
-    int i;
-
-    if (!groups)
-        return 0;
-
-    for (i = 0; groups[i]; i++) {
-        error = internal_create_group(kobj, update, groups[i]);
-        if (error) {
-            while (--i >= 0)
-                sysfs_remove_group(kobj, groups[i]);
-            break;
-        }
-    }
-    return error;
-}
-
-int internal_create_group(struct kobject *kobj, int update,
-    const struct attribute_group *grp)
-{
-    struct kernfs_node *kn;
-    kuid_t uid;
-    kgid_t gid;
-    int error;
-
-    if (WARN_ON(!kobj || (!update && !kobj->sd)))
-        return -EINVAL;
-
-    /* Updates may happen before the object has been instantiated */
-    if (unlikely(update && !kobj->sd))
-        return -EINVAL;
-
-    if (!grp->attrs && !grp->bin_attrs) {
-        pr_debug("sysfs: (bin_)attrs not set by subsystem for group: %s/%s, skipping\n",
-             kobj->name, grp->name ?: "");
-        return 0;
-    }
-
-    kobject_get_ownership(kobj, &uid, &gid);
-    if (grp->name) {
-        umode_t mode = __first_visible(grp, kobj) {
-            if (grp->attrs && grp->attrs[0] && grp->is_visible)
-                return grp->is_visible(kobj, grp->attrs[0], 0);
-
-            if (grp->attrs && grp->attrs[0] && grp->is_visible_const)
-                return grp->is_visible_const(kobj, grp->attrs[0], 0);
-
-            if (grp->bin_attrs && grp->bin_attrs[0] && grp->is_bin_visible)
-                return grp->is_bin_visible(kobj, grp->bin_attrs[0], 0);
-
-            return 0;
-        }
-
-        if (mode & SYSFS_GROUP_INVISIBLE)
-            mode = 0;
-        else
-            mode = S_IRWXU | S_IRUGO | S_IXUGO;
-
-        if (update) {
-            kn = kernfs_find_and_get(kobj->sd, grp->name);
-            if (!kn) {
-                pr_debug("attr grp %s/%s not created yet\n",
-                     kobj->name, grp->name);
-                /* may have been invisible prior to this update */
-                update = 0;
-            } else if (!mode) {
-                sysfs_remove_group(kobj, grp);
-                kernfs_put(kn);
-                return 0;
-            }
-        }
-
-        if (!update) {
-            if (!mode)
-                return 0;
-            kn = kernfs_create_dir_ns(kobj->sd, grp->name, mode, uid, gid, kobj, NULL);
-            if (IS_ERR(kn)) {
-                if (PTR_ERR(kn) == -EEXIST)
-                    sysfs_warn_dup(kobj->sd, grp->name);
-                return PTR_ERR(kn);
-            }
-        }
-    } else {
-        kn = kobj->sd;
-    }
-
-    kernfs_get(kn);
-    error = create_files(kn, kobj, uid, gid, grp, update);
-    if (error) {
-        if (grp->name)
-            kernfs_remove(kn);
-    }
-    kernfs_put(kn);
-
-    if (grp->name && update)
-        kernfs_put(kn);
-
-    return error;
-}
-
-int create_files(struct kernfs_node *parent, struct kobject *kobj,
-            kuid_t uid, kgid_t gid,
-            const struct attribute_group *grp, int update)
-{
-    struct attribute *const *attr;
-    const struct bin_attribute *const *bin_attr;
-    int error = 0, i;
-
-    if (grp->attrs) {
-        for (i = 0, attr = grp->attrs; *attr && !error; i++, attr++) {
-            umode_t mode = (*attr)->mode;
-
-            /* In update mode, we're changing the permissions or
-             * visibility.  Do this by first removing then
-             * re-adding (if required) the file. */
-            if (update)
-                kernfs_remove_by_name(parent, (*attr)->name);
-            if (grp->is_visible || grp->is_visible_const) {
-                if (grp->is_visible)
-                    mode = grp->is_visible(kobj, *attr, i);
-                else
-                    mode = grp->is_visible_const(kobj, *attr, i);
-                mode &= ~SYSFS_GROUP_INVISIBLE;
-                if (!mode)
-                    continue;
-            }
-
-            WARN(mode & ~(SYSFS_PREALLOC | 0664),
-                 "Attribute %s: Invalid permissions 0%o\n",
-                 (*attr)->name, mode);
-
-            mode &= SYSFS_PREALLOC | 0664;
-            error = sysfs_add_file_mode_ns(parent, *attr, mode, uid, gid, NULL);
-            if (unlikely(error))
-                break;
-        }
-        if (error) {
-            remove_files(parent, grp);
-            goto exit;
-        }
-    }
-
-    if (grp->bin_attrs) {
-        for (i = 0, bin_attr = grp->bin_attrs; *bin_attr; i++, bin_attr++) {
-            umode_t mode = (*bin_attr)->attr.mode;
-            size_t size = (*bin_attr)->size;
-
-            if (update)
-                kernfs_remove_by_name(parent, (*bin_attr)->attr.name);
-            if (grp->is_bin_visible) {
-                mode = grp->is_bin_visible(kobj, *bin_attr, i);
-                mode &= ~SYSFS_GROUP_INVISIBLE;
-                if (!mode)
-                    continue;
-            }
-            if (grp->bin_size)
-                size = grp->bin_size(kobj, *bin_attr, i);
-
-            WARN(mode & ~(SYSFS_PREALLOC | 0664),
-                 "Attribute %s: Invalid permissions 0%o\n",
-                 (*bin_attr)->attr.name, mode);
-
-            mode &= SYSFS_PREALLOC | 0664;
-            error = sysfs_add_bin_file_mode_ns(parent, *bin_attr, mode, size, uid, gid, NULL);
-            if (error)
-                break;
-        }
-        if (error)
-            remove_files(parent, grp);
-    }
-exit:
-    return error;
-}
-```
-
-### sysfs_create_mount_point
-
-```c
-int sysfs_create_mount_point(struct kobject *parent_kobj, const char *name)
-{
-    struct kernfs_node *kn, *parent = parent_kobj->sd;
-
-    kn = kernfs_create_empty_dir(parent, name) {
-        struct kernfs_node *kn;
-        int rc;
-
-        /* allocate */
-        kn = kernfs_new_node(parent, name, S_IRUGO|S_IXUGO|S_IFDIR, GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, KERNFS_DIR);
-        if (!kn)
-            return ERR_PTR(-ENOMEM);
-
-        kn->flags |= KERNFS_EMPTY_DIR;
-        kn->dir.root = parent->dir.root;
-        kn->ns = NULL;
-        kn->priv = NULL;
-
-        /* link in */
-        rc = kernfs_add_one(kn);
-        if (!rc)
-            return kn;
-
-        kernfs_put(kn);
-        return ERR_PTR(rc);
-    }
-    if (IS_ERR(kn)) {
-        if (PTR_ERR(kn) == -EEXIST)
-            sysfs_warn_dup(parent, name);
-        return PTR_ERR(kn);
-    }
-
-    return 0;
 }
 ```
 
@@ -14673,7 +14736,9 @@ void kernfs_init_inode(struct kernfs_node *kn, struct inode *inode)
 }
 ```
 
-### kernfs_create_root
+### kernfs_create_xxx
+
+#### kernfs_create_root
 
 ```c
 struct kernfs_root *kernfs_create_root(struct kernfs_syscall_ops *scops,
@@ -14727,7 +14792,7 @@ struct kernfs_root *kernfs_create_root(struct kernfs_syscall_ops *scops,
 }
 ```
 
-### kernfs_create_dir_ns
+#### kernfs_create_dir_ns
 
 ```c
 struct kernfs_node *kernfs_create_dir_ns(struct kernfs_node *parent,
@@ -14739,81 +14804,7 @@ struct kernfs_node *kernfs_create_dir_ns(struct kernfs_node *parent,
     int rc;
 
     /* allocate */
-    kn = kernfs_new_node(parent, name, mode | S_IFDIR, uid, gid, KERNFS_DIR) {
-        struct kernfs_node *kn;
-
-        if (parent->mode & S_ISGID) {
-            /* this code block imitates inode_init_owner() for
-            * kernfs */
-
-            if (parent->iattr)
-                gid = parent->iattr->ia_gid;
-
-            if (flags & KERNFS_DIR)
-                mode |= S_ISGID;
-        }
-
-        kn = __kernfs_new_node(kernfs_root(parent), parent, name, mode, uid, gid, flags) {
-            struct kernfs_node *kn;
-            u32 id_highbits;
-            int ret;
-
-            name = kstrdup_const(name, GFP_KERNEL);
-            if (!name)
-                return NULL;
-
-            kn = kmem_cache_zalloc(kernfs_node_cache, GFP_KERNEL);
-            if (!kn)
-                goto err_out1;
-
-            idr_preload(GFP_KERNEL);
-            spin_lock(&root->kernfs_idr_lock);
-            ret = idr_alloc_cyclic(&root->ino_idr, kn, 1, 0, GFP_ATOMIC);
-            if (ret >= 0 && ret < root->last_id_lowbits)
-                root->id_highbits++;
-            id_highbits = root->id_highbits;
-            root->last_id_lowbits = ret;
-            spin_unlock(&root->kernfs_idr_lock);
-            idr_preload_end();
-            if (ret < 0)
-                goto err_out2;
-
-            kn->id = (u64)id_highbits << 32 | ret;
-
-            atomic_set(&kn->count, 1);
-            atomic_set(&kn->active, KN_DEACTIVATED_BIAS);
-            RB_CLEAR_NODE(&kn->rb);
-
-            rcu_assign_pointer(kn->name, name);
-            kn->mode = mode;
-            kn->flags = flags;
-
-            if (!uid_eq(uid, GLOBAL_ROOT_UID) || !gid_eq(gid, GLOBAL_ROOT_GID)) {
-                struct iattr iattr = {
-                    .ia_valid = ATTR_UID | ATTR_GID,
-                    .ia_uid = uid,
-                    .ia_gid = gid,
-                };
-
-                ret = __kernfs_setattr(kn, &iattr);
-                if (ret < 0)
-                    goto err_out3;
-            }
-
-            if (parent) {
-                ret = security_kernfs_init_security(parent, kn);
-                if (ret)
-                    goto err_out4;
-            }
-
-            return kn;
-        }
-        if (kn) {
-            kernfs_get(parent);
-            rcu_assign_pointer(kn->__parent, parent);
-        }
-        return kn;
-    }
+    kn = kernfs_new_node(parent, name, mode | S_IFDIR, uid, gid, KERNFS_DIR);
     if (!kn)
         return ERR_PTR(-ENOMEM);
 
@@ -14828,6 +14819,96 @@ struct kernfs_node *kernfs_create_dir_ns(struct kernfs_node *parent,
 
     kernfs_put(kn);
     return ERR_PTR(rc);
+}
+```
+
+#### kernfs_create_file
+
+```c
+struct kernfs_node *__kernfs_create_file(
+    struct kernfs_node *parent,
+    const char *name,
+    umode_t mode, kuid_t uid, kgid_t gid,
+    loff_t size,
+    const struct kernfs_ops *ops,
+    void *priv, const struct ns_common *ns,
+    struct lock_class_key *key)
+{
+    struct kernfs_node *kn;
+    unsigned flags;
+    int rc;
+
+    flags = KERNFS_FILE;
+
+    kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG,
+                 uid, gid, flags);
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    kn->attr.ops = ops;
+    kn->attr.size = size;
+    kn->ns = ns;
+    kn->priv = priv;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    if (key) {
+        lockdep_init_map(&kn->dep_map, "kn->active", key, 0);
+        kn->flags |= KERNFS_LOCKDEP;
+    }
+#endif
+
+    /* kn->attr.ops is accessible only while holding active ref.  We
+     * need to know whether some ops are implemented outside active
+     * ref.  Cache their existence in flags. */
+    if (ops->seq_show)
+        kn->flags |= KERNFS_HAS_SEQ_SHOW;
+    if (ops->mmap)
+        kn->flags |= KERNFS_HAS_MMAP;
+    if (ops->release)
+        kn->flags |= KERNFS_HAS_RELEASE;
+
+    rc = kernfs_add_one(kn);
+    if (rc) {
+        kernfs_put(kn);
+        return ERR_PTR(rc);
+    }
+    return kn;
+}
+```
+
+#### kernfs_create_link
+
+```c
+struct kernfs_node *kernfs_create_link(
+    struct kernfs_node *parent,
+    const char *name,
+    struct kernfs_node *target)
+{
+    struct kernfs_node *kn;
+    int error;
+    kuid_t uid = GLOBAL_ROOT_UID;
+    kgid_t gid = GLOBAL_ROOT_GID;
+
+    if (target->iattr) {
+        uid = target->iattr->ia_uid;
+        gid = target->iattr->ia_gid;
+    }
+
+    kn = kernfs_new_node(parent, name, S_IFLNK|0777, uid, gid, KERNFS_LINK);
+    if (!kn)
+        return ERR_PTR(-ENOMEM);
+
+    if (kernfs_ns_enabled(parent))
+        kn->ns = target->ns;
+    kn->symlink.target_kn = target;
+    kernfs_get(target);    /* ref owned by symlink */
+
+    error = kernfs_add_one(kn);
+    if (!error)
+        return kn;
+
+    kernfs_put(kn);
+    return ERR_PTR(error);
 }
 ```
 
@@ -14927,42 +15008,6 @@ out_unlock:
 }
 ```
 
-### kernfs_create_link
-
-```c
-struct kernfs_node *kernfs_create_link(
-    struct kernfs_node *parent,
-    const char *name,
-    struct kernfs_node *target)
-{
-    struct kernfs_node *kn;
-    int error;
-    kuid_t uid = GLOBAL_ROOT_UID;
-    kgid_t gid = GLOBAL_ROOT_GID;
-
-    if (target->iattr) {
-        uid = target->iattr->ia_uid;
-        gid = target->iattr->ia_gid;
-    }
-
-    kn = kernfs_new_node(parent, name, S_IFLNK|0777, uid, gid, KERNFS_LINK);
-    if (!kn)
-        return ERR_PTR(-ENOMEM);
-
-    if (kernfs_ns_enabled(parent))
-        kn->ns = target->ns;
-    kn->symlink.target_kn = target;
-    kernfs_get(target);    /* ref owned by symlink */
-
-    error = kernfs_add_one(kn);
-    if (!error)
-        return kn;
-
-    kernfs_put(kn);
-    return ERR_PTR(error);
-}
-```
-
 ### kernfs_find_and_get_ns
 
 ```c
@@ -15051,6 +15096,92 @@ static void kernfs_activate_one(struct kernfs_node *kn)
 ### kernfs_notify
 
 ### kernfs_remove
+
+### kernfs_dir_iops
+
+```c
+const struct inode_operations kernfs_dir_iops = {
+    .lookup         = kernfs_iop_lookup,
+    .permission     = kernfs_iop_permission,
+    .setattr        = kernfs_iop_setattr,
+    .getattr        = kernfs_iop_getattr,
+    .listxattr      = kernfs_iop_listxattr,
+
+    .mkdir          = kernfs_iop_mkdir,
+    .rmdir          = kernfs_iop_rmdir,
+    .rename         = kernfs_iop_rename,
+};
+```
+
+#### kernfs_iop_lookup
+
+```c
+struct dentry *kernfs_iop_lookup(struct inode *dir,
+                    struct dentry *dentry,
+                    unsigned int flags)
+{
+    struct kernfs_node *parent = dir->i_private;
+    struct kernfs_node *kn;
+    struct kernfs_root *root;
+    struct inode *inode = NULL;
+    const void *ns = NULL;
+
+    root = kernfs_root(parent);
+    down_read(&root->kernfs_rwsem);
+    if (kernfs_ns_enabled(parent))
+        ns = kernfs_info(dir->i_sb)->ns;
+
+    kn = kernfs_find_ns(parent, dentry->d_name.name, ns);
+        --->
+    /* attach dentry and inode */
+    if (kn) {
+        /* Inactive nodes are invisible to the VFS so don't
+         * create a negative. */
+        if (!kernfs_active(kn)) {
+            up_read(&root->kernfs_rwsem);
+            return NULL;
+        }
+        inode = kernfs_get_inode(dir->i_sb, kn);
+            --->
+        if (!inode)
+            inode = ERR_PTR(-ENOMEM);
+    }
+    /* Needed for negative dentry validation.
+     * The negative dentry can be created in kernfs_iop_lookup()
+     * or transforms from positive dentry in dentry_unlink_inode()
+     * called from vfs_rmdir(). */
+    if (!IS_ERR(inode))
+        kernfs_set_rev(parent, dentry);
+    up_read(&root->kernfs_rwsem);
+
+    /* instantiate and hash (possibly negative) dentry */
+    return d_splice_alias(inode, dentry);
+}
+```
+
+#### kernfs_iop_mkdir
+
+```c
+struct dentry *kernfs_iop_mkdir(struct mnt_idmap *idmap,
+                       struct inode *dir, struct dentry *dentry,
+                       umode_t mode)
+{
+    struct kernfs_node *parent = dir->i_private;
+    struct kernfs_syscall_ops *scops = kernfs_root(parent)->syscall_ops;
+    int ret;
+
+    if (!scops || !scops->mkdir)
+        return ERR_PTR(-EPERM);
+
+    if (!kernfs_get_active(parent))
+        return ERR_PTR(-ENODEV);
+
+    ret = scops->mkdir(parent, dentry->d_name.name, mode);
+
+    kernfs_put_active(parent);
+    return ERR_PTR(ret);
+}
+```
 
 ### kernfs_file_fops
 
@@ -15370,68 +15501,6 @@ static int kernfs_seq_show(struct seq_file *sf, void *v)
     of->event = atomic_read(&of_on(of)->event);
 
     return of->kn->attr.ops->seq_show(sf, v);
-}
-```
-
-### kernfs_dir_iops
-
-```c
-const struct inode_operations kernfs_dir_iops = {
-    .lookup         = kernfs_iop_lookup,
-    .permission     = kernfs_iop_permission,
-    .setattr        = kernfs_iop_setattr,
-    .getattr        = kernfs_iop_getattr,
-    .listxattr      = kernfs_iop_listxattr,
-
-    .mkdir          = kernfs_iop_mkdir,
-    .rmdir          = kernfs_iop_rmdir,
-    .rename         = kernfs_iop_rename,
-};
-```
-
-#### kernfs_iop_lookup
-
-```c
-struct dentry *kernfs_iop_lookup(struct inode *dir,
-                    struct dentry *dentry,
-                    unsigned int flags)
-{
-    struct kernfs_node *parent = dir->i_private;
-    struct kernfs_node *kn;
-    struct kernfs_root *root;
-    struct inode *inode = NULL;
-    const void *ns = NULL;
-
-    root = kernfs_root(parent);
-    down_read(&root->kernfs_rwsem);
-    if (kernfs_ns_enabled(parent))
-        ns = kernfs_info(dir->i_sb)->ns;
-
-    kn = kernfs_find_ns(parent, dentry->d_name.name, ns);
-        --->
-    /* attach dentry and inode */
-    if (kn) {
-        /* Inactive nodes are invisible to the VFS so don't
-         * create a negative. */
-        if (!kernfs_active(kn)) {
-            up_read(&root->kernfs_rwsem);
-            return NULL;
-        }
-        inode = kernfs_get_inode(dir->i_sb, kn);
-            --->
-        if (!inode)
-            inode = ERR_PTR(-ENOMEM);
-    }
-    /* Needed for negative dentry validation.
-     * The negative dentry can be created in kernfs_iop_lookup()
-     * or transforms from positive dentry in dentry_unlink_inode()
-     * called from vfs_rmdir(). */
-    if (!IS_ERR(inode))
-        kernfs_set_rev(parent, dentry);
-    up_read(&root->kernfs_rwsem);
-
-    /* instantiate and hash (possibly negative) dentry */
-    return d_splice_alias(inode, dentry);
 }
 ```
 
@@ -19065,6 +19134,8 @@ int path_pivot_root(struct path *new, struct path *old)
 
 ## cgroupfs
 
+![](../images/kernel/file-fs-cgroupfs.drawio.svg)
+
 ```sh
 start_kernel()
 └─ cgroup_init_early()         # init cgrp_dfl_root struct + early subsystems
@@ -19082,6 +19153,911 @@ mount -t cgroup2 none /sys/fs/cgroup
     ├─ cgrp_dfl_visible = true      # now visible
     └─ kernfs_get_tree()            # attach kernfs tree to VFS superblock
                                     # → /sys/fs/cgroup is now live
+```
+
+```c
+cgroup_init()
+└─ cgroup_add_dfl_cftypes(ss, ss->dfl_cftypes)
+    └─ cgroup_init_cftypes(ss, cfts)
+        └─ for each cftype:
+            if cft->seq_start → cft->kf_ops = &cgroup_kf_ops
+            else              → cft->kf_ops = &cgroup_kf_single_ops
+
+cgroup_mkdir() (user does: mkdir /sys/fs/cgroup/mygroup)
+└─ cgroup_create()
+    └─ css_populate_dir(css)
+        └─ cgroup_add_file(css, cgrp, cft)
+            └─ __kernfs_create_file(cgrp->kn, name, ..., cft->kf_ops, cft)
+                                    │                       │         │
+                                    │                       │         └─ stored as kn->priv
+                                    │                       └─ how to read/write this file
+                                    └─ parent kernfs dir node
+```
+
+```c
+cat /sys/fs/cgroup/mygroup/memory.current
+│
+├── open(2)
+│   └── do_sys_openat2
+│       └── do_filp_open
+│           └── path_openat
+│               └── link_path_walk              ← walk each component
+│                   │
+│                   ├── "mygroup"               lookup in /sys/fs/cgroup/
+│                   │   └── kernfs_dir_iops.lookup
+│                   │       └── kernfs_iop_lookup              [dir.c:1248]
+│                   │           ├── parent = dir->i_private     ← kernfs_node of /sys/fs/cgroup/
+│                   │           ├── down_read(&root->kernfs_rwsem)
+│                   │           ├── kernfs_find_ns(parent, "mygroup", ns)  [dir.c:886]
+│                   │           │   └── rb-tree search in parent->dir.children
+│                   │           ├── kernfs_get_inode(sb, kn)   [inode.c:248]
+│                   │           │   └── kernfs_init_inode(kn, inode)  [inode.c:200]
+│                   │           │       ├── inode->i_private = kn
+│                   │           │       ├── inode->i_op  = &kernfs_dir_iops
+│                   │           │       └── inode->i_fop = &kernfs_dir_fops
+│                   │           └── d_splice_alias(inode, dentry)   [dir.c:1288]
+│                   │               └── dentry->d_op = &kernfs_dops (has .d_revalidate)
+│                   │                                                [dir.c:1245]
+│                   │
+│                   └── "memory.current"        lookup in /sys/fs/cgroup/mygroup/
+│                       └── kernfs_dir_iops.lookup
+│                           └── kernfs_iop_lookup              [dir.c:1248]
+│                               ├── kernfs_find_ns(parent, "memory.current", ns)
+│                               │   └── rb-tree → finds kn (KERNFS_FILE)
+│                               │       kn->attr.ops = &cgroup_kf_single_ops
+│                               │       kn->priv     = &memory_files[0] (cftype)
+│                               ├── kernfs_get_inode(sb, kn)   [inode.c:248]
+│                               │   └── kernfs_init_inode(kn, inode)
+│                               │       ├── inode->i_private = kn
+│                               │       ├── inode->i_op  = &kernfs_iops  ← FILE: no mkdir/lookup
+│                               │       └── inode->i_fop = &kernfs_file_fops
+│                               └── d_splice_alias(inode, dentry)
+│
+│   └── open_last_lookups → do_open → vfs_open
+│       └── do_dentry_open
+│           └── f->f_op = &kernfs_file_fops
+│               └── kernfs_file_fops.open = kernfs_fop_open    [file.c:603]
+│                   ├── kn = inode->i_private         ← kernfs_node for "memory.current"
+│                   ├── ops = kn->attr.ops            ← &cgroup_kf_single_ops
+│                   ├── of = kzalloc(kernfs_open_file)
+│                   │       of->kn   = kn
+│                   │       of->file = file
+│                   ├── seq_open(file, &kernfs_seq_ops)        [file.c:697]
+│                   │   └── seq_file->op      = &kernfs_seq_ops
+│                   │       seq_file->private = of
+│                   ├── of->seq_file = file->private_data
+│                   └── ops->open(of) = cgroup_file_open(of)   [cgroup.c:4255]
+│                       ├── cft = of_cft(of) = kn->priv        ← &memory_files[0]
+│                       │       .name     = "current"
+│                       │       .read_u64 = memory_current_read
+│                       │       .kf_ops   = &cgroup_kf_single_ops
+│                       ├── ctx = kzalloc(cgroup_file_ctx)
+│                       │       ctx->ns = current->nsproxy->cgroup_ns
+│                       ├── of->priv = ctx
+│                       └── cft->open == NULL → return 0  (no custom open for memory.current)
+│
+└── read(2)
+    └── ksys_read
+        └── vfs_read
+            └── kernfs_file_fops.read_iter = kernfs_fop_read_iter  [file.c:287]
+                ├── kn->flags & KERNFS_HAS_SEQ_SHOW?  YES
+                └── seq_read_iter(iocb, iter)          ← generic seq_file engine
+                    │
+                    ├── kernfs_seq_ops.start = kernfs_seq_start    [file.c:156]
+                    │   ├── mutex_lock(&of->mutex)
+                    │   ├── kernfs_get_active_of(of)   ← grab active ref on kn
+                    │   └── ops->seq_start == NULL     ← cgroup_kf_single_ops has none
+                    │       └── single_start()         ← returns (void*)1 as token
+                    │
+                    ├── kernfs_seq_ops.show = kernfs_seq_show      [file.c:210]
+                    │   └── of->kn->attr.ops->seq_show(sf, v)
+                    │       └── cgroup_kf_single_ops.seq_show
+                    │           = cgroup_seqfile_show(sf, arg)     [cgroup.c:4371]
+                    │               ├── cft = seq_cft(sf)          ← &memory_files[0]
+                    │               ├── css = seq_css(sf)          ← cgroup_subsys_state
+                    │               │         css->cgroup = mygroup cgroup node
+                    │               │         css->ss     = &memory_cgrp_subsys
+                    │               ├── cft->seq_show == NULL
+                    │               ├── cft->read_u64 != NULL  ✓
+                    │               └── seq_printf(sf, "%llu\n",
+                    │                       cft->read_u64(css, cft))
+                    │                       └── memory_current_read(css, cft)   [memcontrol.c:4623]
+                    │                           ├── memcg = mem_cgroup_from_css(css)  [memcontrol.h:747]
+                    │                           │         container_of(css, struct mem_cgroup, css)
+                    │                           └── page_counter_read(&memcg->memory)  [page_counter.h:66]
+                    │                               └── atomic_long_read(&counter->usage)
+                    │                                   └── ← VALUE (bytes)
+                    │
+                    ├── kernfs_seq_ops.next = kernfs_seq_next      [file.c:180]
+                    │   └── ops->seq_next == NULL → ++ppos; return NULL (single item)
+                    │
+                    └── kernfs_seq_ops.stop = kernfs_seq_stop      [file.c:201]
+                        ├── kernfs_put_active_of(of)   ← release active ref on kn
+                        └── mutex_unlock(&of->mutex)
+```
+
+
+### cgroup2_fs_type
+
+```c
+static const struct fs_context_operations cgroup_fs_context_ops = {
+    .free           = cgroup_fs_context_free,
+    .parse_param    = cgroup2_parse_param,
+    .get_tree       = cgroup_get_tree,
+    .reconfigure    = cgroup_reconfigure,
+};
+
+static struct file_system_type cgroup2_fs_type = {
+    .name               = "cgroup2",
+    .init_fs_context    = cgroup_init_fs_context,
+    .parameters         = cgroup2_fs_parameters,
+    .kill_sb            = cgroup_kill_sb,
+    .fs_flags           = FS_USERNS_MOUNT,
+};
+
+static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
+    .show_options   = cgroup_show_options,
+    .mkdir          = cgroup_mkdir,
+    .rmdir          = cgroup_rmdir,
+    .show_path      = cgroup_show_path,
+};
+
+/* cgroup v2 base files */
+static struct cftype cgroup_base_files[] = {
+    {
+        .name = "cgroup.type",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cgroup_type_show,
+        .write = cgroup_type_write,
+    },
+    {
+        .name = "cgroup.procs",
+        .flags = CFTYPE_NS_DELEGATABLE,
+        .file_offset = offsetof(struct cgroup, procs_file),
+        .release = cgroup_procs_release,
+        .seq_start = cgroup_procs_start,
+        .seq_next = cgroup_procs_next,
+        .seq_show = cgroup_procs_show,
+        .write = cgroup_procs_write,
+    },
+}
+
+/* cgroup v1 base files */
+struct cftype cgroup1_base_files[] = {
+    {
+        .name = "cgroup.procs",
+        .seq_start = cgroup_pidlist_start,
+        .seq_next = cgroup_pidlist_next,
+        .seq_stop = cgroup_pidlist_stop,
+        .seq_show = cgroup_pidlist_show,
+        .private = CGROUP_FILE_PROCS,
+        .write = cgroup1_procs_write,
+    },
+};
+```
+
+#### cgroup_get_tree
+
+```c
+mount(dev_name, dir_name, type, flags, data) {
+    copy_mount_string(); /* type, dev_name, data */
+    do_mount() {
+        struct path path;
+        user_path_at(&path);
+        path_mount(&path) {
+            do_new_mount() {
+                struct file_system_type *type = get_fs_type(fstype);
+                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+                vfs_parse_fs_string();
+
+                /* Get the mountable root */
+                vfs_get_tree(fc) {
+                    fc->ops->get_tree(fc); /* cgroup_get_tree */
+                    struct super_block *sb = fc->root->d_sb;
+                }
+
+                do_new_mount_fc(fc, path, mnt_flags);
+            }
+        }
+    }
+}
+```
+
+```c
+int cgroup_get_tree(struct fs_context *fc)
+{
+    struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
+    int ret;
+
+    WRITE_ONCE(cgrp_dfl_visible, true);
+    cgroup_get_live(&cgrp_dfl_root.cgrp);
+    ctx->root = &cgrp_dfl_root;
+
+    ret = cgroup_do_get_tree(fc) {
+        struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
+        int ret;
+
+        ctx->kfc.root = ctx->root->kf_root;
+        if (fc->fs_type == &cgroup2_fs_type)
+            ctx->kfc.magic = CGROUP2_SUPER_MAGIC;
+        else
+            ctx->kfc.magic = CGROUP_SUPER_MAGIC;
+
+        ret = kernfs_get_tree(fc);
+
+        if (!ret && ctx->ns != &init_cgroup_ns) {
+            struct dentry *nsdentry;
+            struct super_block *sb = fc->root->d_sb;
+            struct cgroup *cgrp;
+
+            cgroup_lock();
+            spin_lock_irq(&css_set_lock);
+
+            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/);
+                --->
+
+            nsdentry = kernfs_node_dentry(cgrp->kn, sb);
+            fc->root = nsdentry;
+        }
+
+        if (!ctx->kfc.new_sb_created)
+            cgroup_put(&ctx->root->cgrp);
+
+        return ret;
+    }
+    if (!ret) {
+        apply_cgroup_root_flags(ctx->flags);
+    }
+    return ret;
+}
+```
+
+### cgroup_add_dfl_cftypes
+
+```c
+cgroup_add_dfl_cftypes(&memory_cgrp_subsys, swap_files);
+cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files);
+```
+
+
+```c
+int cgroup_add_dfl_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    struct cftype *cft;
+
+    for (cft = cfts; cft && cft->name[0] != '\0'; cft++)
+        cft->flags |= __CFTYPE_ONLY_ON_DFL;
+    return cgroup_add_cftypes(ss, cfts);
+}
+
+int cgroup_add_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    int ret;
+
+    if (!cgroup_ssid_enabled(ss->id))
+        return 0;
+
+    if (!cfts || cfts[0].name[0] == '\0')
+        return 0;
+
+    ret = cgroup_init_cftypes(ss, cfts);
+    if (ret)
+        return ret;
+
+    cgroup_lock();
+
+    list_add_tail(&cfts->node, &ss->cfts);
+    ret = cgroup_apply_cftypes(cfts, true);
+    if (ret)
+        cgroup_rm_cftypes_locked(cfts);
+
+    cgroup_unlock();
+    return ret;
+}
+```
+
+#### cgroup_init_cftypes
+
+```c
+int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    struct cftype *cft;
+    int ret = 0;
+
+    for (cft = cfts; cft->name[0] != '\0'; cft++) {
+        struct kernfs_ops *kf_ops;
+
+        if (cft->flags & __CFTYPE_ADDED) {
+            ret = -EBUSY;
+            break;
+        }
+
+        if (cft->seq_start)
+            kf_ops = &cgroup_kf_ops;
+        else
+            kf_ops = &cgroup_kf_single_ops;
+
+        if (cft->max_write_len && cft->max_write_len != PAGE_SIZE) {
+            kf_ops = kmemdup(kf_ops, sizeof(*kf_ops), GFP_KERNEL);
+            if (!kf_ops) {
+                ret = -ENOMEM;
+                break;
+            }
+            kf_ops->atomic_write_len = cft->max_write_len;
+        }
+
+        cft->kf_ops = kf_ops;
+        cft->ss = ss;
+        cft->flags |= __CFTYPE_ADDED;
+    }
+
+    if (ret)
+        cgroup_exit_cftypes(cfts);
+    return ret;
+}
+```
+
+#### cgroup_apply_cftypes
+
+```c
+int cgroup_apply_cftypes(struct cftype *cfts, bool is_add)
+{
+    struct cgroup_subsys *ss = cfts[0].ss;
+    struct cgroup *root = &ss->root->cgrp;
+    struct cgroup_subsys_state *css;
+    int ret = 0;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    /* add/rm files for all cgroups created before */
+    css_for_each_descendant_pre(css, cgroup_css(root, ss)) {
+        struct cgroup *cgrp = css->cgroup;
+
+        if (!(css->flags & CSS_VISIBLE))
+            continue;
+
+        ret = cgroup_addrm_files(css, cgrp, cfts, is_add) {
+            struct cftype *cft, *cft_end = NULL;
+            int ret = 0;
+
+            lockdep_assert_held(&cgroup_mutex);
+
+        restart:
+            for (cft = cfts; cft != cft_end && cft->name[0] != '\0'; cft++) {
+                /* does cft->flags tell us to skip this file on @cgrp? */
+                if ((cft->flags & __CFTYPE_ONLY_ON_DFL) && !cgroup_on_dfl(cgrp))
+                    continue;
+                if ((cft->flags & __CFTYPE_NOT_ON_DFL) && cgroup_on_dfl(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_NOT_ON_ROOT) && !cgroup_parent(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_ONLY_ON_ROOT) && cgroup_parent(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_DEBUG) && !cgroup_debug)
+                    continue;
+                if (is_add) {
+                    ret = cgroup_add_file(css, cgrp, cft);
+                    if (ret) {
+                        pr_warn("%s: failed to add %s, err=%d\n",
+                            __func__, cft->name, ret);
+                        cft_end = cft;
+                        is_add = false;
+                        goto restart;
+                    }
+                } else {
+                    cgroup_rm_file(cgrp, cft);
+                }
+            }
+            return ret;
+        }
+        if (ret)
+            break;
+    }
+
+    if (is_add && !ret)
+        kernfs_activate(root->kn);
+    return ret;
+}
+
+int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
+               struct cftype *cft)
+{
+    char name[CGROUP_FILE_NAME_MAX];
+    struct kernfs_node *kn;
+    struct lock_class_key *key = NULL;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    key = &cft->lockdep_key;
+#endif
+    kn = __kernfs_create_file(cgrp->kn, cgroup_file_name(cgrp, cft, name),
+                  cgroup_file_mode(cft),
+                  current_fsuid(), current_fsgid(),
+                  0, cft->kf_ops, cft,
+                  NULL, key);
+    if (IS_ERR(kn))
+        return PTR_ERR(kn);
+
+    if (cft->file_offset) {
+        struct cgroup_file *cfile = (void *)css + cft->file_offset;
+
+        timer_setup(&cfile->notify_timer, cgroup_file_notify_timer, 0);
+        spin_lock_init(&cfile->lock);
+        cfile->kn = kn;
+    }
+
+    return 0;
+}
+```
+
+### cgroup_kf_syscall_ops
+
+```c
+static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
+    .show_options  = cgroup_show_options,
+    .mkdir         = cgroup_mkdir,
+    .rmdir         = cgroup_rmdir,
+    .show_path     = cgroup_show_path,
+};
+```
+
+### cgroup_kf_ops
+
+```c
+static struct kernfs_ops cgroup_kf_single_ops = {
+    .atomic_write_len = PAGE_SIZE,
+    .open             = cgroup_file_open,
+    .release          = cgroup_file_release,
+    .write            = cgroup_file_write,
+    .poll             = cgroup_file_poll,
+    .seq_show         = cgroup_seqfile_show,
+};
+
+static struct kernfs_ops cgroup_kf_ops = {
+    .atomic_write_len = PAGE_SIZE,
+    .open             = cgroup_file_open,
+    .release          = cgroup_file_release,
+    .write            = cgroup_file_write,
+    .poll             = cgroup_file_poll,
+    .seq_start        = cgroup_seqfile_start,
+    .seq_next         = cgroup_seqfile_next,
+    .seq_stop         = cgroup_seqfile_stop,
+    .seq_show         = cgroup_seqfile_show,
+};
+```
+
+#### cgroup_file_open
+
+```c
+static int cgroup_file_open(struct kernfs_open_file *of)
+{
+    struct cftype *cft = of_cft(of) {
+        return of->kn->priv;
+    }
+    struct cgroup_file_ctx *ctx;
+    int ret;
+
+    ctx = kzalloc_obj(*ctx);
+    if (!ctx)
+        return -ENOMEM;
+
+    ctx->ns = current->nsproxy->cgroup_ns;
+    get_cgroup_ns(ctx->ns);
+    of->priv = ctx;
+
+    if (!cft->open)
+        return 0;
+
+    ret = cft->open(of);
+    if (ret) {
+        put_cgroup_ns(ctx->ns);
+        kfree(ctx);
+    }
+    return ret;
+}
+```
+
+### cpu_files
+
+```c
+struct cgroup_subsys cpu_cgrp_subsys = {
+	.dfl_cftypes        = cpu_files,
+};
+
+static struct cftype cpu_files[] = {
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
+    {
+        .name = "weight",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = cpu_weight_read_u64,
+        .write_u64 = cpu_weight_write_u64,
+    },
+    {
+        .name = "weight.nice",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_s64 = cpu_weight_nice_read_s64,
+        .write_s64 = cpu_weight_nice_write_s64,
+    },
+    {
+        .name = "idle",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_s64 = cpu_idle_read_s64,
+        .write_s64 = cpu_idle_write_s64,
+    },
+#endif
+#ifdef CONFIG_GROUP_SCHED_BANDWIDTH
+    {
+        .name = "max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_max_show,
+        .write = cpu_max_write,
+    },
+    {
+        .name = "max.burst",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = cpu_burst_read_u64,
+        .write_u64 = cpu_burst_write_u64,
+    },
+#endif /* CONFIG_CFS_BANDWIDTH */
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+    {
+        .name = "uclamp.min",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_uclamp_min_show,
+        .write = cpu_uclamp_min_write,
+    },
+    {
+        .name = "uclamp.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = cpu_uclamp_max_show,
+        .write = cpu_uclamp_max_write,
+    },
+#endif /* CONFIG_UCLAMP_TASK_GROUP */
+    { }    /* terminate */
+};
+```
+
+
+### memory_files
+
+```c
+struct cgroup_subsys memory_cgrp_subsys = {
+    .dfl_cftypes        = memory_files,
+};
+
+static struct cftype memory_files[] = {
+    {
+        .name = "current",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = memory_current_read,
+    },
+    {
+        .name = "peak",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .open = peak_open,
+        .release = peak_release,
+        .seq_show = memory_peak_show,
+        .write = memory_peak_write,
+    },
+    {
+        .name = "min",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = memory_min_show,
+        .write = memory_min_write,
+    },
+    {
+        .name = "low",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = memory_low_show,
+        .write = memory_low_write,
+    },
+    {
+        .name = "high",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = memory_high_show,
+        .write = memory_high_write,
+    },
+    {
+        .name = "max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = memory_max_show,
+        .write = memory_max_write,
+    },
+    {
+        .name = "events",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .file_offset = offsetof(struct mem_cgroup, events_file),
+        .seq_show = memory_events_show,
+    },
+    {
+        .name = "events.local",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .file_offset = offsetof(struct mem_cgroup, events_local_file),
+        .seq_show = memory_events_local_show,
+    },
+    {
+        .name = "stat",
+        .seq_show = memory_stat_show,
+    },
+#ifdef CONFIG_NUMA
+    {
+        .name = "numa_stat",
+        .seq_show = memory_numa_stat_show,
+    },
+#endif
+    {
+        .name = "oom.group",
+        .flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
+        .seq_show = memory_oom_group_show,
+        .write = memory_oom_group_write,
+    },
+    {
+        .name = "reclaim",
+        .flags = CFTYPE_NS_DELEGATABLE,
+        .write = memory_reclaim,
+    },
+    { }    /* terminate */
+};
+
+static struct cftype swap_files[] = {
+    {
+        .name = "swap.current",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = swap_current_read,
+    },
+    {
+        .name = "swap.high",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = swap_high_show,
+        .write = swap_high_write,
+    },
+    {
+        .name = "swap.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = swap_max_show,
+        .write = swap_max_write,
+    },
+};
+
+static struct cftype zswap_files[] = {
+    {
+        .name = "zswap.current",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .read_u64 = zswap_current_read,
+    },
+    {
+        .name = "zswap.max",
+        .flags = CFTYPE_NOT_ON_ROOT,
+        .seq_show = zswap_max_show,
+        .write = zswap_max_write,
+    },
+    {
+        .name = "zswap.writeback",
+        .seq_show = zswap_writeback_show,
+        .write = zswap_writeback_write,
+    },
+    { } /* terminate */
+};
+```
+
+#### memory.stat
+
+```c
+int memory_stat_show(struct seq_file *m, void *v)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+    char *buf = kmalloc(SEQ_BUF_SIZE, GFP_KERNEL);
+    struct seq_buf s;
+
+    if (!buf)
+        return -ENOMEM;
+    seq_buf_init(&s, buf, SEQ_BUF_SIZE);
+    memory_stat_format(memcg, &s) {
+        if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+            memcg_stat_format(memcg, s);
+        else
+            memcg1_stat_format(memcg, s);
+        if (seq_buf_has_overflowed(s))
+            pr_warn("%s: Warning, stat buffer overflow, please report\n", __func__);
+    }
+    seq_puts(m, buf);
+    kfree(buf);
+    return 0;
+}
+
+void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
+{
+    int i;
+
+    /* Provide statistics on the state of the memory subsystem as
+     * well as cumulative event counters that show past behavior.
+     *
+     * This list is ordered following a combination of these gradients:
+     * 1) generic big picture -> specifics and details
+     * 2) reflecting userspace activity -> reflecting kernel heuristics
+     *
+     * Current memory state: */
+    mem_cgroup_flush_stats(memcg) {
+        bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats);
+
+        trace_memcg_flush_stats(memcg, atomic_read(&memcg->vmstats->stats_updates),
+            force, needs_flush);
+
+        if (!force && !needs_flush)
+            return;
+
+        if (mem_cgroup_is_root(memcg))
+            WRITE_ONCE(flush_last_time, jiffies_64);
+
+        css_rstat_flush(&memcg->css) {
+            int cpu;
+            bool is_self = css_is_self(css);
+
+            /* Since bpf programs can call this function, prevent access to
+            * uninitialized rstat pointers. */
+            if (!css_uses_rstat(css))
+                return;
+
+            might_sleep();
+            for_each_possible_cpu(cpu) {
+                struct cgroup_subsys_state *pos;
+
+                /* Reacquire for each CPU to avoid disabling IRQs too long */
+                __css_rstat_lock(css, cpu);
+                pos = css_rstat_updated_list(css, cpu);
+                for (; pos; pos = pos->rstat_flush_next) {
+                    if (is_self) {
+                        cgroup_base_stat_flush(pos->cgroup, cpu);
+                        bpf_rstat_flush(pos->cgroup, cgroup_parent(pos->cgroup), cpu);
+                    } else
+                        pos->ss->css_rstat_flush(pos, cpu);
+                }
+                __css_rstat_unlock(css, cpu);
+                if (!cond_resched())
+                    cpu_relax();
+            }
+        }
+    }
+
+    for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
+        u64 size;
+
+#ifdef CONFIG_HUGETLB_PAGE
+        if (unlikely(memory_stats[i].idx == NR_HUGETLB) &&
+            !memcg_accounts_hugetlb())
+            continue;
+#endif
+        size = memcg_page_state_output(memcg, memory_stats[i].idx);
+        seq_buf_printf(s, "%s %llu\n", memory_stats[i].name, size);
+
+        if (unlikely(memory_stats[i].idx == NR_SLAB_UNRECLAIMABLE_B)) {
+            size += memcg_page_state_output(memcg,
+                            NR_SLAB_RECLAIMABLE_B);
+            seq_buf_printf(s, "slab %llu\n", size);
+        }
+    }
+
+    /* Accumulated memory events */
+    seq_buf_printf(s, "pgscan %lu\n",
+               memcg_events(memcg, PGSCAN_KSWAPD) +
+               memcg_events(memcg, PGSCAN_DIRECT) +
+               memcg_events(memcg, PGSCAN_PROACTIVE) +
+               memcg_events(memcg, PGSCAN_KHUGEPAGED));
+    seq_buf_printf(s, "pgsteal %lu\n",
+               memcg_events(memcg, PGSTEAL_KSWAPD) +
+               memcg_events(memcg, PGSTEAL_DIRECT) +
+               memcg_events(memcg, PGSTEAL_PROACTIVE) +
+               memcg_events(memcg, PGSTEAL_KHUGEPAGED));
+
+    for (i = 0; i < ARRAY_SIZE(memcg_vm_event_stat); i++) {
+#ifdef CONFIG_MEMCG_V1
+        if (memcg_vm_event_stat[i] == PGPGIN ||
+            memcg_vm_event_stat[i] == PGPGOUT)
+            continue;
+#endif
+        seq_buf_printf(s, "%s %lu\n",
+                   vm_event_name(memcg_vm_event_stat[i]),
+                   memcg_events(memcg, memcg_vm_event_stat[i]));
+    }
+}
+```
+
+```c
+void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+    struct mem_cgroup *parent = parent_mem_cgroup(memcg);
+    struct memcg_vmstats_percpu *statc;
+    struct aggregate_control ac;
+    int nid;
+
+    flush_nmi_stats(memcg, parent, cpu);
+
+    statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
+
+    ac = (struct aggregate_control) {
+        .aggregate = memcg->vmstats->state,
+        .local = memcg->vmstats->state_local,
+        .pending = memcg->vmstats->state_pending,
+        .ppending = parent ? parent->vmstats->state_pending : NULL,
+        .cstat = statc->state,
+        .cstat_prev = statc->state_prev,
+        .size = MEMCG_VMSTAT_SIZE,
+    };
+    mem_cgroup_stat_aggregate(&ac);
+
+    ac = (struct aggregate_control) {
+        .aggregate = memcg->vmstats->events,
+        .local = memcg->vmstats->events_local,
+        .pending = memcg->vmstats->events_pending,
+        .ppending = parent ? parent->vmstats->events_pending : NULL,
+        .cstat = statc->events,
+        .cstat_prev = statc->events_prev,
+        .size = NR_MEMCG_EVENTS,
+    };
+    mem_cgroup_stat_aggregate(&ac);
+
+    for_each_node_state(nid, N_MEMORY) {
+        struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
+        struct lruvec_stats *lstats = pn->lruvec_stats;
+        struct lruvec_stats *plstats = NULL;
+        struct lruvec_stats_percpu *lstatc;
+
+        if (parent)
+            plstats = parent->nodeinfo[nid]->lruvec_stats;
+
+        lstatc = per_cpu_ptr(pn->lruvec_stats_percpu, cpu);
+
+        ac = (struct aggregate_control) {
+            .aggregate = lstats->state,
+            .local = lstats->state_local,
+            .pending = lstats->state_pending,
+            .ppending = plstats ? plstats->state_pending : NULL,
+            .cstat = lstatc->state,
+            .cstat_prev = lstatc->state_prev,
+            .size = NR_MEMCG_NODE_STAT_ITEMS,
+        };
+        mem_cgroup_stat_aggregate(&ac);
+
+    }
+    WRITE_ONCE(statc->stats_updates, 0);
+    /* We are in a per-cpu loop here, only do the atomic write once */
+    if (atomic_read(&memcg->vmstats->stats_updates))
+        atomic_set(&memcg->vmstats->stats_updates, 0);
+}
+
+mem_cgroup_stat_aggregate(struct aggregate_control *ac)
+{
+    int i;
+    long delta, delta_cpu, v;
+
+    for (i = 0; i < ac->size; i++) {
+        /* Collect the aggregated propagation counts of groups
+         * below us. We're in a per-cpu loop here and this is
+         * a global counter, so the first cycle will get them. */
+        delta = ac->pending[i];
+        if (delta)
+            ac->pending[i] = 0;
+
+        /* Add CPU changes on this level since the last flush */
+        delta_cpu = 0;
+        v = READ_ONCE(ac->cstat[i]);
+        if (v != ac->cstat_prev[i]) {
+            delta_cpu = v - ac->cstat_prev[i];
+            delta += delta_cpu;
+            ac->cstat_prev[i] = v;
+        }
+
+        /* Aggregate counts on this level and propagate upwards */
+        if (delta_cpu)
+            ac->local[i] += delta_cpu;
+
+        if (delta) {
+            ac->aggregate[i] += delta;
+            if (ac->ppending)
+                ac->ppending[i] += delta;
+        }
+    }
+}
 ```
 
 ## /sys/kernel/slab/
