@@ -404,6 +404,8 @@ int __init cgroup_init(void)
         css_set_hash(init_css_set.subsys)
     );
 
+    cgroup_bpf_lifetime_notifier_init();
+
     cgroup_setup_root(&cgrp_dfl_root, 0);
         --->
 
@@ -469,6 +471,108 @@ int __init cgroup_init(void)
 }
 ```
 
+#### cgroup_setup_root
+
+```c
+int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
+    LIST_HEAD(tmp_links);
+    struct cgroup *root_cgrp = &root->cgrp;
+    struct kernfs_syscall_ops *kf_sops;
+    struct css_set *cset;
+    int i, ret;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    ret = percpu_ref_init(&root_cgrp->self.refcnt, css_release,
+                  0, GFP_KERNEL);
+    if (ret)
+        goto out;
+
+    /* We're accessing css_set_count without locking css_set_lock here,
+     * but that's OK - it can only be increased by someone holding
+     * cgroup_lock, and that's us.  Later rebinding may disable
+     * controllers on the default hierarchy and thus create new csets,
+     * which can't be more than the existing ones.  Allocate 2x. */
+    ret = allocate_cgrp_cset_links(2 * css_set_count, &tmp_links);
+    if (ret)
+        goto cancel_ref;
+
+    ret = cgroup_init_root_id(root);
+    if (ret)
+        goto cancel_ref;
+
+    kf_sops = root == &cgrp_dfl_root ?
+        &cgroup_kf_syscall_ops : &cgroup1_kf_syscall_ops;
+
+    root->kf_root = kernfs_create_root(kf_sops,
+                       KERNFS_ROOT_CREATE_DEACTIVATED |
+                       KERNFS_ROOT_SUPPORT_EXPORTOP |
+                       KERNFS_ROOT_SUPPORT_USER_XATTR |
+                       KERNFS_ROOT_INVARIANT_PARENT,
+                       root_cgrp);
+    if (IS_ERR(root->kf_root)) {
+        ret = PTR_ERR(root->kf_root);
+        goto exit_root_id;
+    }
+    root_cgrp->kn = kernfs_root_to_node(root->kf_root);
+    WARN_ON_ONCE(cgroup_ino(root_cgrp) != 1);
+    root_cgrp->ancestors[0] = root_cgrp;
+
+    ret = css_populate_dir(&root_cgrp->self);
+    if (ret)
+        goto destroy_root;
+
+    ret = css_rstat_init(&root_cgrp->self);
+    if (ret)
+        goto destroy_root;
+
+    ret = rebind_subsystems(root, ss_mask);
+    if (ret)
+        goto exit_stats;
+
+    ret = blocking_notifier_call_chain(&cgroup_lifetime_notifier,
+                       CGROUP_LIFETIME_ONLINE, root_cgrp);
+    WARN_ON_ONCE(notifier_to_errno(ret));
+
+    trace_cgroup_setup_root(root);
+
+    /* There must be no failure case after here, since rebinding takes
+     * care of subsystems' refcounts, which are explicitly dropped in
+     * the failure exit path. */
+    list_add_rcu(&root->root_list, &cgroup_roots);
+    cgroup_root_count++;
+
+    /* Link the root cgroup in this hierarchy into all the css_set
+     * objects. */
+    spin_lock_irq(&css_set_lock);
+    hash_for_each(css_set_table, i, cset, hlist) {
+        link_css_set(&tmp_links, cset, root_cgrp);
+        if (css_set_populated(cset))
+            css_update_populated(&root_cgrp->self, true);
+    }
+    spin_unlock_irq(&css_set_lock);
+
+    BUG_ON(!list_empty(&root_cgrp->self.children));
+    BUG_ON(atomic_read(&root->nr_cgrps) != 1);
+
+    ret = 0;
+    goto out;
+
+exit_stats:
+    css_rstat_exit(&root_cgrp->self);
+destroy_root:
+    kernfs_destroy_root(root->kf_root);
+    root->kf_root = NULL;
+exit_root_id:
+    cgroup_exit_root_id(root);
+cancel_ref:
+    percpu_ref_exit(&root_cgrp->self.refcnt);
+out:
+    free_cgrp_cset_links(&tmp_links);
+    return ret;
+}
+```
+
 #### cgroup_init_subsys
 
 ```c
@@ -503,145 +607,6 @@ void __init cgroup_init_subsys(struct cgroup_subsys *ss, bool early)
 
     online_css(css);
 }
-```
-
-#### cgroup_setup_root
-
-```c
-int cgroup_setup_root(struct cgroup_root *root, u16 ss_mask) {
-    LIST_HEAD(tmp_links);
-    struct cgroup *root_cgrp = &root->cgrp;
-    struct kernfs_syscall_ops *kf_sops;
-    struct css_set *cset;
-    int i, ret;
-
-    lockdep_assert_held(&cgroup_mutex);
-
-    ret = percpu_ref_init(&root_cgrp->self.refcnt, css_release,
-                0, GFP_KERNEL);
-    ret = allocate_cgrp_cset_links(2 * css_set_count, &tmp_links);
-    ret = cgroup_init_root_id(root);
-
-    kf_sops = (root == &cgrp_dfl_root)
-        ? &cgroup_kf_syscall_ops
-        : &cgroup1_kf_syscall_ops;
-
-    root->kf_root = kernfs_create_root(
-        kf_sops,
-        KERNFS_ROOT_CREATE_DEACTIVATED
-            | KERNFS_ROOT_SUPPORT_EXPORTOP
-            | KERNFS_ROOT_SUPPORT_USER_XATTR,
-        root_cgrp);
-    root_cgrp->kn = kernfs_root_to_node(root->kf_root);
-    root_cgrp->ancestors[0] = root_cgrp;
-
-    ret = css_populate_dir(&root_cgrp->self);
-
-    ret = cgroup_rstat_init(root_cgrp);
-    ret = rebind_subsystems(root, ss_mask);
-    ret = cgroup_bpf_inherit(root_cgrp);
-    list_add(&root->root_list, &cgroup_roots);
-    cgroup_root_count++;
-
-    spin_lock_irq(&css_set_lock);
-    hash_for_each(css_set_table, i, cset, hlist) {
-        link_css_set(&tmp_links, cset, root_cgrp);
-        if (css_set_populated(cset))
-            cgroup_update_populated(root_cgrp, true);
-    }
-    spin_unlock_irq(&css_set_lock);
-
-    ret = 0;
-}
-```
-
-#### cgroup_base_files
-
-```c
-
-/* cgroup core interface files for the default hierarchy */
-static struct cftype cgroup_base_files[] = {
-    {
-        .name        = "cgroup.type",
-        .flags       = CFTYPE_NOT_ON_ROOT,
-        .seq_show    = cgroup_type_show,
-        .write       = cgroup_type_write,
-    },
-    {
-        .name        = "cgroup.procs",
-        .flags       = CFTYPE_NS_DELEGATABLE,
-        .file_offset = offsetof(struct cgroup, procs_file),
-        .release     = cgroup_procs_release,
-        .seq_start   = cgroup_procs_start,
-        .seq_next    = cgroup_procs_next,
-        .seq_show    = cgroup_procs_show,
-        .write       = cgroup_procs_write,
-    },
-    {
-        .name        = "cgroup.threads",
-        .flags       = CFTYPE_NS_DELEGATABLE,
-        .release     = cgroup_procs_release,
-        .seq_start   = cgroup_threads_start,
-        .seq_next    = cgroup_procs_next,
-        .seq_show    = cgroup_procs_show,
-        .write       = cgroup_threads_write,
-    },
-    {
-        .name        = "cgroup.controllers",
-        .seq_show    = cgroup_controllers_show,
-    },
-    {
-        .name        = "cgroup.subtree_control",
-        .flags       = CFTYPE_NS_DELEGATABLE,
-        .seq_show    = cgroup_subtree_control_show,
-        .write       = cgroup_subtree_control_write,
-    },
-    {
-        .name        = "cgroup.events",
-        .flags       = CFTYPE_NOT_ON_ROOT,
-        .file_offset = offsetof(struct cgroup, events_file),
-        .seq_show    = cgroup_events_show,
-    },
-    {
-        .name        = "cgroup.max.descendants",
-        .seq_show    = cgroup_max_descendants_show,
-        .write       = cgroup_max_descendants_write,
-    },
-    {
-        .name        = "cgroup.max.depth",
-        .seq_show    = cgroup_max_depth_show,
-        .write       = cgroup_max_depth_write,
-    },
-    {
-        .name        = "cgroup.stat",
-        .seq_show    = cgroup_stat_show,
-    },
-    {
-        .name        = "cgroup.stat.local",
-        .flags       = CFTYPE_NOT_ON_ROOT,
-        .seq_show    = cgroup_core_local_stat_show,
-    },
-    {
-        .name        = "cgroup.freeze",
-        .flags       = CFTYPE_NOT_ON_ROOT,
-        .seq_show    = cgroup_freeze_show,
-        .write       = cgroup_freeze_write,
-    },
-    {
-        .name        = "cgroup.kill",
-        .flags       = CFTYPE_NOT_ON_ROOT,
-        .write       = cgroup_kill_write,
-    },
-    {
-        .name        = "cpu.stat",
-        .seq_show    = cpu_stat_show,
-    },
-    {
-        .name        = "cpu.stat.local",
-        .seq_show    = cpu_local_stat_show,
-    },
-    { }    /* terminate */
-};
 ```
 
 ### cgroup_mkdir

@@ -13499,10 +13499,54 @@ struct kset *kset_create_and_add(const char *name,
     struct kset *kset;
     int error;
 
-    kset = kset_create(name, uevent_ops, parent_kobj);
+    kset = kset_create(name, uevent_ops, parent_kobj) {
+        struct kset *kset;
+        int retval;
+
+        kset = kzalloc_obj(*kset);
+        if (!kset)
+            return NULL;
+        retval = kobject_set_name(&kset->kobj, "%s", name);
+        if (retval) {
+            kfree(kset);
+            return NULL;
+        }
+        kset->uevent_ops = uevent_ops;
+        kset->kobj.parent = parent_kobj;
+
+        /* The kobject of this kset will have a type of kset_ktype and belong to
+        * no kset itself.  That way we can properly free it when it is
+        * finished being used. */
+        kset->kobj.ktype = &kset_ktype;
+        kset->kobj.kset = NULL;
+
+        return kset;
+    }
     if (!kset)
         return NULL;
-    error = kset_register(kset);
+
+    error = kset_register(kset) {
+        int err;
+
+        if (!k)
+            return -EINVAL;
+
+        if (!k->kobj.ktype) {
+            pr_err("must have a ktype to be initialized properly!\n");
+            return -EINVAL;
+        }
+
+        kset_init(k);
+        err = kobject_add_internal(&k->kobj);
+        if (err) {
+            kfree_const(k->kobj.name);
+            /* Set it to NULL to avoid accessing bad pointer in callers. */
+            k->kobj.name = NULL;
+            return err;
+        }
+        kobject_uevent(&k->kobj, KOBJ_ADD);
+        return 0;
+    }
     if (error) {
         kfree(kset);
         return NULL;
@@ -13514,14 +13558,13 @@ struct kset *kset_create_and_add(const char *name,
 ### kobject_init_and_add
 
 ```c
-
 int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
-			 struct kobject *parent, const char *fmt, ...)
+             struct kobject *parent, const char *fmt, ...)
 {
-	va_list args;
-	int retval;
+    va_list args;
+    int retval;
 
-	kobject_init(kobj, ktype) {
+    kobject_init(kobj, ktype) {
         kobject_init_internal(kobj) {
             if (!kobj)
                 return;
@@ -13533,14 +13576,14 @@ int kobject_init_and_add(struct kobject *kobj, const struct kobj_type *ktype,
             kobj->state_initialized = 1;
         }
 
-	    kobj->ktype = ktype;
+        kobj->ktype = ktype;
     }
 
-	va_start(args, fmt);
-	retval = kobject_add_varg(kobj, parent, fmt, args);
-	va_end(args);
+    va_start(args, fmt);
+    retval = kobject_add_varg(kobj, parent, fmt, args);
+    va_end(args);
 
-	return retval;
+    return retval;
 }
 ```
 
@@ -13774,6 +13817,45 @@ void kobject_del(struct kobject *kobj)
 }
 ```
 
+### kobj_sysfs_ops
+
+```c
+static const struct kobj_type kset_ktype = {
+    .sysfs_ops      = &kobj_sysfs_ops,
+    .release        = kset_release,
+    .get_ownership  = kset_get_ownership,
+};
+
+const struct sysfs_ops kobj_sysfs_ops = {
+    .show           = kobj_attr_show,
+    .store          = kobj_attr_store,
+};
+
+static ssize_t kobj_attr_show(struct kobject *kobj, struct attribute *attr,
+                  char *buf)
+{
+    struct kobj_attribute *kattr;
+    ssize_t ret = -EIO;
+
+    kattr = container_of(attr, struct kobj_attribute, attr);
+    if (kattr->show)
+        ret = kattr->show(kobj, kattr, buf);
+    return ret;
+}
+
+static ssize_t kobj_attr_store(struct kobject *kobj, struct attribute *attr,
+                   const char *buf, size_t count)
+{
+    struct kobj_attribute *kattr;
+    ssize_t ret = -EIO;
+
+    kattr = container_of(attr, struct kobj_attribute, attr);
+    if (kattr->store)
+        ret = kattr->store(kobj, kattr, buf, count);
+    return ret;
+}
+```
+
 ## sysfs
 
 ![](../images/kernel/file-fs-sysfs.drawio.svg)
@@ -13786,6 +13868,139 @@ void kobject_del(struct kobject *kobj)
 | 4 | kobject/driver | `my_show(kobj, attr, buf)` fills buffer |
 | 5 | return | buffer copied back to userspace |
 
+```c
+cat /sys/kernel/slab/dentry/order
+│
+│  ─────────────────────────── SETUP ─────────────────────────────────────────
+│
+│  slab_sysfs_init()
+│    ├── slab_kset = kset_create_and_add("slab", NULL, kernel_kobj)
+│    │                └── /sys/kernel/slab/  directory (kset is a kobject+list)
+│    │-list_for_each_entry(s, &slab_caches, list)
+│    └── sysfs_slab_add(s)
+│        ├── s is unmergeable (KMEM_CACHE_USERCOPY → usersize!=0)
+│        │   └── uses cache name "kmalloc-8" directly, no symlink
+│        ├── s->kobj.kset = slab_kset
+│        └── kobject_init_and_add(&s->kobj, &slab_ktype, NULL, "kmalloc-8")
+│            ├── kobject_add_internal() → create_dir(kobj)
+│            │   ├── sysfs_create_dir_ns(kobj, ...)       ← creates kernfs dir kn
+│            │   │   └── kn->priv = &s->kobj                (parent dir owns kobj)
+│            │   └── sysfs_create_groups(kobj, slab_ktype.default_groups)
+│            │       └── for each attr in slab_attrs[] incl. order_attr:
+│            │           sysfs_add_file_mode_ns(kobj->sd, &order_attr.attr, 0400, ...)
+│            │           ├── kernfs_ops *ops =  &sysfs_file_kfops_ro
+│            │           ├── sysfs_ops = kobj->ktype->sysfs_ops  ← &slab_sysfs_ops
+│            │           └── __kernfs_create_file(parent, "order", 0400, ops, attr)
+│            │               ├── kn->attr.ops = &sysfs_file_kfops_ro
+│            │               │                  .seq_show = sysfs_kf_seq_show
+│            │               └── kn->priv     = &order_attr.attr  ← struct attribute*
+│
+│  ─────────────────────────── open(2) ───────────────────────────────────────
+│
+├── open(2)
+│   └── do_sys_openat2
+│       └── do_filp_open
+│           └── path_openat
+│               └── link_path_walk              ← walk each path component
+│                   │
+│                   ├── "kernel"               lookup in /sys/
+│                   │   └── kernfs_dir_iops.lookup = kernfs_iop_lookup
+│                   │       ├── kernfs_find_ns(parent, "kernel", ns)
+│                   │       │   └── rb-tree → kn for kernel_kobj dir
+│                   │       └── kernfs_get_inode / kernfs_init_inode
+│                   │           ├── inode->i_op  = &kernfs_dir_iops
+│                   │           └── inode->i_fop = &kernfs_dir_fops
+│                   │
+│                   ├── "slab"                 lookup in /sys/kernel/
+│                   │   └── (same kernfs_iop_lookup path)
+│                   │       └── kn for slab_kset->kobj dir
+│                   │
+│                   ├── "kmalloc-8"               lookup in /sys/kernel/slab/
+│                   │   └── kernfs_iop_lookup
+│                   │       └── kn for kmalloc-8_cache->kobj dir
+│                   │           kn->priv = &kmalloc-8_cache->kobj  ← kobject ptr
+│                   │
+│                   └── "order"                lookup in /sys/kernel/slab/kmalloc-8/
+│                       └── kernfs_iop_lookup
+│                           ├── kernfs_find_ns(parent, "order", ns)
+│                           │   └── rb-tree → kn (KERNFS_FILE)
+│                           │       kn->attr.ops = &sysfs_file_kfops_ro
+│                           │       kn->priv     = &order_attr.attr
+│                           ├── kernfs_get_inode(sb, kn)
+│                           │   └── kernfs_init_inode(kn, inode)
+│                           │       ├── inode->i_private = kn
+│                           │       ├── inode->i_op  = &kernfs_iops  ← FILE: no lookup
+│                           │       └── inode->i_fop = &kernfs_file_fops
+│                           └── d_splice_alias(inode, dentry)
+│
+│   └── open_last_lookups → do_open → vfs_open
+│       └── do_dentry_open
+│           └── f->f_op = &kernfs_file_fops
+│               └── kernfs_file_fops.open = kernfs_fop_open
+│                   ├── kn  = inode->i_private        ← kernfs_node for "order"
+│                   ├── ops = kernfs_ops(kn)          ← &sysfs_file_kfops_ro
+│                   │         .seq_show = sysfs_kf_seq_show
+│                   │         .open     = NULL  ← no custom open needed
+│                   ├── of  = kzalloc(kernfs_open_file)
+│                   │         of->kn   = kn
+│                   │         of->file = file
+│                   ├── seq_open(file, &kernfs_seq_ops)   ← ops->seq_show != NULL
+│                   │   └── seq_file->op      = &kernfs_seq_ops
+│                   │       seq_file->private = of
+│                   ├── of->seq_file = file->private_data
+│                   └── ops->open == NULL → skip          ← no slab-layer open cb
+│
+│  ─────────────────────────── read(2) ───────────────────────────────────────
+│
+└── read(2)
+    └── ksys_read
+        └── vfs_read
+            └── kernfs_file_fops.read_iter = kernfs_fop_read_iter
+                ├── kn->flags & KERNFS_HAS_SEQ_SHOW?  YES
+                └── seq_read_iter(iocb, iter)        ← generic seq_file engine
+                    │
+                    ├── kernfs_seq_ops.start = kernfs_seq_start
+                    │   ├── mutex_lock(&of->mutex)
+                    │   └── kernfs_get_active_of(of) ← inc kn active refcnt
+                    │
+                    ├── kernfs_seq_ops.show = kernfs_seq_show
+                    │   └── of->kn->attr.ops->seq_show(sf, v)
+                    │       └── sysfs_file_kfops_ro.seq_show
+                    │           = sysfs_kf_seq_show(sf, v)
+                    │               ├── kobj = sysfs_file_kobj(of->kn)
+                    │               │   └── rcu: kn->__parent->priv
+                    │               │       └── &dentry_cache->kobj
+                    │               │           (embedded in struct kmem_cache)
+                    │               ├── ops = sysfs_file_ops(of->kn)
+                    │               │   └── kobj->ktype->sysfs_ops
+                    │               │       └── slab_ktype.sysfs_ops
+                    │               │           = &slab_sysfs_ops
+                    │               └── ops->show(kobj, kn->priv, buf)
+                    │                   └── slab_sysfs_ops.show
+                    │                       = slab_attr_show(kobj, &order_attr.attr, buf)
+                    │
+                    │                           ├── attribute = to_slab_attr(attr)
+                    │                           │   └── container_of(attr, slab_attribute, attr)
+                    │                           │       → &order_attr
+                    │                           ├── s = to_slab(kobj)
+                    │                           │   └── container_of(kobj, kmem_cache, kobj)
+                    │                           │       → dentry_cache
+                    │                           └── attribute->show(s, buf)
+                    │                               └── order_show(s, buf)
+                    │                                   └── sysfs_emit(buf, "%u\n",
+                    │                                           oo_order(s->oo))
+                    │
+                    │                                       └── oo_order(s->oo)
+                    │                                           └── s->oo.x >> OO_SHIFT
+                    │                                               └── ← VALUE (page order)
+                    │
+                    ├── kernfs_seq_ops.next = kernfs_seq_next
+                    │   └── return NULL  (single-item seq)
+                    │
+                    └── kernfs_seq_ops.stop = kernfs_seq_stop
+                        ├── kernfs_put_active_of(of)   ← dec active refcnt
+                        └── mutex_unlock(&of->mutex)
+```
 ### sysfs_init
 
 ```c
@@ -14127,104 +14342,6 @@ int sysfs_create_file_ns(struct kobject *kobj, const struct attribute *attr,
     kobject_get_ownership(kobj, &uid, &gid);
     return sysfs_add_file_mode_ns(kobj->sd, attr, attr->mode, uid, gid, ns);
 }
-
-int sysfs_add_file_mode_ns(struct kernfs_node *parent,
-        const struct attribute *attr, umode_t mode, kuid_t uid,
-        kgid_t gid, const void *ns)
-{
-    struct kobject *kobj = parent->priv;
-    const struct sysfs_ops *sysfs_ops = kobj->ktype->sysfs_ops;
-    struct lock_class_key *key = NULL;
-    const struct kernfs_ops *ops = NULL;
-    struct kernfs_node *kn;
-
-    /* every kobject with an attribute needs a ktype assigned */
-    if (WARN(!sysfs_ops, KERN_ERR
-            "missing sysfs attribute operations for kobject: %s\n",
-            kobject_name(kobj)))
-        return -EINVAL;
-
-    if (mode & SYSFS_PREALLOC) {
-        if (sysfs_ops->show && sysfs_ops->store)
-            ops = &sysfs_prealloc_kfops_rw;
-        else if (sysfs_ops->show)
-            ops = &sysfs_prealloc_kfops_ro;
-        else if (sysfs_ops->store)
-            ops = &sysfs_prealloc_kfops_wo;
-    } else {
-        if (sysfs_ops->show && sysfs_ops->store)
-            ops = &sysfs_file_kfops_rw;
-        else if (sysfs_ops->show)
-            ops = &sysfs_file_kfops_ro;
-        else if (sysfs_ops->store)
-            ops = &sysfs_file_kfops_wo;
-    }
-
-    if (!ops)
-        ops = &sysfs_file_kfops_empty;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-    if (!attr->ignore_lockdep)
-        key = attr->key ?: (struct lock_class_key *)&attr->skey;
-#endif
-
-    kn = __kernfs_create_file(parent, attr->name, mode & 0777, uid, gid,
-                  PAGE_SIZE, ops, (void *)attr, ns, key);
-    if (IS_ERR(kn)) {
-        if (PTR_ERR(kn) == -EEXIST)
-            sysfs_warn_dup(parent, attr->name);
-        return PTR_ERR(kn);
-    }
-    return 0;
-}
-
-struct kernfs_node *__kernfs_create_file(struct kernfs_node *parent,
-                     const char *name,
-                     umode_t mode, kuid_t uid, kgid_t gid,
-                     loff_t size,
-                     const struct kernfs_ops *ops,
-                     void *priv, const void *ns,
-                     struct lock_class_key *key)
-{
-    struct kernfs_node *kn;
-    unsigned flags;
-    int rc;
-
-    flags = KERNFS_FILE;
-
-    kn = kernfs_new_node(parent, name, (mode & S_IALLUGO) | S_IFREG, uid, gid, flags);
-    if (!kn)
-        return ERR_PTR(-ENOMEM);
-
-    kn->attr.ops = ops;
-    kn->attr.size = size;
-    kn->ns = ns;
-    kn->priv = priv;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-    if (key) {
-        lockdep_init_map(&kn->dep_map, "kn->active", key, 0);
-        kn->flags |= KERNFS_LOCKDEP;
-    }
-#endif
-
-    /* kn->attr.ops is accessible only while holding active ref.  We
-     * need to know whether some ops are implemented outside active
-     * ref.  Cache their existence in flags. */
-    if (ops->seq_show)
-        kn->flags |= KERNFS_HAS_SEQ_SHOW;
-    if (ops->mmap)
-        kn->flags |= KERNFS_HAS_MMAP;
-    if (ops->release)
-        kn->flags |= KERNFS_HAS_RELEASE;
-
-    rc = kernfs_add_one(kn);
-    if (rc) {
-        kernfs_put(kn);
-        return ERR_PTR(rc);
-    }
-    return kn;
-}
 ```
 
 ### sysfs_add_file_mode_ns
@@ -14283,41 +14400,6 @@ int sysfs_add_file_mode_ns(struct kernfs_node *parent,
     }
     return 0;
 }
-
-static const struct kernfs_ops sysfs_prealloc_kfops_rw = {
-    .read           = sysfs_kf_read() {
-        const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-        struct kobject *kobj = sysfs_file_kobj(of->kn) {
-            return rcu_dereference(kn->__parent)->priv;
-        }
-        ssize_t len;
-
-        /* If buf != of->prealloc_buf, we don't know how
-        * large it is, so cannot safely pass it to ->show */
-        if (WARN_ON_ONCE(buf != of->prealloc_buf))
-            return 0;
-        len = ops->show(kobj, of->kn->priv, buf);
-        if (len < 0)
-            return len;
-        if (pos) {
-            if (len <= pos)
-                return 0;
-            len -= pos;
-            memmove(buf, buf + pos, len);
-        }
-        return min_t(ssize_t, count, len);
-    },
-    .write          = sysfs_kf_write() {
-        const struct sysfs_ops *ops = sysfs_file_ops(of->kn);
-        struct kobject *kobj = sysfs_file_kobj(of->kn);
-
-        if (!count)
-            return 0;
-
-        return ops->store(kobj, of->kn->priv, buf, count);
-    },
-    .prealloc       = true,
-};
 ```
 
 ### sysfs_add_bin_file_mode_ns
@@ -15766,16 +15848,16 @@ static const struct proc_ops proc_single_ops = {
 ══════════════════════════════════════════════════════════════════════════
 
   proc_tgid_base_inode_operations.lookup = proc_tgid_base_lookup
-                │                                          [base.c:3416]
+                │
                 ▼
   proc_pident_lookup(dir, dentry, tgid_base_stuff, end)
-                │                                          [base.c:2683]
+                │
                 │   linear scan of tgid_base_stuff[]
                 │   finds entry: ONE("cgroup", S_IRUGO, proc_cgroup_show)
-                │                                          [base.c:3346]
+                │
                 ▼
   proc_pident_instantiate(dentry, task, &pid_entry)
-                │                                          [base.c:2660]
+                │
                 │   inode->i_fop = &proc_single_file_operations
                 │   PROC_I(inode)->op.proc_show = proc_cgroup_show  ← stored here
                 ▼
@@ -15790,14 +15872,14 @@ static const struct proc_ops proc_single_ops = {
       .read    = seq_read,
       .llseek  = seq_lseek,
       .release = single_release,
-  }                                                        [base.c:804]
+  }
                 │
                 ▼ open()
-  proc_single_open(inode, filp)                            [base.c:799]
+  proc_single_open(inode, filp)
                 │
                 ▼
   single_open(filp, proc_single_show, inode)
-                │                                         [seq_file.c:573]
+                │
                 │   allocates seq_operations {
                 │       .start = single_start,
                 │       .next  = single_next,
@@ -15812,10 +15894,10 @@ static const struct proc_ops proc_single_ops = {
   LAYER 3 · seq_file engine  (read)
 ══════════════════════════════════════════════════════════════════════════
 
-  read() → seq_read(file, buf, size, ppos)                [seq_file.c:152]
+  read() → seq_read(file, buf, size, ppos)
                 │
                 ▼
-  seq_read_iter(kiocb, iter)                              [seq_file.c:172]
+  seq_read_iter(kiocb, iter)
                 │
                 │  p = m->op->start(m, &index)   ← single_start (returns 1)
                 │  err = m->op->show(m, p)        ← calls proc_single_show
@@ -15826,7 +15908,7 @@ static const struct proc_ops proc_single_ops = {
   LAYER 4 · proc_single_show  (bridge: seq_file → proc_show)
 ══════════════════════════════════════════════════════════════════════════
 
-  proc_single_show(seq_file *m, void *v)                  [base.c:781]
+  proc_single_show(seq_file *m, void *v)
                 │
                 │  inode = m->private             ← set by single_open
                 │  ns    = proc_pid_ns(inode->i_sb)
@@ -15835,14 +15917,14 @@ static const struct proc_ops proc_single_ops = {
                 │
                 ▼
   PROC_I(inode)->op.proc_show(m, ns, pid, task)   ← function pointer dispatch
-                │                                          [base.c:793]
+                │
                 │
 ══════════════════════════════════════════════════════════════════════════
   LAYER 5 · domain logic
 ══════════════════════════════════════════════════════════════════════════
                 │
                 ▼
-  proc_cgroup_show(m, ns, pid, tsk)             [cgroup.c:6621]
+  proc_cgroup_show(m, ns, pid, tsk)
                 │
                 │  for_each_root(root):
                 │      cgrp = task_cgroup_from_root(tsk, root)
@@ -17601,10 +17683,10 @@ cat /proc/1234/net/tcp
 │                   │
 │                   ├── "1234"              lookup in /proc root
 │                   │   └── proc_root_inode_operations.lookup
-│                   │       └── proc_root_lookup                [root.c:415]
-│                   │           └── proc_pid_lookup             [base.c:3474]
+│                   │       └── proc_root_lookup
+│                   │           └── proc_pid_lookup
 │                   │               ├── find_task_by_pid_ns(1234, ns)
-│                   │               └── proc_pid_instantiate    [base.c:3454]
+│                   │               └── proc_pid_instantiate
 │                   │                   ├── proc_pid_make_base_inode
 │                   │                   ├── inode->i_op  = proc_tgid_base_inode_operations
 │                   │                   ├── inode->i_fop = proc_tgid_base_operations
@@ -17612,11 +17694,11 @@ cat /proc/1234/net/tcp
 │                   │
 │                   ├── "net"               lookup in /proc/1234/
 │                   │   └── proc_tgid_base_inode_operations.lookup
-│                   │       └── proc_tgid_base_lookup           [base.c:3416]
-│                   │           └── proc_pident_lookup(dir, dentry, tgid_base_stuff, end)  [base.c:2683]
+│                   │       └── proc_tgid_base_lookup
+│                   │           └── proc_pident_lookup(dir, dentry, tgid_base_stuff, end)
 │                   │               ├── linear scan tgid_base_stuff[]
 │                   │               │   └── matches DIR("net", proc_net_inode_operations, proc_net_operations)
-│                   │               └── proc_pident_instantiate [base.c:2660]
+│                   │               └── proc_pident_instantiate
 │                   │                   ├── proc_pid_make_inode
 │                   │                   ├── inode->i_op  = proc_net_inode_operations   ← .lookup=proc_tgid_net_lookup
 │                   │                   ├── inode->i_fop = proc_net_operations
@@ -17624,12 +17706,12 @@ cat /proc/1234/net/tcp
 │                   │
 │                   └── "tcp"               lookup in /proc/1234/net/
 │                       └── proc_net_inode_operations.lookup
-│                           └── proc_tgid_net_lookup            [proc_net.c:296]
+│                           └── proc_tgid_net_lookup
 │                               ├── get_proc_task_net(dir)
 │                               │   └── task->nsproxy->net_ns   ← resolves net namespace of pid 1234
-│                               └── proc_lookup_de(dir, dentry, net->proc_net)  [generic.c:246]
+│                               └── proc_lookup_de(dir, dentry, net->proc_net)
 │                                   ├── pde_subdir_find(net->proc_net, "tcp", 3)  ← RB-tree search
-│                                   ├── proc_get_inode(sb, de)  [inode.c:628]
+│                                   ├── proc_get_inode(sb, de)
 │                                   │   ├── new_inode(sb)
 │                                   │   ├── PROC_I(inode)->pde = de   ← inode ↔ PDE bound
 │                                   │   └── inode->i_fop = &proc_reg_file_ops
@@ -17638,9 +17720,9 @@ cat /proc/1234/net/tcp
 │                                           ← dentry NEVER cached; re-looked-up on every open
 │
 │   └── vfs_open → proc_reg_file_ops.open
-│       └── proc_reg_open                   [inode.c:469]
+│       └── proc_reg_open
 │           └── pde->proc_ops->proc_open    ← proc_net_seq_ops.proc_open
-│               └── seq_open_net            [proc_net.c:40]
+│               └── seq_open_net
 │                   ├── get_proc_net(inode)
 │                   │   └── pde->parent->data   ← parent is net->proc_net, .data IS struct net *
 │                   └── __seq_open_private(file, &tcp4_seq_ops, sizeof(tcp_iter_state))
@@ -17649,17 +17731,17 @@ cat /proc/1234/net/tcp
 └── read(2)
     └── ksys_read
         └── vfs_read
-            └── proc_reg_file_ops.proc_reg_read               [inode.c:312]
+            └── proc_reg_file_ops.proc_reg_read
                 └── pde_read
                     └── pde->proc_ops->proc_read  ← proc_net_seq_ops.proc_read = seq_read
                         └── seq_read
                             └── seq_read_iter
-                                ├── tcp4_seq_ops.start = tcp_seq_start    [tcp_ipv4.c:3297]
+                                ├── tcp4_seq_ops.start = tcp_seq_start
                                 │   └── iterates TCP hash table for the net namespace
-                                ├── tcp4_seq_ops.show  = tcp4_seq_show    [tcp_ipv4.c:3296]
+                                ├── tcp4_seq_ops.show  = tcp4_seq_show
                                 │   └── formats one socket entry into seq_file buffer
-                                ├── tcp4_seq_ops.next  = tcp_seq_next     [tcp_ipv4.c:3298]
-                                └── tcp4_seq_ops.stop  = tcp_seq_stop     [tcp_ipv4.c:3299]
+                                ├── tcp4_seq_ops.next  = tcp_seq_next
+                                └── tcp4_seq_ops.stop  = tcp_seq_stop
 ```
 
 ### xxx_ops
@@ -18102,6 +18184,1397 @@ Eoverflow:
     m->count = 0;
     m->buf = seq_buf_alloc(m->size <<= 1);
     return !m->buf ? -ENOMEM : -EAGAIN;
+}
+```
+
+## cgroupfs
+
+![](../images/kernel/file-fs-cgroupfs.drawio.svg)
+
+```sh
+start_kernel()
+└─ cgroup_init_early()              # init cgrp_dfl_root struct + early subsystems
+└─ cgroup_init()
+    ├─ cgroup_setup_root()          # build kernfs tree in memory
+    │    ├─ kernfs_create_root()    # create root kernfs node
+    │    ├─ css_populate_dir()      # add cgroup.procs, cgroup.controllers, etc.
+    │    └─ rebind_subsystems()     # attach controllers
+    ├─ sysfs_create_mount_point()   # mkdir /sys/fs/cgroup in sysfs
+    └─ register_filesystem()        # register "cgroup2" type
+
+# Later, at userspace init (systemd):
+mount -t cgroup2 none /sys/fs/cgroup
+└─ cgroup_get_tree()
+    ├─ cgrp_dfl_visible = true      # now visible
+    └─ kernfs_get_tree()            # attach kernfs tree to VFS superblock
+                                    # → /sys/fs/cgroup is now live
+```
+
+```c
+cgroup_init()
+└─ cgroup_add_dfl_cftypes(ss, ss->dfl_cftypes)
+    └─ cgroup_init_cftypes(ss, cfts)
+        └─ for each cftype:
+            if cft->seq_start → cft->kf_ops = &cgroup_kf_ops
+            else              → cft->kf_ops = &cgroup_kf_single_ops
+
+cgroup_mkdir() (user does: mkdir /sys/fs/cgroup/mygroup)
+└─ cgroup_create()
+    └─ css_populate_dir(css)
+        └─ cgroup_add_file(css, cgrp, cft)
+            └─ __kernfs_create_file(cgrp->kn, name, ..., cft->kf_ops, cft)
+                                    │                       │         │
+                                    │                       │         └─ stored as kn->priv
+                                    │                       └─ how to read/write this file
+                                    └─ parent kernfs dir node
+```
+
+```c
+cat /sys/fs/cgroup/mygroup/memory.current
+│
+├── open(2)
+│   └── do_sys_openat2
+│       └── do_filp_open
+│           └── path_openat
+│               └── link_path_walk              ← walk each component
+│                   │
+│                   ├── "mygroup"               lookup in /sys/fs/cgroup/
+│                   │   └── kernfs_dir_iops.lookup
+│                   │       └── kernfs_iop_lookup
+│                   │           ├── parent = dir->i_private     ← kernfs_node of /sys/fs/cgroup/
+│                   │           ├── down_read(&root->kernfs_rwsem)
+│                   │           ├── kernfs_find_ns(parent, "mygroup", ns)
+│                   │           │   └── rb-tree search in parent->dir.children
+│                   │           ├── kernfs_get_inode(sb, kn)
+│                   │           │   └── kernfs_init_inode(kn, inode)
+│                   │           │       ├── inode->i_private = kn
+│                   │           │       ├── inode->i_op  = &kernfs_dir_iops
+│                   │           │       └── inode->i_fop = &kernfs_dir_fops
+│                   │           └── d_splice_alias(inode, dentry)
+│                   │               └── dentry->d_op = &kernfs_dops (has .d_revalidate)
+│                   │
+│                   │
+│                   └── "memory.current"        lookup in /sys/fs/cgroup/mygroup/
+│                       └── kernfs_dir_iops.lookup
+│                           └── kernfs_iop_lookup
+│                               ├── kernfs_find_ns(parent, "memory.current", ns)
+│                               │   └── rb-tree → finds kn (KERNFS_FILE)
+│                               │       kn->attr.ops = &cgroup_kf_single_ops
+│                               │       kn->priv     = &memory_files[0] (cftype)
+│                               ├── kernfs_get_inode(sb, kn)
+│                               │   └── kernfs_init_inode(kn, inode)
+│                               │       ├── inode->i_private = kn
+│                               │       ├── inode->i_op  = &kernfs_iops  ← FILE: no mkdir/lookup
+│                               │       └── inode->i_fop = &kernfs_file_fops
+│                               └── d_splice_alias(inode, dentry)
+│
+│   └── open_last_lookups → do_open → vfs_open
+│       └── do_dentry_open
+│           └── f->f_op = &kernfs_file_fops
+│               └── kernfs_file_fops.open = kernfs_fop_open
+│                   ├── kn = inode->i_private         ← kernfs_node for "memory.current"
+│                   ├── ops = kn->attr.ops            ← &cgroup_kf_single_ops
+│                   ├── of = kzalloc(kernfs_open_file)
+│                   │       of->kn   = kn
+│                   │       of->file = file
+│                   ├── seq_open(file, &kernfs_seq_ops)
+│                   │   └── seq_file->op      = &kernfs_seq_ops
+│                   │       seq_file->private = of
+│                   ├── of->seq_file = file->private_data
+│                   └── ops->open(of) = cgroup_file_open(of)
+│                       ├── cft = of_cft(of) = kn->priv        ← &memory_files[0]
+│                       │       .name     = "current"
+│                       │       .read_u64 = memory_current_read
+│                       │       .kf_ops   = &cgroup_kf_single_ops
+│                       ├── ctx = kzalloc(cgroup_file_ctx)
+│                       │       ctx->ns = current->nsproxy->cgroup_ns
+│                       ├── of->priv = ctx
+│                       └── cft->open == NULL → return 0  (no custom open for memory.current)
+│
+└── read(2)
+    └── ksys_read
+        └── vfs_read
+            └── kernfs_file_fops.read_iter = kernfs_fop_read_iter
+                ├── kn->flags & KERNFS_HAS_SEQ_SHOW?  YES
+                └── seq_read_iter(iocb, iter)          ← generic seq_file engine
+                    │
+                    ├── kernfs_seq_ops.start = kernfs_seq_start
+                    │   ├── mutex_lock(&of->mutex)
+                    │   ├── kernfs_get_active_of(of)   ← grab active ref on kn
+                    │   └── ops->seq_start == NULL     ← cgroup_kf_single_ops has none
+                    │       └── single_start()         ← returns (void*)1 as token
+                    │
+                    ├── kernfs_seq_ops.show = kernfs_seq_show
+                    │   └── of->kn->attr.ops->seq_show(sf, v)
+                    │       └── cgroup_kf_single_ops.seq_show
+                    │           = cgroup_seqfile_show(sf, arg)
+                    │               ├── cft = seq_cft(sf)          ← &memory_files[0]
+                    │               ├── css = seq_css(sf)          ← cgroup_subsys_state
+                    │               │         css->cgroup = mygroup cgroup node
+                    │               │         css->ss     = &memory_cgrp_subsys
+                    │               ├── cft->seq_show == NULL
+                    │               ├── cft->read_u64 != NULL  ✓
+                    │               └── seq_printf(sf, "%llu\n",
+                    │                       cft->read_u64(css, cft))
+                    │                       └── memory_current_read(css, cft)
+                    │                           ├── memcg = mem_cgroup_from_css(css)
+                    │                           │         container_of(css, struct mem_cgroup, css)
+                    │                           └── page_counter_read(&memcg->memory)
+                    │                               └── atomic_long_read(&counter->usage)
+                    │                                   └── ← VALUE (bytes)
+                    │
+                    ├── kernfs_seq_ops.next = kernfs_seq_next
+                    │   └── ops->seq_next == NULL → ++ppos; return NULL (single item)
+                    │
+                    └── kernfs_seq_ops.stop = kernfs_seq_stop
+                        ├── kernfs_put_active_of(of)   ← release active ref on kn
+                        └── mutex_unlock(&of->mutex)
+```
+
+
+### cgroup2_fs_type
+
+```c
+static const struct fs_context_operations cgroup_fs_context_ops = {
+    .free           = cgroup_fs_context_free,
+    .parse_param    = cgroup2_parse_param,
+    .get_tree       = cgroup_get_tree,
+    .reconfigure    = cgroup_reconfigure,
+};
+
+static struct file_system_type cgroup2_fs_type = {
+    .name               = "cgroup2",
+    .init_fs_context    = cgroup_init_fs_context,
+    .parameters         = cgroup2_fs_parameters,
+    .kill_sb            = cgroup_kill_sb,
+    .fs_flags           = FS_USERNS_MOUNT,
+};
+
+static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
+    .show_options   = cgroup_show_options,
+    .mkdir          = cgroup_mkdir,
+    .rmdir          = cgroup_rmdir,
+    .show_path      = cgroup_show_path,
+};
+```
+
+#### cgroup_get_tree
+
+```c
+mount(dev_name, dir_name, type, flags, data) {
+    copy_mount_string(); /* type, dev_name, data */
+    do_mount() {
+        struct path path;
+        user_path_at(&path);
+        path_mount(&path) {
+            do_new_mount() {
+                struct file_system_type *type = get_fs_type(fstype);
+                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
+                vfs_parse_fs_string();
+
+                /* Get the mountable root */
+                vfs_get_tree(fc) {
+                    fc->ops->get_tree(fc); /* cgroup_get_tree */
+                    struct super_block *sb = fc->root->d_sb;
+                }
+
+                do_new_mount_fc(fc, path, mnt_flags);
+            }
+        }
+    }
+}
+```
+
+```c
+int cgroup_get_tree(struct fs_context *fc)
+{
+    struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
+    int ret;
+
+    WRITE_ONCE(cgrp_dfl_visible, true);
+    cgroup_get_live(&cgrp_dfl_root.cgrp);
+    ctx->root = &cgrp_dfl_root;
+
+    ret = cgroup_do_get_tree(fc) {
+        struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
+        int ret;
+
+        ctx->kfc.root = ctx->root->kf_root;
+        if (fc->fs_type == &cgroup2_fs_type)
+            ctx->kfc.magic = CGROUP2_SUPER_MAGIC;
+        else
+            ctx->kfc.magic = CGROUP_SUPER_MAGIC;
+
+        ret = kernfs_get_tree(fc);
+
+        if (!ret && ctx->ns != &init_cgroup_ns) {
+            struct dentry *nsdentry;
+            struct super_block *sb = fc->root->d_sb;
+            struct cgroup *cgrp;
+
+            cgroup_lock();
+            spin_lock_irq(&css_set_lock);
+
+            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/);
+                --->
+
+            nsdentry = kernfs_node_dentry(cgrp->kn, sb);
+            fc->root = nsdentry;
+        }
+
+        if (!ctx->kfc.new_sb_created)
+            cgroup_put(&ctx->root->cgrp);
+
+        return ret;
+    }
+    if (!ret) {
+        apply_cgroup_root_flags(ctx->flags);
+    }
+    return ret;
+}
+```
+
+### cgroup_add_dfl_cftypes
+
+```c
+cgroup_add_dfl_cftypes(&memory_cgrp_subsys, swap_files);
+cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files);
+```
+
+
+```c
+int cgroup_add_dfl_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    struct cftype *cft;
+
+    for (cft = cfts; cft && cft->name[0] != '\0'; cft++)
+        cft->flags |= __CFTYPE_ONLY_ON_DFL;
+    return cgroup_add_cftypes(ss, cfts);
+}
+
+int cgroup_add_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    int ret;
+
+    if (!cgroup_ssid_enabled(ss->id))
+        return 0;
+
+    if (!cfts || cfts[0].name[0] == '\0')
+        return 0;
+
+    ret = cgroup_init_cftypes(ss, cfts);
+    if (ret)
+        return ret;
+
+    cgroup_lock();
+
+    list_add_tail(&cfts->node, &ss->cfts);
+    ret = cgroup_apply_cftypes(cfts, true);
+    if (ret)
+        cgroup_rm_cftypes_locked(cfts);
+
+    cgroup_unlock();
+    return ret;
+}
+```
+
+#### cgroup_init_cftypes
+
+```c
+int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
+{
+    struct cftype *cft;
+    int ret = 0;
+
+    for (cft = cfts; cft->name[0] != '\0'; cft++) {
+        struct kernfs_ops *kf_ops;
+
+        if (cft->flags & __CFTYPE_ADDED) {
+            ret = -EBUSY;
+            break;
+        }
+
+        if (cft->seq_start)
+            kf_ops = &cgroup_kf_ops;
+        else
+            kf_ops = &cgroup_kf_single_ops;
+
+        if (cft->max_write_len && cft->max_write_len != PAGE_SIZE) {
+            kf_ops = kmemdup(kf_ops, sizeof(*kf_ops), GFP_KERNEL);
+            if (!kf_ops) {
+                ret = -ENOMEM;
+                break;
+            }
+            kf_ops->atomic_write_len = cft->max_write_len;
+        }
+
+        cft->kf_ops = kf_ops;
+        cft->ss = ss;
+        cft->flags |= __CFTYPE_ADDED;
+    }
+
+    if (ret)
+        cgroup_exit_cftypes(cfts);
+    return ret;
+}
+```
+
+#### cgroup_apply_cftypes
+
+```c
+int cgroup_apply_cftypes(struct cftype *cfts, bool is_add)
+{
+    struct cgroup_subsys *ss = cfts[0].ss;
+    struct cgroup *root = &ss->root->cgrp;
+    struct cgroup_subsys_state *css;
+    int ret = 0;
+
+    lockdep_assert_held(&cgroup_mutex);
+
+    /* add/rm files for all cgroups created before */
+    css_for_each_descendant_pre(css, cgroup_css(root, ss)) {
+        struct cgroup *cgrp = css->cgroup;
+
+        if (!(css->flags & CSS_VISIBLE))
+            continue;
+
+        ret = cgroup_addrm_files(css, cgrp, cfts, is_add) {
+            struct cftype *cft, *cft_end = NULL;
+            int ret = 0;
+
+            lockdep_assert_held(&cgroup_mutex);
+
+        restart:
+            for (cft = cfts; cft != cft_end && cft->name[0] != '\0'; cft++) {
+                /* does cft->flags tell us to skip this file on @cgrp? */
+                if ((cft->flags & __CFTYPE_ONLY_ON_DFL) && !cgroup_on_dfl(cgrp))
+                    continue;
+                if ((cft->flags & __CFTYPE_NOT_ON_DFL) && cgroup_on_dfl(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_NOT_ON_ROOT) && !cgroup_parent(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_ONLY_ON_ROOT) && cgroup_parent(cgrp))
+                    continue;
+                if ((cft->flags & CFTYPE_DEBUG) && !cgroup_debug)
+                    continue;
+                if (is_add) {
+                    ret = cgroup_add_file(css, cgrp, cft);
+                    if (ret) {
+                        pr_warn("%s: failed to add %s, err=%d\n",
+                            __func__, cft->name, ret);
+                        cft_end = cft;
+                        is_add = false;
+                        goto restart;
+                    }
+                } else {
+                    cgroup_rm_file(cgrp, cft);
+                }
+            }
+            return ret;
+        }
+        if (ret)
+            break;
+    }
+
+    if (is_add && !ret)
+        kernfs_activate(root->kn);
+    return ret;
+}
+
+int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
+               struct cftype *cft)
+{
+    char name[CGROUP_FILE_NAME_MAX];
+    struct kernfs_node *kn;
+    struct lock_class_key *key = NULL;
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    key = &cft->lockdep_key;
+#endif
+    kn = __kernfs_create_file(cgrp->kn, cgroup_file_name(cgrp, cft, name),
+                  cgroup_file_mode(cft),
+                  current_fsuid(), current_fsgid(),
+                  0, cft->kf_ops, cft,
+                  NULL, key);
+    if (IS_ERR(kn))
+        return PTR_ERR(kn);
+
+    if (cft->file_offset) {
+        struct cgroup_file *cfile = (void *)css + cft->file_offset;
+
+        timer_setup(&cfile->notify_timer, cgroup_file_notify_timer, 0);
+        spin_lock_init(&cfile->lock);
+        cfile->kn = kn;
+    }
+
+    return 0;
+}
+```
+
+### cgroup_kf_syscall_ops
+
+```c
+static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
+    .show_options  = cgroup_show_options,
+    .mkdir         = cgroup_mkdir,
+    .rmdir         = cgroup_rmdir,
+    .show_path     = cgroup_show_path,
+};
+```
+
+### cgroup_kf_ops
+
+```c
+static struct kernfs_ops cgroup_kf_single_ops = {
+    .atomic_write_len = PAGE_SIZE,
+    .open             = cgroup_file_open,
+    .release          = cgroup_file_release,
+    .write            = cgroup_file_write,
+    .poll             = cgroup_file_poll,
+    .seq_show         = cgroup_seqfile_show,
+};
+
+static struct kernfs_ops cgroup_kf_ops = {
+    .atomic_write_len = PAGE_SIZE,
+    .open             = cgroup_file_open,
+    .release          = cgroup_file_release,
+    .write            = cgroup_file_write,
+    .poll             = cgroup_file_poll,
+    .seq_start        = cgroup_seqfile_start,
+    .seq_next         = cgroup_seqfile_next,
+    .seq_stop         = cgroup_seqfile_stop,
+    .seq_show         = cgroup_seqfile_show,
+};
+```
+
+#### cgroup_file_open
+
+```c
+static int cgroup_file_open(struct kernfs_open_file *of)
+{
+    struct cftype *cft = of_cft(of) {
+        return of->kn->priv;
+    }
+    struct cgroup_file_ctx *ctx;
+    int ret;
+
+    ctx = kzalloc_obj(*ctx);
+    if (!ctx)
+        return -ENOMEM;
+
+    ctx->ns = current->nsproxy->cgroup_ns;
+    get_cgroup_ns(ctx->ns);
+    of->priv = ctx;
+
+    if (!cft->open)
+        return 0;
+
+    ret = cft->open(of);
+    if (ret) {
+        put_cgroup_ns(ctx->ns);
+        kfree(ctx);
+    }
+    return ret;
+}
+```
+
+#### cgroup_seqfile_show
+
+```c
+static int cgroup_seqfile_show(struct seq_file *m, void *arg)
+{
+    struct cftype *cft = seq_cft(m) {
+        seq->private->kn->priv;
+    }
+    struct cgroup_subsys_state *css = seq_css(m);
+
+    if (cft->seq_show)
+        return cft->seq_show(m, arg);
+
+    if (cft->read_u64)
+        seq_printf(m, "%llu\n", cft->read_u64(css, cft));
+    else if (cft->read_s64)
+        seq_printf(m, "%lld\n", cft->read_s64(css, cft));
+    else
+        return -EINVAL;
+    return 0;
+}
+```
+
+### cgroup_ctype
+
+#### cgroup_base_files
+
+```c
+/* cgroup core interface files for the default hierarchy */
+static struct cftype cgroup_base_files[] = {
+    {
+        .name           = "cgroup.type",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = cgroup_type_show,
+        .write          = cgroup_type_write,
+    },
+    {
+        .name           = "cgroup.procs",
+        .flags          = CFTYPE_NS_DELEGATABLE,
+        .file_offset    = offsetof(struct cgroup, procs_file),
+        .release        = cgroup_procs_release,
+        .seq_start      = cgroup_procs_start,
+        .seq_next       = cgroup_procs_next,
+        .seq_show       = cgroup_procs_show,
+        .write          = cgroup_procs_write,
+    },
+    {
+        .name           = "cgroup.threads",
+        .flags          = CFTYPE_NS_DELEGATABLE,
+        .release        = cgroup_procs_release,
+        .seq_start      = cgroup_threads_start,
+        .seq_next       = cgroup_procs_next,
+        .seq_show       = cgroup_procs_show,
+        .write          = cgroup_threads_write,
+    },
+    {
+        .name           = "cgroup.controllers",
+        .seq_show       = cgroup_controllers_show,
+    },
+    {
+        .name           = "cgroup.subtree_control",
+        .flags          = CFTYPE_NS_DELEGATABLE,
+        .seq_show       = cgroup_subtree_control_show,
+        .write          = cgroup_subtree_control_write,
+    },
+    {
+        .name           = "cgroup.events",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .file_offset    = offsetof(struct cgroup, events_file),
+        .seq_show       = cgroup_events_show,
+    },
+    {
+        .name           = "cgroup.max.descendants",
+        .seq_show       = cgroup_max_descendants_show,
+        .write          = cgroup_max_descendants_write,
+    },
+    {
+        .name           = "cgroup.max.depth",
+        .seq_show       = cgroup_max_depth_show,
+        .write          = cgroup_max_depth_write,
+    },
+    {
+        .name           = "cgroup.stat",
+        .seq_show       = cgroup_stat_show,
+    },
+    {
+        .name           = "cgroup.stat.local",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = cgroup_core_local_stat_show,
+    },
+    {
+        .name           = "cgroup.freeze",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = cgroup_freeze_show,
+        .write          = cgroup_freeze_write,
+    },
+    {
+        .name           = "cgroup.kill",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .write          = cgroup_kill_write,
+    },
+    {
+        .name           = "cpu.stat",
+        .seq_show       = cpu_stat_show,
+    },
+    {
+        .name           = "cpu.stat.local",
+        .seq_show       = cpu_local_stat_show,
+    },
+    { }    /* terminate */
+};
+```
+
+#### cpu_files
+
+```c
+struct cgroup_subsys cpu_cgrp_subsys = {
+    .dfl_cftypes        = cpu_files,
+};
+
+static struct cftype cpu_files[] = {
+#ifdef CONFIG_GROUP_SCHED_WEIGHT
+    {
+        .name       = "weight",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .read_u64   = cpu_weight_read_u64,
+        .write_u64  = cpu_weight_write_u64,
+    },
+    {
+        .name       = "weight.nice",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .read_s64   = cpu_weight_nice_read_s64,
+        .write_s64  = cpu_weight_nice_write_s64,
+    },
+    {
+        .name       = "idle",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .read_s64   = cpu_idle_read_s64,
+        .write_s64  = cpu_idle_write_s64,
+    },
+#endif
+#ifdef CONFIG_GROUP_SCHED_BANDWIDTH
+    {
+        .name       = "max",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .seq_show   = cpu_max_show,
+        .write      = cpu_max_write,
+    },
+    {
+        .name       = "max.burst",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .read_u64   = cpu_burst_read_u64,
+        .write_u64  = cpu_burst_write_u64,
+    },
+#endif /* CONFIG_CFS_BANDWIDTH */
+#ifdef CONFIG_UCLAMP_TASK_GROUP
+    {
+        .name       = "uclamp.min",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .seq_show   = cpu_uclamp_min_show,
+        .write      = cpu_uclamp_min_write,
+    },
+    {
+        .name       = "uclamp.max",
+        .flags      = CFTYPE_NOT_ON_ROOT,
+        .seq_show   = cpu_uclamp_max_show,
+        .write      = cpu_uclamp_max_write,
+    },
+#endif /* CONFIG_UCLAMP_TASK_GROUP */
+    { }    /* terminate */
+};
+```
+
+
+#### memory_files
+
+```c
+struct cgroup_subsys memory_cgrp_subsys = {
+    .dfl_cftypes        = memory_files,
+};
+
+static struct cftype memory_files[] = {
+    {
+        .name           = "current",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .read_u64       = memory_current_read,
+    },
+    {
+        .name           = "peak",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .open           = peak_open,
+        .release        = peak_release,
+        .seq_show       = memory_peak_show,
+        .write          = memory_peak_write,
+    },
+    {
+        .name           = "min",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = memory_min_show,
+        .write          = memory_min_write,
+    },
+    {
+        .name           = "low",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = memory_low_show,
+        .write          = memory_low_write,
+    },
+    {
+        .name           = "high",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = memory_high_show,
+        .write          = memory_high_write,
+    },
+    {
+        .name           = "max",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = memory_max_show,
+        .write          = memory_max_write,
+    },
+    {
+        .name           = "events",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .file_offset    = offsetof(struct mem_cgroup, events_file),
+        .seq_show       = memory_events_show,
+    },
+    {
+        .name           = "events.local",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .file_offset    = offsetof(struct mem_cgroup, events_local_file),
+        .seq_show       = memory_events_local_show,
+    },
+    {
+        .name           = "stat",
+        .seq_show       = memory_stat_show,
+    },
+#ifdef CONFIG_NUMA
+    {
+        .name           = "numa_stat",
+        .seq_show       = memory_numa_stat_show,
+    },
+#endif
+    {
+        .name           = "oom.group",
+        .flags          = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
+        .seq_show       = memory_oom_group_show,
+        .write          = memory_oom_group_write,
+    },
+    {
+        .name           = "reclaim",
+        .flags          = CFTYPE_NS_DELEGATABLE,
+        .write          = memory_reclaim,
+    },
+    { }    /* terminate */
+};
+
+static struct cftype swap_files[] = {
+    {
+        .name           = "swap.current",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .read_u64       = swap_current_read,
+    },
+    {
+        .name           = "swap.high",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = swap_high_show,
+        .write          = swap_high_write,
+    },
+    {
+        .name           = "swap.max",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = swap_max_show,
+        .write          = swap_max_write,
+    },
+};
+
+static struct cftype zswap_files[] = {
+    {
+        .name           = "zswap.current",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .read_u64       = zswap_current_read,
+    },
+    {
+        .name           = "zswap.max",
+        .flags          = CFTYPE_NOT_ON_ROOT,
+        .seq_show       = zswap_max_show,
+        .write          = zswap_max_write,
+    },
+    {
+        .name           = "zswap.writeback",
+        .seq_show       = zswap_writeback_show,
+        .write          = zswap_writeback_write,
+    },
+    { } /* terminate */
+};
+```
+
+##### memory.stat
+
+```c
+int memory_stat_show(struct seq_file *m, void *v)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+    char *buf = kmalloc(SEQ_BUF_SIZE, GFP_KERNEL);
+    struct seq_buf s;
+
+    if (!buf)
+        return -ENOMEM;
+    seq_buf_init(&s, buf, SEQ_BUF_SIZE);
+    memory_stat_format(memcg, &s) {
+        if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
+            memcg_stat_format(memcg, s);
+        else
+            memcg1_stat_format(memcg, s);
+        if (seq_buf_has_overflowed(s))
+            pr_warn("%s: Warning, stat buffer overflow, please report\n", __func__);
+    }
+    seq_puts(m, buf);
+    kfree(buf);
+    return 0;
+}
+
+void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
+{
+    int i;
+
+    /* Provide statistics on the state of the memory subsystem as
+     * well as cumulative event counters that show past behavior.
+     *
+     * This list is ordered following a combination of these gradients:
+     * 1) generic big picture -> specifics and details
+     * 2) reflecting userspace activity -> reflecting kernel heuristics
+     *
+     * Current memory state: */
+    mem_cgroup_flush_stats(memcg) {
+        bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats);
+
+        trace_memcg_flush_stats(memcg, atomic_read(&memcg->vmstats->stats_updates),
+            force, needs_flush);
+
+        if (!force && !needs_flush)
+            return;
+
+        if (mem_cgroup_is_root(memcg))
+            WRITE_ONCE(flush_last_time, jiffies_64);
+
+        css_rstat_flush(&memcg->css) {
+            int cpu;
+            bool is_self = css_is_self(css);
+
+            /* Since bpf programs can call this function, prevent access to
+            * uninitialized rstat pointers. */
+            if (!css_uses_rstat(css))
+                return;
+
+            might_sleep();
+            for_each_possible_cpu(cpu) {
+                struct cgroup_subsys_state *pos;
+
+                /* Reacquire for each CPU to avoid disabling IRQs too long */
+                __css_rstat_lock(css, cpu);
+                pos = css_rstat_updated_list(css, cpu);
+                for (; pos; pos = pos->rstat_flush_next) {
+                    if (is_self) {
+                        cgroup_base_stat_flush(pos->cgroup, cpu);
+                        bpf_rstat_flush(pos->cgroup, cgroup_parent(pos->cgroup), cpu);
+                    } else
+                        pos->ss->css_rstat_flush(pos, cpu);
+                }
+                __css_rstat_unlock(css, cpu);
+                if (!cond_resched())
+                    cpu_relax();
+            }
+        }
+    }
+
+    for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
+        u64 size;
+
+#ifdef CONFIG_HUGETLB_PAGE
+        if (unlikely(memory_stats[i].idx == NR_HUGETLB) &&
+            !memcg_accounts_hugetlb())
+            continue;
+#endif
+        size = memcg_page_state_output(memcg, memory_stats[i].idx);
+        seq_buf_printf(s, "%s %llu\n", memory_stats[i].name, size);
+
+        if (unlikely(memory_stats[i].idx == NR_SLAB_UNRECLAIMABLE_B)) {
+            size += memcg_page_state_output(memcg,
+                            NR_SLAB_RECLAIMABLE_B);
+            seq_buf_printf(s, "slab %llu\n", size);
+        }
+    }
+
+    /* Accumulated memory events */
+    seq_buf_printf(s, "pgscan %lu\n",
+               memcg_events(memcg, PGSCAN_KSWAPD) +
+               memcg_events(memcg, PGSCAN_DIRECT) +
+               memcg_events(memcg, PGSCAN_PROACTIVE) +
+               memcg_events(memcg, PGSCAN_KHUGEPAGED));
+    seq_buf_printf(s, "pgsteal %lu\n",
+               memcg_events(memcg, PGSTEAL_KSWAPD) +
+               memcg_events(memcg, PGSTEAL_DIRECT) +
+               memcg_events(memcg, PGSTEAL_PROACTIVE) +
+               memcg_events(memcg, PGSTEAL_KHUGEPAGED));
+
+    for (i = 0; i < ARRAY_SIZE(memcg_vm_event_stat); i++) {
+#ifdef CONFIG_MEMCG_V1
+        if (memcg_vm_event_stat[i] == PGPGIN ||
+            memcg_vm_event_stat[i] == PGPGOUT)
+            continue;
+#endif
+        seq_buf_printf(s, "%s %lu\n",
+                   vm_event_name(memcg_vm_event_stat[i]),
+                   memcg_events(memcg, memcg_vm_event_stat[i]));
+    }
+}
+```
+
+```c
+void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
+{
+    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
+    struct mem_cgroup *parent = parent_mem_cgroup(memcg);
+    struct memcg_vmstats_percpu *statc;
+    struct aggregate_control ac;
+    int nid;
+
+    flush_nmi_stats(memcg, parent, cpu);
+
+    statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
+
+    ac = (struct aggregate_control) {
+        .aggregate = memcg->vmstats->state,
+        .local = memcg->vmstats->state_local,
+        .pending = memcg->vmstats->state_pending,
+        .ppending = parent ? parent->vmstats->state_pending : NULL,
+        .cstat = statc->state,
+        .cstat_prev = statc->state_prev,
+        .size = MEMCG_VMSTAT_SIZE,
+    };
+    mem_cgroup_stat_aggregate(&ac);
+
+    ac = (struct aggregate_control) {
+        .aggregate = memcg->vmstats->events,
+        .local = memcg->vmstats->events_local,
+        .pending = memcg->vmstats->events_pending,
+        .ppending = parent ? parent->vmstats->events_pending : NULL,
+        .cstat = statc->events,
+        .cstat_prev = statc->events_prev,
+        .size = NR_MEMCG_EVENTS,
+    };
+    mem_cgroup_stat_aggregate(&ac);
+
+    for_each_node_state(nid, N_MEMORY) {
+        struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
+        struct lruvec_stats *lstats = pn->lruvec_stats;
+        struct lruvec_stats *plstats = NULL;
+        struct lruvec_stats_percpu *lstatc;
+
+        if (parent)
+            plstats = parent->nodeinfo[nid]->lruvec_stats;
+
+        lstatc = per_cpu_ptr(pn->lruvec_stats_percpu, cpu);
+
+        ac = (struct aggregate_control) {
+            .aggregate = lstats->state,
+            .local = lstats->state_local,
+            .pending = lstats->state_pending,
+            .ppending = plstats ? plstats->state_pending : NULL,
+            .cstat = lstatc->state,
+            .cstat_prev = lstatc->state_prev,
+            .size = NR_MEMCG_NODE_STAT_ITEMS,
+        };
+        mem_cgroup_stat_aggregate(&ac);
+
+    }
+    WRITE_ONCE(statc->stats_updates, 0);
+    /* We are in a per-cpu loop here, only do the atomic write once */
+    if (atomic_read(&memcg->vmstats->stats_updates))
+        atomic_set(&memcg->vmstats->stats_updates, 0);
+}
+
+mem_cgroup_stat_aggregate(struct aggregate_control *ac)
+{
+    int i;
+    long delta, delta_cpu, v;
+
+    for (i = 0; i < ac->size; i++) {
+        /* Collect the aggregated propagation counts of groups
+         * below us. We're in a per-cpu loop here and this is
+         * a global counter, so the first cycle will get them. */
+        delta = ac->pending[i];
+        if (delta)
+            ac->pending[i] = 0;
+
+        /* Add CPU changes on this level since the last flush */
+        delta_cpu = 0;
+        v = READ_ONCE(ac->cstat[i]);
+        if (v != ac->cstat_prev[i]) {
+            delta_cpu = v - ac->cstat_prev[i];
+            delta += delta_cpu;
+            ac->cstat_prev[i] = v;
+        }
+
+        /* Aggregate counts on this level and propagate upwards */
+        if (delta_cpu)
+            ac->local[i] += delta_cpu;
+
+        if (delta) {
+            ac->aggregate[i] += delta;
+            if (ac->ppending)
+                ac->ppending[i] += delta;
+        }
+    }
+}
+```
+
+## /sys/kernel/slab/
+
+```sh
+/sys/kernel/slab/kmalloc-64
+├── aliases
+├── align
+├── cpu_partial
+├── cpu_slabs
+├── ctor
+├── destroy_by_rcu
+├── hwcache_align
+├── min_partial
+├── object_size
+├── objects
+├── objects_partial
+├── objs_per_slab
+├── order
+├── partial
+├── poison
+├── reclaim_account
+├── red_zone
+├── remote_node_defrag_ratio
+├── sanity_checks
+├── sheaf_capacity
+├── shrink
+├── slab_size
+├── slabs
+├── slabs_cpu_partial
+├── store_user
+├── total_objects
+├── trace
+├── usersize
+└── validate
+```
+
+### slab_sysfs_init
+
+```c
+static struct saved_alias *alias_list;
+
+int __init slab_sysfs_init(void)
+{
+    struct kmem_cache *s;
+    int err;
+
+    mutex_lock(&slab_mutex);
+
+    slab_kset = kset_create_and_add("slab", NULL, kernel_kobj);
+    if (!slab_kset) {
+        mutex_unlock(&slab_mutex);
+        pr_err("Cannot register slab subsystem.\n");
+        return -ENOMEM;
+    }
+
+    slab_state = FULL;
+
+    list_for_each_entry(s, &slab_caches, list) {
+        err = sysfs_slab_add(s);
+        if (err)
+            pr_err("SLUB: Unable to add boot slab %s to sysfs\n",
+                   s->name);
+    }
+
+    while (alias_list) {
+        struct saved_alias *al = alias_list;
+
+        alias_list = alias_list->next;
+        err = sysfs_slab_alias(al->s, al->name);
+        if (err)
+            pr_err("SLUB: Unable to add boot slab alias %s to sysfs\n",
+                   al->name);
+        kfree(al);
+    }
+
+    mutex_unlock(&slab_mutex);
+    return 0;
+}
+
+int sysfs_slab_add(struct kmem_cache *s)
+{
+    int err;
+    const char *name;
+    struct kset *kset = cache_kset(s);
+    int unmergeable = slab_unmergeable(s);
+
+    if (!unmergeable && disable_higher_order_debug &&
+            (slub_debug & DEBUG_METADATA_FLAGS))
+        unmergeable = 1;
+
+    if (unmergeable) {
+        /* Slabcache can never be merged so we can use the name proper.
+         * This is typically the case for debug situations. In that
+         * case we can catch duplicate names easily. */
+        sysfs_remove_link(&slab_kset->kobj, s->name);
+        name = s->name;
+    } else {
+        /* Create a unique name for the slab as a target
+         * for the symlinks. */
+        name = create_unique_id(s);
+        if (IS_ERR(name))
+            return PTR_ERR(name);
+    }
+
+    s->kobj.kset = kset;
+    err = kobject_init_and_add(&s->kobj, &slab_ktype, NULL, "%s", name);
+    if (err)
+        goto out;
+
+    if (!unmergeable) {
+        /* Setup first alias */
+        sysfs_slab_alias(s, s->name);
+    }
+out:
+    if (!unmergeable)
+        kfree(name);
+    return err;
+}
+
+static const struct sysfs_ops slab_sysfs_ops = {
+    .show       = slab_attr_show,
+    .store      = slab_attr_store,
+};
+
+static const struct kobj_type slab_ktype = {
+    .sysfs_ops  = &slab_sysfs_ops,
+    .release    = kmem_cache_release,
+};
+
+static const struct attribute_group slab_attr_group = {
+    .attrs      = slab_attrs,
+};
+
+static struct attribute *slab_attrs[] = {
+    &slab_size_attr.attr,
+    &object_size_attr.attr,
+    &objs_per_slab_attr.attr,
+    &order_attr.attr,
+    &sheaf_capacity_attr.attr,
+    &min_partial_attr.attr,
+    NULL
+};
+
+#define SLAB_ATTR_RO(_name) \
+    static struct slab_attribute _name##_attr = __ATTR_RO_MODE(_name, 0400)
+
+#define SLAB_ATTR(_name) \
+    static struct slab_attribute _name##_attr = __ATTR_RW_MODE(_name, 0600)
+
+#define __ATTR_RW_MODE(_name, _mode)                    \
+    __ATTR(_name, _mode, _name##_show, _name##_store)
+
+#define __ATTR(_name, _mode, _show, _store) {           \
+    .attr   = {.name = __stringify(_name),              \
+    .mode   = VERIFY_OCTAL_PERMISSIONS(_mode) },        \
+    .show   = _show,                                    \
+    .store  = _store,                                   \
+}
+
+struct attribute {
+    const char        *name;
+    umode_t            mode;
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+    bool            ignore_lockdep:1;
+    struct lock_class_key    *key;
+    struct lock_class_key    skey;
+#endif
+};
+
+struct slab_attribute {
+    struct attribute attr;
+    ssize_t (*show)(struct kmem_cache *s, char *buf);
+    ssize_t (*store)(struct kmem_cache *s, const char *x, size_t count);
+};
+
+static ssize_t slab_size_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->size);
+}
+SLAB_ATTR_RO(slab_size);
+
+static ssize_t align_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->align);
+}
+SLAB_ATTR_RO(align);
+
+static ssize_t object_size_show(struct kmem_cache *s, char *buf)
+{
+    return sysfs_emit(buf, "%u\n", s->object_size);
+}
+SLAB_ATTR_RO(object_size);
+```
+
+## /sys/kernel/debug/slab/
+
+```sh
+/sys/kernel/slab/kmalloc-64
+├── alloc_traces
+├── free_traces
+```
+
+### alloc_traces
+
+```c
+static void debugfs_slab_add(struct kmem_cache *s)
+{
+    struct dentry *slab_cache_dir;
+
+    if (unlikely(!slab_debugfs_root))
+        return;
+
+    slab_cache_dir = debugfs_create_dir(s->name, slab_debugfs_root);
+
+    debugfs_create_file_aux_num("alloc_traces", 0400, slab_cache_dir, s,
+                    TRACK_ALLOC, &slab_debugfs_fops);
+
+    debugfs_create_file_aux_num("free_traces", 0400, slab_cache_dir, s,
+                    TRACK_FREE, &slab_debugfs_fops);
+}
+
+static const struct file_operations slab_debugfs_fops = {
+    .open       = slab_debug_trace_open,
+    .read       = seq_read,
+    .llseek     = seq_lseek,
+    .release    = slab_debug_trace_release,
+};
+
+int slab_debug_trace_open(struct inode *inode, struct file *filep)
+{
+
+    struct kmem_cache_node *n;
+    enum track_item alloc;
+    int node;
+    struct loc_track *t = __seq_open_private(filep, &slab_debugfs_sops,
+                        sizeof(struct loc_track));
+    struct kmem_cache *s = file_inode(filep)->i_private;
+    unsigned long *obj_map;
+
+    if (!t)
+        return -ENOMEM;
+
+    obj_map = bitmap_alloc(oo_objects(s->oo), GFP_KERNEL);
+    if (!obj_map) {
+        seq_release_private(inode, filep);
+        return -ENOMEM;
+    }
+
+    alloc = debugfs_get_aux_num(filep);
+
+    if (!alloc_loc_track(t, PAGE_SIZE / sizeof(struct location), GFP_KERNEL)) {
+        bitmap_free(obj_map);
+        seq_release_private(inode, filep);
+        return -ENOMEM;
+    }
+
+    for_each_kmem_cache_node(s, node, n) {
+        unsigned long flags;
+        struct slab *slab;
+
+        if (!node_nr_slabs(n))
+            continue;
+
+        spin_lock_irqsave(&n->list_lock, flags);
+        list_for_each_entry(slab, &n->partial, slab_list)
+            process_slab(t, s, slab, alloc, obj_map);
+        list_for_each_entry(slab, &n->full, slab_list)
+            process_slab(t, s, slab, alloc, obj_map);
+        spin_unlock_irqrestore(&n->list_lock, flags);
+    }
+
+    /* Sort locations by count */
+    sort(t->loc, t->count, sizeof(struct location),
+         cmp_loc_by_count, NULL);
+
+    bitmap_free(obj_map);
+    return 0;
+}
+
+void process_slab(struct loc_track *t, struct kmem_cache *s,
+        struct slab *slab, enum track_item alloc,
+        unsigned long *obj_map)
+{
+    void *addr = slab_address(slab);
+    bool is_alloc = (alloc == TRACK_ALLOC);
+    void *p;
+
+    __fill_map(obj_map, s, slab);
+
+    for_each_object(p, s, addr, slab->objects)
+        if (!test_bit(__obj_to_index(s, addr, p), obj_map))
+            add_location(t, s, get_track(s, p, alloc),
+                is_alloc ? get_orig_size(s, p) : s->object_size);
+}
+
+int add_location(struct loc_track *t, struct kmem_cache *s,
+                const struct track *track,
+                unsigned int orig_size)
+{
+    long start, end, pos;
+    struct location *l;
+    unsigned long caddr, chandle, cwaste;
+    unsigned long age = jiffies - track->when;
+    depot_stack_handle_t handle = 0;
+    unsigned int waste = s->object_size - orig_size;
+
+#ifdef CONFIG_STACKDEPOT
+    handle = READ_ONCE(track->handle);
+#endif
+    start = -1;
+    end = t->count;
+
+    for ( ; ; ) {
+        pos = start + (end - start + 1) / 2;
+
+        /* There is nothing at "end". If we end up there
+         * we need to add something to before end. */
+        if (pos == end)
+            break;
+
+        l = &t->loc[pos];
+        caddr = l->addr;
+        chandle = l->handle;
+        cwaste = l->waste;
+        if ((track->addr == caddr) && (handle == chandle) &&
+            (waste == cwaste)) {
+
+            l->count++;
+            if (track->when) {
+                l->sum_time += age;
+                if (age < l->min_time)
+                    l->min_time = age;
+                if (age > l->max_time)
+                    l->max_time = age;
+
+                if (track->pid < l->min_pid)
+                    l->min_pid = track->pid;
+                if (track->pid > l->max_pid)
+                    l->max_pid = track->pid;
+
+                cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
+            }
+            node_set(page_to_nid(virt_to_page(track)), l->nodes);
+            return 1;
+        }
+
+        if (track->addr < caddr)
+            end = pos;
+        else if (track->addr == caddr && handle < chandle)
+            end = pos;
+        else if (track->addr == caddr && handle == chandle &&
+                waste < cwaste)
+            end = pos;
+        else
+            start = pos;
+    }
+
+    /* Not found. Insert new tracking element. */
+    if (t->count >= t->max && !alloc_loc_track(t, 2 * t->max, GFP_ATOMIC))
+        return 0;
+
+    l = t->loc + pos;
+    if (pos < t->count)
+        memmove(l + 1, l, (t->count - pos) * sizeof(struct location));
+    t->count++;
+    l->count = 1;
+    l->addr = track->addr;
+    l->sum_time = age;
+    l->min_time = age;
+    l->max_time = age;
+    l->min_pid = track->pid;
+    l->max_pid = track->pid;
+    l->handle = handle;
+    l->waste = waste;
+
+    cpumask_clear(to_cpumask(l->cpus));
+    cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
+    nodes_clear(l->nodes);
+    node_set(page_to_nid(virt_to_page(track)), l->nodes);
+
+    return 1;
 }
 ```
 
@@ -19129,1322 +20602,5 @@ int path_pivot_root(struct path *new, struct path *old)
     mnt_notify_add(new_mnt);
     chroot_fs_refs(&root, new);
     return 0;
-}
-```
-
-## cgroupfs
-
-![](../images/kernel/file-fs-cgroupfs.drawio.svg)
-
-```sh
-start_kernel()
-└─ cgroup_init_early()         # init cgrp_dfl_root struct + early subsystems
-└─ cgroup_init()
-    ├─ cgroup_setup_root()    # build kernfs tree in memory
-    │    ├─ kernfs_create_root()     # create root kernfs node
-    │    ├─ css_populate_dir()       # add cgroup.procs, cgroup.controllers, etc.
-    │    └─ rebind_subsystems()      # attach controllers
-    ├─ sysfs_create_mount_point()   # mkdir /sys/fs/cgroup in sysfs
-    └─ register_filesystem()        # register "cgroup2" type
-
-# Later, at userspace init (systemd):
-mount -t cgroup2 none /sys/fs/cgroup
-└─ cgroup_get_tree()
-    ├─ cgrp_dfl_visible = true      # now visible
-    └─ kernfs_get_tree()            # attach kernfs tree to VFS superblock
-                                    # → /sys/fs/cgroup is now live
-```
-
-```c
-cgroup_init()
-└─ cgroup_add_dfl_cftypes(ss, ss->dfl_cftypes)
-    └─ cgroup_init_cftypes(ss, cfts)
-        └─ for each cftype:
-            if cft->seq_start → cft->kf_ops = &cgroup_kf_ops
-            else              → cft->kf_ops = &cgroup_kf_single_ops
-
-cgroup_mkdir() (user does: mkdir /sys/fs/cgroup/mygroup)
-└─ cgroup_create()
-    └─ css_populate_dir(css)
-        └─ cgroup_add_file(css, cgrp, cft)
-            └─ __kernfs_create_file(cgrp->kn, name, ..., cft->kf_ops, cft)
-                                    │                       │         │
-                                    │                       │         └─ stored as kn->priv
-                                    │                       └─ how to read/write this file
-                                    └─ parent kernfs dir node
-```
-
-```c
-cat /sys/fs/cgroup/mygroup/memory.current
-│
-├── open(2)
-│   └── do_sys_openat2
-│       └── do_filp_open
-│           └── path_openat
-│               └── link_path_walk              ← walk each component
-│                   │
-│                   ├── "mygroup"               lookup in /sys/fs/cgroup/
-│                   │   └── kernfs_dir_iops.lookup
-│                   │       └── kernfs_iop_lookup              [dir.c:1248]
-│                   │           ├── parent = dir->i_private     ← kernfs_node of /sys/fs/cgroup/
-│                   │           ├── down_read(&root->kernfs_rwsem)
-│                   │           ├── kernfs_find_ns(parent, "mygroup", ns)  [dir.c:886]
-│                   │           │   └── rb-tree search in parent->dir.children
-│                   │           ├── kernfs_get_inode(sb, kn)   [inode.c:248]
-│                   │           │   └── kernfs_init_inode(kn, inode)  [inode.c:200]
-│                   │           │       ├── inode->i_private = kn
-│                   │           │       ├── inode->i_op  = &kernfs_dir_iops
-│                   │           │       └── inode->i_fop = &kernfs_dir_fops
-│                   │           └── d_splice_alias(inode, dentry)   [dir.c:1288]
-│                   │               └── dentry->d_op = &kernfs_dops (has .d_revalidate)
-│                   │                                                [dir.c:1245]
-│                   │
-│                   └── "memory.current"        lookup in /sys/fs/cgroup/mygroup/
-│                       └── kernfs_dir_iops.lookup
-│                           └── kernfs_iop_lookup              [dir.c:1248]
-│                               ├── kernfs_find_ns(parent, "memory.current", ns)
-│                               │   └── rb-tree → finds kn (KERNFS_FILE)
-│                               │       kn->attr.ops = &cgroup_kf_single_ops
-│                               │       kn->priv     = &memory_files[0] (cftype)
-│                               ├── kernfs_get_inode(sb, kn)   [inode.c:248]
-│                               │   └── kernfs_init_inode(kn, inode)
-│                               │       ├── inode->i_private = kn
-│                               │       ├── inode->i_op  = &kernfs_iops  ← FILE: no mkdir/lookup
-│                               │       └── inode->i_fop = &kernfs_file_fops
-│                               └── d_splice_alias(inode, dentry)
-│
-│   └── open_last_lookups → do_open → vfs_open
-│       └── do_dentry_open
-│           └── f->f_op = &kernfs_file_fops
-│               └── kernfs_file_fops.open = kernfs_fop_open    [file.c:603]
-│                   ├── kn = inode->i_private         ← kernfs_node for "memory.current"
-│                   ├── ops = kn->attr.ops            ← &cgroup_kf_single_ops
-│                   ├── of = kzalloc(kernfs_open_file)
-│                   │       of->kn   = kn
-│                   │       of->file = file
-│                   ├── seq_open(file, &kernfs_seq_ops)        [file.c:697]
-│                   │   └── seq_file->op      = &kernfs_seq_ops
-│                   │       seq_file->private = of
-│                   ├── of->seq_file = file->private_data
-│                   └── ops->open(of) = cgroup_file_open(of)   [cgroup.c:4255]
-│                       ├── cft = of_cft(of) = kn->priv        ← &memory_files[0]
-│                       │       .name     = "current"
-│                       │       .read_u64 = memory_current_read
-│                       │       .kf_ops   = &cgroup_kf_single_ops
-│                       ├── ctx = kzalloc(cgroup_file_ctx)
-│                       │       ctx->ns = current->nsproxy->cgroup_ns
-│                       ├── of->priv = ctx
-│                       └── cft->open == NULL → return 0  (no custom open for memory.current)
-│
-└── read(2)
-    └── ksys_read
-        └── vfs_read
-            └── kernfs_file_fops.read_iter = kernfs_fop_read_iter  [file.c:287]
-                ├── kn->flags & KERNFS_HAS_SEQ_SHOW?  YES
-                └── seq_read_iter(iocb, iter)          ← generic seq_file engine
-                    │
-                    ├── kernfs_seq_ops.start = kernfs_seq_start    [file.c:156]
-                    │   ├── mutex_lock(&of->mutex)
-                    │   ├── kernfs_get_active_of(of)   ← grab active ref on kn
-                    │   └── ops->seq_start == NULL     ← cgroup_kf_single_ops has none
-                    │       └── single_start()         ← returns (void*)1 as token
-                    │
-                    ├── kernfs_seq_ops.show = kernfs_seq_show      [file.c:210]
-                    │   └── of->kn->attr.ops->seq_show(sf, v)
-                    │       └── cgroup_kf_single_ops.seq_show
-                    │           = cgroup_seqfile_show(sf, arg)     [cgroup.c:4371]
-                    │               ├── cft = seq_cft(sf)          ← &memory_files[0]
-                    │               ├── css = seq_css(sf)          ← cgroup_subsys_state
-                    │               │         css->cgroup = mygroup cgroup node
-                    │               │         css->ss     = &memory_cgrp_subsys
-                    │               ├── cft->seq_show == NULL
-                    │               ├── cft->read_u64 != NULL  ✓
-                    │               └── seq_printf(sf, "%llu\n",
-                    │                       cft->read_u64(css, cft))
-                    │                       └── memory_current_read(css, cft)   [memcontrol.c:4623]
-                    │                           ├── memcg = mem_cgroup_from_css(css)  [memcontrol.h:747]
-                    │                           │         container_of(css, struct mem_cgroup, css)
-                    │                           └── page_counter_read(&memcg->memory)  [page_counter.h:66]
-                    │                               └── atomic_long_read(&counter->usage)
-                    │                                   └── ← VALUE (bytes)
-                    │
-                    ├── kernfs_seq_ops.next = kernfs_seq_next      [file.c:180]
-                    │   └── ops->seq_next == NULL → ++ppos; return NULL (single item)
-                    │
-                    └── kernfs_seq_ops.stop = kernfs_seq_stop      [file.c:201]
-                        ├── kernfs_put_active_of(of)   ← release active ref on kn
-                        └── mutex_unlock(&of->mutex)
-```
-
-
-### cgroup2_fs_type
-
-```c
-static const struct fs_context_operations cgroup_fs_context_ops = {
-    .free           = cgroup_fs_context_free,
-    .parse_param    = cgroup2_parse_param,
-    .get_tree       = cgroup_get_tree,
-    .reconfigure    = cgroup_reconfigure,
-};
-
-static struct file_system_type cgroup2_fs_type = {
-    .name               = "cgroup2",
-    .init_fs_context    = cgroup_init_fs_context,
-    .parameters         = cgroup2_fs_parameters,
-    .kill_sb            = cgroup_kill_sb,
-    .fs_flags           = FS_USERNS_MOUNT,
-};
-
-static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
-    .show_options   = cgroup_show_options,
-    .mkdir          = cgroup_mkdir,
-    .rmdir          = cgroup_rmdir,
-    .show_path      = cgroup_show_path,
-};
-
-/* cgroup v2 base files */
-static struct cftype cgroup_base_files[] = {
-    {
-        .name = "cgroup.type",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cgroup_type_show,
-        .write = cgroup_type_write,
-    },
-    {
-        .name = "cgroup.procs",
-        .flags = CFTYPE_NS_DELEGATABLE,
-        .file_offset = offsetof(struct cgroup, procs_file),
-        .release = cgroup_procs_release,
-        .seq_start = cgroup_procs_start,
-        .seq_next = cgroup_procs_next,
-        .seq_show = cgroup_procs_show,
-        .write = cgroup_procs_write,
-    },
-}
-
-/* cgroup v1 base files */
-struct cftype cgroup1_base_files[] = {
-    {
-        .name = "cgroup.procs",
-        .seq_start = cgroup_pidlist_start,
-        .seq_next = cgroup_pidlist_next,
-        .seq_stop = cgroup_pidlist_stop,
-        .seq_show = cgroup_pidlist_show,
-        .private = CGROUP_FILE_PROCS,
-        .write = cgroup1_procs_write,
-    },
-};
-```
-
-#### cgroup_get_tree
-
-```c
-mount(dev_name, dir_name, type, flags, data) {
-    copy_mount_string(); /* type, dev_name, data */
-    do_mount() {
-        struct path path;
-        user_path_at(&path);
-        path_mount(&path) {
-            do_new_mount() {
-                struct file_system_type *type = get_fs_type(fstype);
-                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
-                vfs_parse_fs_string();
-
-                /* Get the mountable root */
-                vfs_get_tree(fc) {
-                    fc->ops->get_tree(fc); /* cgroup_get_tree */
-                    struct super_block *sb = fc->root->d_sb;
-                }
-
-                do_new_mount_fc(fc, path, mnt_flags);
-            }
-        }
-    }
-}
-```
-
-```c
-int cgroup_get_tree(struct fs_context *fc)
-{
-    struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
-    int ret;
-
-    WRITE_ONCE(cgrp_dfl_visible, true);
-    cgroup_get_live(&cgrp_dfl_root.cgrp);
-    ctx->root = &cgrp_dfl_root;
-
-    ret = cgroup_do_get_tree(fc) {
-        struct cgroup_fs_context *ctx = cgroup_fc2context(fc);
-        int ret;
-
-        ctx->kfc.root = ctx->root->kf_root;
-        if (fc->fs_type == &cgroup2_fs_type)
-            ctx->kfc.magic = CGROUP2_SUPER_MAGIC;
-        else
-            ctx->kfc.magic = CGROUP_SUPER_MAGIC;
-
-        ret = kernfs_get_tree(fc);
-
-        if (!ret && ctx->ns != &init_cgroup_ns) {
-            struct dentry *nsdentry;
-            struct super_block *sb = fc->root->d_sb;
-            struct cgroup *cgrp;
-
-            cgroup_lock();
-            spin_lock_irq(&css_set_lock);
-
-            cgrp = cset_cgroup_from_root(ctx->ns->root_cset/*cset*/, ctx->root/*root*/);
-                --->
-
-            nsdentry = kernfs_node_dentry(cgrp->kn, sb);
-            fc->root = nsdentry;
-        }
-
-        if (!ctx->kfc.new_sb_created)
-            cgroup_put(&ctx->root->cgrp);
-
-        return ret;
-    }
-    if (!ret) {
-        apply_cgroup_root_flags(ctx->flags);
-    }
-    return ret;
-}
-```
-
-### cgroup_add_dfl_cftypes
-
-```c
-cgroup_add_dfl_cftypes(&memory_cgrp_subsys, swap_files);
-cgroup_add_dfl_cftypes(&memory_cgrp_subsys, zswap_files);
-```
-
-
-```c
-int cgroup_add_dfl_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
-{
-    struct cftype *cft;
-
-    for (cft = cfts; cft && cft->name[0] != '\0'; cft++)
-        cft->flags |= __CFTYPE_ONLY_ON_DFL;
-    return cgroup_add_cftypes(ss, cfts);
-}
-
-int cgroup_add_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
-{
-    int ret;
-
-    if (!cgroup_ssid_enabled(ss->id))
-        return 0;
-
-    if (!cfts || cfts[0].name[0] == '\0')
-        return 0;
-
-    ret = cgroup_init_cftypes(ss, cfts);
-    if (ret)
-        return ret;
-
-    cgroup_lock();
-
-    list_add_tail(&cfts->node, &ss->cfts);
-    ret = cgroup_apply_cftypes(cfts, true);
-    if (ret)
-        cgroup_rm_cftypes_locked(cfts);
-
-    cgroup_unlock();
-    return ret;
-}
-```
-
-#### cgroup_init_cftypes
-
-```c
-int cgroup_init_cftypes(struct cgroup_subsys *ss, struct cftype *cfts)
-{
-    struct cftype *cft;
-    int ret = 0;
-
-    for (cft = cfts; cft->name[0] != '\0'; cft++) {
-        struct kernfs_ops *kf_ops;
-
-        if (cft->flags & __CFTYPE_ADDED) {
-            ret = -EBUSY;
-            break;
-        }
-
-        if (cft->seq_start)
-            kf_ops = &cgroup_kf_ops;
-        else
-            kf_ops = &cgroup_kf_single_ops;
-
-        if (cft->max_write_len && cft->max_write_len != PAGE_SIZE) {
-            kf_ops = kmemdup(kf_ops, sizeof(*kf_ops), GFP_KERNEL);
-            if (!kf_ops) {
-                ret = -ENOMEM;
-                break;
-            }
-            kf_ops->atomic_write_len = cft->max_write_len;
-        }
-
-        cft->kf_ops = kf_ops;
-        cft->ss = ss;
-        cft->flags |= __CFTYPE_ADDED;
-    }
-
-    if (ret)
-        cgroup_exit_cftypes(cfts);
-    return ret;
-}
-```
-
-#### cgroup_apply_cftypes
-
-```c
-int cgroup_apply_cftypes(struct cftype *cfts, bool is_add)
-{
-    struct cgroup_subsys *ss = cfts[0].ss;
-    struct cgroup *root = &ss->root->cgrp;
-    struct cgroup_subsys_state *css;
-    int ret = 0;
-
-    lockdep_assert_held(&cgroup_mutex);
-
-    /* add/rm files for all cgroups created before */
-    css_for_each_descendant_pre(css, cgroup_css(root, ss)) {
-        struct cgroup *cgrp = css->cgroup;
-
-        if (!(css->flags & CSS_VISIBLE))
-            continue;
-
-        ret = cgroup_addrm_files(css, cgrp, cfts, is_add) {
-            struct cftype *cft, *cft_end = NULL;
-            int ret = 0;
-
-            lockdep_assert_held(&cgroup_mutex);
-
-        restart:
-            for (cft = cfts; cft != cft_end && cft->name[0] != '\0'; cft++) {
-                /* does cft->flags tell us to skip this file on @cgrp? */
-                if ((cft->flags & __CFTYPE_ONLY_ON_DFL) && !cgroup_on_dfl(cgrp))
-                    continue;
-                if ((cft->flags & __CFTYPE_NOT_ON_DFL) && cgroup_on_dfl(cgrp))
-                    continue;
-                if ((cft->flags & CFTYPE_NOT_ON_ROOT) && !cgroup_parent(cgrp))
-                    continue;
-                if ((cft->flags & CFTYPE_ONLY_ON_ROOT) && cgroup_parent(cgrp))
-                    continue;
-                if ((cft->flags & CFTYPE_DEBUG) && !cgroup_debug)
-                    continue;
-                if (is_add) {
-                    ret = cgroup_add_file(css, cgrp, cft);
-                    if (ret) {
-                        pr_warn("%s: failed to add %s, err=%d\n",
-                            __func__, cft->name, ret);
-                        cft_end = cft;
-                        is_add = false;
-                        goto restart;
-                    }
-                } else {
-                    cgroup_rm_file(cgrp, cft);
-                }
-            }
-            return ret;
-        }
-        if (ret)
-            break;
-    }
-
-    if (is_add && !ret)
-        kernfs_activate(root->kn);
-    return ret;
-}
-
-int cgroup_add_file(struct cgroup_subsys_state *css, struct cgroup *cgrp,
-               struct cftype *cft)
-{
-    char name[CGROUP_FILE_NAME_MAX];
-    struct kernfs_node *kn;
-    struct lock_class_key *key = NULL;
-
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-    key = &cft->lockdep_key;
-#endif
-    kn = __kernfs_create_file(cgrp->kn, cgroup_file_name(cgrp, cft, name),
-                  cgroup_file_mode(cft),
-                  current_fsuid(), current_fsgid(),
-                  0, cft->kf_ops, cft,
-                  NULL, key);
-    if (IS_ERR(kn))
-        return PTR_ERR(kn);
-
-    if (cft->file_offset) {
-        struct cgroup_file *cfile = (void *)css + cft->file_offset;
-
-        timer_setup(&cfile->notify_timer, cgroup_file_notify_timer, 0);
-        spin_lock_init(&cfile->lock);
-        cfile->kn = kn;
-    }
-
-    return 0;
-}
-```
-
-### cgroup_kf_syscall_ops
-
-```c
-static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
-    .show_options  = cgroup_show_options,
-    .mkdir         = cgroup_mkdir,
-    .rmdir         = cgroup_rmdir,
-    .show_path     = cgroup_show_path,
-};
-```
-
-### cgroup_kf_ops
-
-```c
-static struct kernfs_ops cgroup_kf_single_ops = {
-    .atomic_write_len = PAGE_SIZE,
-    .open             = cgroup_file_open,
-    .release          = cgroup_file_release,
-    .write            = cgroup_file_write,
-    .poll             = cgroup_file_poll,
-    .seq_show         = cgroup_seqfile_show,
-};
-
-static struct kernfs_ops cgroup_kf_ops = {
-    .atomic_write_len = PAGE_SIZE,
-    .open             = cgroup_file_open,
-    .release          = cgroup_file_release,
-    .write            = cgroup_file_write,
-    .poll             = cgroup_file_poll,
-    .seq_start        = cgroup_seqfile_start,
-    .seq_next         = cgroup_seqfile_next,
-    .seq_stop         = cgroup_seqfile_stop,
-    .seq_show         = cgroup_seqfile_show,
-};
-```
-
-#### cgroup_file_open
-
-```c
-static int cgroup_file_open(struct kernfs_open_file *of)
-{
-    struct cftype *cft = of_cft(of) {
-        return of->kn->priv;
-    }
-    struct cgroup_file_ctx *ctx;
-    int ret;
-
-    ctx = kzalloc_obj(*ctx);
-    if (!ctx)
-        return -ENOMEM;
-
-    ctx->ns = current->nsproxy->cgroup_ns;
-    get_cgroup_ns(ctx->ns);
-    of->priv = ctx;
-
-    if (!cft->open)
-        return 0;
-
-    ret = cft->open(of);
-    if (ret) {
-        put_cgroup_ns(ctx->ns);
-        kfree(ctx);
-    }
-    return ret;
-}
-```
-
-### cpu_files
-
-```c
-struct cgroup_subsys cpu_cgrp_subsys = {
-	.dfl_cftypes        = cpu_files,
-};
-
-static struct cftype cpu_files[] = {
-#ifdef CONFIG_GROUP_SCHED_WEIGHT
-    {
-        .name = "weight",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = cpu_weight_read_u64,
-        .write_u64 = cpu_weight_write_u64,
-    },
-    {
-        .name = "weight.nice",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_s64 = cpu_weight_nice_read_s64,
-        .write_s64 = cpu_weight_nice_write_s64,
-    },
-    {
-        .name = "idle",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_s64 = cpu_idle_read_s64,
-        .write_s64 = cpu_idle_write_s64,
-    },
-#endif
-#ifdef CONFIG_GROUP_SCHED_BANDWIDTH
-    {
-        .name = "max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_max_show,
-        .write = cpu_max_write,
-    },
-    {
-        .name = "max.burst",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = cpu_burst_read_u64,
-        .write_u64 = cpu_burst_write_u64,
-    },
-#endif /* CONFIG_CFS_BANDWIDTH */
-#ifdef CONFIG_UCLAMP_TASK_GROUP
-    {
-        .name = "uclamp.min",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_uclamp_min_show,
-        .write = cpu_uclamp_min_write,
-    },
-    {
-        .name = "uclamp.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = cpu_uclamp_max_show,
-        .write = cpu_uclamp_max_write,
-    },
-#endif /* CONFIG_UCLAMP_TASK_GROUP */
-    { }    /* terminate */
-};
-```
-
-
-### memory_files
-
-```c
-struct cgroup_subsys memory_cgrp_subsys = {
-    .dfl_cftypes        = memory_files,
-};
-
-static struct cftype memory_files[] = {
-    {
-        .name = "current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = memory_current_read,
-    },
-    {
-        .name = "peak",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .open = peak_open,
-        .release = peak_release,
-        .seq_show = memory_peak_show,
-        .write = memory_peak_write,
-    },
-    {
-        .name = "min",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_min_show,
-        .write = memory_min_write,
-    },
-    {
-        .name = "low",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_low_show,
-        .write = memory_low_write,
-    },
-    {
-        .name = "high",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_high_show,
-        .write = memory_high_write,
-    },
-    {
-        .name = "max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = memory_max_show,
-        .write = memory_max_write,
-    },
-    {
-        .name = "events",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .file_offset = offsetof(struct mem_cgroup, events_file),
-        .seq_show = memory_events_show,
-    },
-    {
-        .name = "events.local",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .file_offset = offsetof(struct mem_cgroup, events_local_file),
-        .seq_show = memory_events_local_show,
-    },
-    {
-        .name = "stat",
-        .seq_show = memory_stat_show,
-    },
-#ifdef CONFIG_NUMA
-    {
-        .name = "numa_stat",
-        .seq_show = memory_numa_stat_show,
-    },
-#endif
-    {
-        .name = "oom.group",
-        .flags = CFTYPE_NOT_ON_ROOT | CFTYPE_NS_DELEGATABLE,
-        .seq_show = memory_oom_group_show,
-        .write = memory_oom_group_write,
-    },
-    {
-        .name = "reclaim",
-        .flags = CFTYPE_NS_DELEGATABLE,
-        .write = memory_reclaim,
-    },
-    { }    /* terminate */
-};
-
-static struct cftype swap_files[] = {
-    {
-        .name = "swap.current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = swap_current_read,
-    },
-    {
-        .name = "swap.high",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = swap_high_show,
-        .write = swap_high_write,
-    },
-    {
-        .name = "swap.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = swap_max_show,
-        .write = swap_max_write,
-    },
-};
-
-static struct cftype zswap_files[] = {
-    {
-        .name = "zswap.current",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .read_u64 = zswap_current_read,
-    },
-    {
-        .name = "zswap.max",
-        .flags = CFTYPE_NOT_ON_ROOT,
-        .seq_show = zswap_max_show,
-        .write = zswap_max_write,
-    },
-    {
-        .name = "zswap.writeback",
-        .seq_show = zswap_writeback_show,
-        .write = zswap_writeback_write,
-    },
-    { } /* terminate */
-};
-```
-
-#### memory.stat
-
-```c
-int memory_stat_show(struct seq_file *m, void *v)
-{
-    struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
-    char *buf = kmalloc(SEQ_BUF_SIZE, GFP_KERNEL);
-    struct seq_buf s;
-
-    if (!buf)
-        return -ENOMEM;
-    seq_buf_init(&s, buf, SEQ_BUF_SIZE);
-    memory_stat_format(memcg, &s) {
-        if (cgroup_subsys_on_dfl(memory_cgrp_subsys))
-            memcg_stat_format(memcg, s);
-        else
-            memcg1_stat_format(memcg, s);
-        if (seq_buf_has_overflowed(s))
-            pr_warn("%s: Warning, stat buffer overflow, please report\n", __func__);
-    }
-    seq_puts(m, buf);
-    kfree(buf);
-    return 0;
-}
-
-void memcg_stat_format(struct mem_cgroup *memcg, struct seq_buf *s)
-{
-    int i;
-
-    /* Provide statistics on the state of the memory subsystem as
-     * well as cumulative event counters that show past behavior.
-     *
-     * This list is ordered following a combination of these gradients:
-     * 1) generic big picture -> specifics and details
-     * 2) reflecting userspace activity -> reflecting kernel heuristics
-     *
-     * Current memory state: */
-    mem_cgroup_flush_stats(memcg) {
-        bool needs_flush = memcg_vmstats_needs_flush(memcg->vmstats);
-
-        trace_memcg_flush_stats(memcg, atomic_read(&memcg->vmstats->stats_updates),
-            force, needs_flush);
-
-        if (!force && !needs_flush)
-            return;
-
-        if (mem_cgroup_is_root(memcg))
-            WRITE_ONCE(flush_last_time, jiffies_64);
-
-        css_rstat_flush(&memcg->css) {
-            int cpu;
-            bool is_self = css_is_self(css);
-
-            /* Since bpf programs can call this function, prevent access to
-            * uninitialized rstat pointers. */
-            if (!css_uses_rstat(css))
-                return;
-
-            might_sleep();
-            for_each_possible_cpu(cpu) {
-                struct cgroup_subsys_state *pos;
-
-                /* Reacquire for each CPU to avoid disabling IRQs too long */
-                __css_rstat_lock(css, cpu);
-                pos = css_rstat_updated_list(css, cpu);
-                for (; pos; pos = pos->rstat_flush_next) {
-                    if (is_self) {
-                        cgroup_base_stat_flush(pos->cgroup, cpu);
-                        bpf_rstat_flush(pos->cgroup, cgroup_parent(pos->cgroup), cpu);
-                    } else
-                        pos->ss->css_rstat_flush(pos, cpu);
-                }
-                __css_rstat_unlock(css, cpu);
-                if (!cond_resched())
-                    cpu_relax();
-            }
-        }
-    }
-
-    for (i = 0; i < ARRAY_SIZE(memory_stats); i++) {
-        u64 size;
-
-#ifdef CONFIG_HUGETLB_PAGE
-        if (unlikely(memory_stats[i].idx == NR_HUGETLB) &&
-            !memcg_accounts_hugetlb())
-            continue;
-#endif
-        size = memcg_page_state_output(memcg, memory_stats[i].idx);
-        seq_buf_printf(s, "%s %llu\n", memory_stats[i].name, size);
-
-        if (unlikely(memory_stats[i].idx == NR_SLAB_UNRECLAIMABLE_B)) {
-            size += memcg_page_state_output(memcg,
-                            NR_SLAB_RECLAIMABLE_B);
-            seq_buf_printf(s, "slab %llu\n", size);
-        }
-    }
-
-    /* Accumulated memory events */
-    seq_buf_printf(s, "pgscan %lu\n",
-               memcg_events(memcg, PGSCAN_KSWAPD) +
-               memcg_events(memcg, PGSCAN_DIRECT) +
-               memcg_events(memcg, PGSCAN_PROACTIVE) +
-               memcg_events(memcg, PGSCAN_KHUGEPAGED));
-    seq_buf_printf(s, "pgsteal %lu\n",
-               memcg_events(memcg, PGSTEAL_KSWAPD) +
-               memcg_events(memcg, PGSTEAL_DIRECT) +
-               memcg_events(memcg, PGSTEAL_PROACTIVE) +
-               memcg_events(memcg, PGSTEAL_KHUGEPAGED));
-
-    for (i = 0; i < ARRAY_SIZE(memcg_vm_event_stat); i++) {
-#ifdef CONFIG_MEMCG_V1
-        if (memcg_vm_event_stat[i] == PGPGIN ||
-            memcg_vm_event_stat[i] == PGPGOUT)
-            continue;
-#endif
-        seq_buf_printf(s, "%s %lu\n",
-                   vm_event_name(memcg_vm_event_stat[i]),
-                   memcg_events(memcg, memcg_vm_event_stat[i]));
-    }
-}
-```
-
-```c
-void mem_cgroup_css_rstat_flush(struct cgroup_subsys_state *css, int cpu)
-{
-    struct mem_cgroup *memcg = mem_cgroup_from_css(css);
-    struct mem_cgroup *parent = parent_mem_cgroup(memcg);
-    struct memcg_vmstats_percpu *statc;
-    struct aggregate_control ac;
-    int nid;
-
-    flush_nmi_stats(memcg, parent, cpu);
-
-    statc = per_cpu_ptr(memcg->vmstats_percpu, cpu);
-
-    ac = (struct aggregate_control) {
-        .aggregate = memcg->vmstats->state,
-        .local = memcg->vmstats->state_local,
-        .pending = memcg->vmstats->state_pending,
-        .ppending = parent ? parent->vmstats->state_pending : NULL,
-        .cstat = statc->state,
-        .cstat_prev = statc->state_prev,
-        .size = MEMCG_VMSTAT_SIZE,
-    };
-    mem_cgroup_stat_aggregate(&ac);
-
-    ac = (struct aggregate_control) {
-        .aggregate = memcg->vmstats->events,
-        .local = memcg->vmstats->events_local,
-        .pending = memcg->vmstats->events_pending,
-        .ppending = parent ? parent->vmstats->events_pending : NULL,
-        .cstat = statc->events,
-        .cstat_prev = statc->events_prev,
-        .size = NR_MEMCG_EVENTS,
-    };
-    mem_cgroup_stat_aggregate(&ac);
-
-    for_each_node_state(nid, N_MEMORY) {
-        struct mem_cgroup_per_node *pn = memcg->nodeinfo[nid];
-        struct lruvec_stats *lstats = pn->lruvec_stats;
-        struct lruvec_stats *plstats = NULL;
-        struct lruvec_stats_percpu *lstatc;
-
-        if (parent)
-            plstats = parent->nodeinfo[nid]->lruvec_stats;
-
-        lstatc = per_cpu_ptr(pn->lruvec_stats_percpu, cpu);
-
-        ac = (struct aggregate_control) {
-            .aggregate = lstats->state,
-            .local = lstats->state_local,
-            .pending = lstats->state_pending,
-            .ppending = plstats ? plstats->state_pending : NULL,
-            .cstat = lstatc->state,
-            .cstat_prev = lstatc->state_prev,
-            .size = NR_MEMCG_NODE_STAT_ITEMS,
-        };
-        mem_cgroup_stat_aggregate(&ac);
-
-    }
-    WRITE_ONCE(statc->stats_updates, 0);
-    /* We are in a per-cpu loop here, only do the atomic write once */
-    if (atomic_read(&memcg->vmstats->stats_updates))
-        atomic_set(&memcg->vmstats->stats_updates, 0);
-}
-
-mem_cgroup_stat_aggregate(struct aggregate_control *ac)
-{
-    int i;
-    long delta, delta_cpu, v;
-
-    for (i = 0; i < ac->size; i++) {
-        /* Collect the aggregated propagation counts of groups
-         * below us. We're in a per-cpu loop here and this is
-         * a global counter, so the first cycle will get them. */
-        delta = ac->pending[i];
-        if (delta)
-            ac->pending[i] = 0;
-
-        /* Add CPU changes on this level since the last flush */
-        delta_cpu = 0;
-        v = READ_ONCE(ac->cstat[i]);
-        if (v != ac->cstat_prev[i]) {
-            delta_cpu = v - ac->cstat_prev[i];
-            delta += delta_cpu;
-            ac->cstat_prev[i] = v;
-        }
-
-        /* Aggregate counts on this level and propagate upwards */
-        if (delta_cpu)
-            ac->local[i] += delta_cpu;
-
-        if (delta) {
-            ac->aggregate[i] += delta;
-            if (ac->ppending)
-                ac->ppending[i] += delta;
-        }
-    }
-}
-```
-
-## /sys/kernel/slab/
-
-```sh
-/sys/kernel/slab/kmalloc-64
-├── aliases
-├── align
-├── cpu_partial
-├── cpu_slabs
-├── ctor
-├── destroy_by_rcu
-├── hwcache_align
-├── min_partial
-├── object_size
-├── objects
-├── objects_partial
-├── objs_per_slab
-├── order
-├── partial
-├── poison
-├── reclaim_account
-├── red_zone
-├── remote_node_defrag_ratio
-├── sanity_checks
-├── sheaf_capacity
-├── shrink
-├── slab_size
-├── slabs
-├── slabs_cpu_partial
-├── store_user
-├── total_objects
-├── trace
-├── usersize
-└── validate
-```
-
-### slab_sysfs_init
-
-```c
-static struct saved_alias *alias_list;
-
-int __init slab_sysfs_init(void)
-{
-    struct kmem_cache *s;
-    int err;
-
-    mutex_lock(&slab_mutex);
-
-    slab_kset = kset_create_and_add("slab", NULL, kernel_kobj);
-    if (!slab_kset) {
-        mutex_unlock(&slab_mutex);
-        pr_err("Cannot register slab subsystem.\n");
-        return -ENOMEM;
-    }
-
-    slab_state = FULL;
-
-    list_for_each_entry(s, &slab_caches, list) {
-        err = sysfs_slab_add(s);
-        if (err)
-            pr_err("SLUB: Unable to add boot slab %s to sysfs\n",
-                   s->name);
-    }
-
-    while (alias_list) {
-        struct saved_alias *al = alias_list;
-
-        alias_list = alias_list->next;
-        err = sysfs_slab_alias(al->s, al->name);
-        if (err)
-            pr_err("SLUB: Unable to add boot slab alias %s to sysfs\n",
-                   al->name);
-        kfree(al);
-    }
-
-    mutex_unlock(&slab_mutex);
-    return 0;
-}
-
-int sysfs_slab_add(struct kmem_cache *s)
-{
-    int err;
-    const char *name;
-    struct kset *kset = cache_kset(s);
-    int unmergeable = slab_unmergeable(s);
-
-    if (!unmergeable && disable_higher_order_debug && (slub_debug & DEBUG_METADATA_FLAGS))
-        unmergeable = 1;
-
-    if (unmergeable) {
-        /* Slabcache can never be merged so we can use the name proper.
-         * This is typically the case for debug situations. In that
-         * case we can catch duplicate names easily. */
-        sysfs_remove_link(&slab_kset->kobj, s->name);
-        name = s->name;
-    } else {
-        /* Create a unique name for the slab as a target
-         * for the symlinks. */
-        name = create_unique_id(s);
-        if (IS_ERR(name))
-            return PTR_ERR(name);
-    }
-
-    s->kobj.kset = kset;
-    err = kobject_init_and_add(&s->kobj, &slab_ktype, NULL, "%s", name);
-    if (err)
-        goto out;
-
-    err = sysfs_create_group(&s->kobj, &slab_attr_group);
-    if (err)
-        goto out_del_kobj;
-
-    if (!unmergeable) {
-        /* Setup first alias */
-        sysfs_slab_alias(s, s->name);
-    }
-out:
-    if (!unmergeable)
-        kfree(name);
-    return err;
-out_del_kobj:
-    kobject_del(&s->kobj);
-    goto out;
-}
-
-static const struct sysfs_ops slab_sysfs_ops = {
-    .show       = slab_attr_show,
-    .store      = slab_attr_store,
-};
-
-static const struct kobj_type slab_ktype = {
-    .sysfs_ops  = &slab_sysfs_ops,
-    .release    = kmem_cache_release,
-};
-
-static const struct attribute_group slab_attr_group = {
-    .attrs      = slab_attrs,
-};
-
-static struct attribute *slab_attrs[] = {
-    &slab_size_attr.attr,
-    &object_size_attr.attr,
-    &objs_per_slab_attr.attr,
-    &order_attr.attr,
-    &sheaf_capacity_attr.attr,
-    &min_partial_attr.attr,
-    NULL
-};
-
-#define SLAB_ATTR_RO(_name) \
-    static struct slab_attribute _name##_attr = __ATTR_RO_MODE(_name, 0400)
-
-#define SLAB_ATTR(_name) \
-    static struct slab_attribute _name##_attr = __ATTR_RW_MODE(_name, 0600)
-
-#define __ATTR_RW_MODE(_name, _mode)                    \
-    __ATTR(_name, _mode, _name##_show, _name##_store)
-
-#define __ATTR(_name, _mode, _show, _store) {           \
-    .attr   = {.name = __stringify(_name),              \
-    .mode   = VERIFY_OCTAL_PERMISSIONS(_mode) },        \
-    .show   = _show,                                    \
-    .store  = _store,                                   \
-}
-
-struct attribute {
-    const char        *name;
-    umode_t            mode;
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-    bool            ignore_lockdep:1;
-    struct lock_class_key    *key;
-    struct lock_class_key    skey;
-#endif
-};
-
-struct slab_attribute {
-    struct attribute attr;
-    ssize_t (*show)(struct kmem_cache *s, char *buf);
-    ssize_t (*store)(struct kmem_cache *s, const char *x, size_t count);
-};
-
-static ssize_t slab_size_show(struct kmem_cache *s, char *buf)
-{
-    return sysfs_emit(buf, "%u\n", s->size);
-}
-SLAB_ATTR_RO(slab_size);
-
-static ssize_t align_show(struct kmem_cache *s, char *buf)
-{
-    return sysfs_emit(buf, "%u\n", s->align);
-}
-SLAB_ATTR_RO(align);
-
-static ssize_t object_size_show(struct kmem_cache *s, char *buf)
-{
-    return sysfs_emit(buf, "%u\n", s->object_size);
-}
-SLAB_ATTR_RO(object_size);
-```
-
-## /sys/kernel/debug/slab/
-
-```sh
-/sys/kernel/slab/kmalloc-64
-├── alloc_traces
-├── free_traces
-```
-
-### alloc_traces
-
-```c
-static void debugfs_slab_add(struct kmem_cache *s)
-{
-    struct dentry *slab_cache_dir;
-
-    if (unlikely(!slab_debugfs_root))
-        return;
-
-    slab_cache_dir = debugfs_create_dir(s->name, slab_debugfs_root);
-
-    debugfs_create_file_aux_num("alloc_traces", 0400, slab_cache_dir, s,
-                    TRACK_ALLOC, &slab_debugfs_fops);
-
-    debugfs_create_file_aux_num("free_traces", 0400, slab_cache_dir, s,
-                    TRACK_FREE, &slab_debugfs_fops);
-}
-
-static const struct file_operations slab_debugfs_fops = {
-    .open       = slab_debug_trace_open,
-    .read       = seq_read,
-    .llseek     = seq_lseek,
-    .release    = slab_debug_trace_release,
-};
-
-int slab_debug_trace_open(struct inode *inode, struct file *filep)
-{
-
-    struct kmem_cache_node *n;
-    enum track_item alloc;
-    int node;
-    struct loc_track *t = __seq_open_private(filep, &slab_debugfs_sops,
-                        sizeof(struct loc_track));
-    struct kmem_cache *s = file_inode(filep)->i_private;
-    unsigned long *obj_map;
-
-    if (!t)
-        return -ENOMEM;
-
-    obj_map = bitmap_alloc(oo_objects(s->oo), GFP_KERNEL);
-    if (!obj_map) {
-        seq_release_private(inode, filep);
-        return -ENOMEM;
-    }
-
-    alloc = debugfs_get_aux_num(filep);
-
-    if (!alloc_loc_track(t, PAGE_SIZE / sizeof(struct location), GFP_KERNEL)) {
-        bitmap_free(obj_map);
-        seq_release_private(inode, filep);
-        return -ENOMEM;
-    }
-
-    for_each_kmem_cache_node(s, node, n) {
-        unsigned long flags;
-        struct slab *slab;
-
-        if (!node_nr_slabs(n))
-            continue;
-
-        spin_lock_irqsave(&n->list_lock, flags);
-        list_for_each_entry(slab, &n->partial, slab_list)
-            process_slab(t, s, slab, alloc, obj_map);
-        list_for_each_entry(slab, &n->full, slab_list)
-            process_slab(t, s, slab, alloc, obj_map);
-        spin_unlock_irqrestore(&n->list_lock, flags);
-    }
-
-    /* Sort locations by count */
-    sort(t->loc, t->count, sizeof(struct location),
-         cmp_loc_by_count, NULL);
-
-    bitmap_free(obj_map);
-    return 0;
-}
-
-void process_slab(struct loc_track *t, struct kmem_cache *s,
-        struct slab *slab, enum track_item alloc,
-        unsigned long *obj_map)
-{
-    void *addr = slab_address(slab);
-    bool is_alloc = (alloc == TRACK_ALLOC);
-    void *p;
-
-    __fill_map(obj_map, s, slab);
-
-    for_each_object(p, s, addr, slab->objects)
-        if (!test_bit(__obj_to_index(s, addr, p), obj_map))
-            add_location(t, s, get_track(s, p, alloc),
-                is_alloc ? get_orig_size(s, p) : s->object_size);
-}
-
-int add_location(struct loc_track *t, struct kmem_cache *s,
-                const struct track *track,
-                unsigned int orig_size)
-{
-    long start, end, pos;
-    struct location *l;
-    unsigned long caddr, chandle, cwaste;
-    unsigned long age = jiffies - track->when;
-    depot_stack_handle_t handle = 0;
-    unsigned int waste = s->object_size - orig_size;
-
-#ifdef CONFIG_STACKDEPOT
-    handle = READ_ONCE(track->handle);
-#endif
-    start = -1;
-    end = t->count;
-
-    for ( ; ; ) {
-        pos = start + (end - start + 1) / 2;
-
-        /* There is nothing at "end". If we end up there
-         * we need to add something to before end. */
-        if (pos == end)
-            break;
-
-        l = &t->loc[pos];
-        caddr = l->addr;
-        chandle = l->handle;
-        cwaste = l->waste;
-        if ((track->addr == caddr) && (handle == chandle) &&
-            (waste == cwaste)) {
-
-            l->count++;
-            if (track->when) {
-                l->sum_time += age;
-                if (age < l->min_time)
-                    l->min_time = age;
-                if (age > l->max_time)
-                    l->max_time = age;
-
-                if (track->pid < l->min_pid)
-                    l->min_pid = track->pid;
-                if (track->pid > l->max_pid)
-                    l->max_pid = track->pid;
-
-                cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
-            }
-            node_set(page_to_nid(virt_to_page(track)), l->nodes);
-            return 1;
-        }
-
-        if (track->addr < caddr)
-            end = pos;
-        else if (track->addr == caddr && handle < chandle)
-            end = pos;
-        else if (track->addr == caddr && handle == chandle &&
-                waste < cwaste)
-            end = pos;
-        else
-            start = pos;
-    }
-
-    /* Not found. Insert new tracking element. */
-    if (t->count >= t->max && !alloc_loc_track(t, 2 * t->max, GFP_ATOMIC))
-        return 0;
-
-    l = t->loc + pos;
-    if (pos < t->count)
-        memmove(l + 1, l, (t->count - pos) * sizeof(struct location));
-    t->count++;
-    l->count = 1;
-    l->addr = track->addr;
-    l->sum_time = age;
-    l->min_time = age;
-    l->max_time = age;
-    l->min_pid = track->pid;
-    l->max_pid = track->pid;
-    l->handle = handle;
-    l->waste = waste;
-
-    cpumask_clear(to_cpumask(l->cpus));
-    cpumask_set_cpu(track->cpu, to_cpumask(l->cpus));
-    nodes_clear(l->nodes);
-    node_set(page_to_nid(virt_to_page(track)), l->nodes);
-
-    return 1;
 }
 ```
