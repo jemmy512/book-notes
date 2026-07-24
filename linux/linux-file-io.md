@@ -484,7 +484,7 @@ mount(dev_name, dir_name, type, flags, data) {
 
 ```c
 SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
-    char __user *, type, unsigned long, flags, void __user *, data)
+        char __user *, type, unsigned long, flags, void __user *, data)
 {
     int ret;
     char *kernel_type;
@@ -492,11 +492,28 @@ SYSCALL_DEFINE5(mount, char __user *, dev_name, char __user *, dir_name,
     void *options;
 
     kernel_type = copy_mount_string(type);
+    ret = PTR_ERR(kernel_type);
+    if (IS_ERR(kernel_type))
+        goto out_type;
+
     kernel_dev = copy_mount_string(dev_name);
+    ret = PTR_ERR(kernel_dev);
+    if (IS_ERR(kernel_dev))
+        goto out_dev;
+
     options = copy_mount_options(data);
+    ret = PTR_ERR(options);
+    if (IS_ERR(options))
+        goto out_data;
 
     ret = do_mount(kernel_dev, dir_name, kernel_type, flags, options);
 
+    kfree(options);
+out_data:
+    kfree(kernel_dev);
+out_dev:
+    kfree(kernel_type);
+out_type:
     return ret;
 }
 
@@ -506,7 +523,28 @@ long do_mount(const char *dev_name, const char __user *dir_name,
     struct path path;
     int ret;
 
-    ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path);
+    ret = user_path_at(AT_FDCWD, dir_name, LOOKUP_FOLLOW, &path) {
+        CLASS(filename_flags, filename)(name, flags);
+        return filename_lookup(dfd, filename, flags, path, NULL) {
+            int retval;
+            struct nameidata nd;
+            if (IS_ERR(name))
+                return PTR_ERR(name);
+            set_nameidata(&nd, dfd, name, root);
+            retval = path_lookupat(&nd, flags | LOOKUP_RCU, path);
+            if (unlikely(retval == -ECHILD))
+                retval = path_lookupat(&nd, flags, path);
+            if (unlikely(retval == -ESTALE))
+                retval = path_lookupat(&nd, flags | LOOKUP_REVAL, path);
+
+            if (likely(!retval))
+                audit_inode(name, path->dentry,
+                        flags & LOOKUP_MOUNTPOINT ? AUDIT_INODE_NOEVAL : 0);
+            restore_nameidata();
+            return retval;
+        }
+    }
+
     ret = path_mount(dev_name, &path, type_page, flags, data_page);
     path_put(&path);
     return ret;
@@ -521,6 +559,21 @@ int path_mount(const char *dev_name, struct path *path,
     /* Discard magic */
     if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
         flags &= ~MS_MGC_MSK;
+
+    /* Basic sanity checks */
+    if (data_page)
+        ((char *)data_page)[PAGE_SIZE - 1] = 0;
+
+    if (flags & MS_NOUSER)
+        return -EINVAL;
+
+    ret = security_sb_mount(dev_name, path, type_page, flags, data_page);
+    if (ret)
+        return ret;
+    if (!may_mount())
+        return -EPERM;
+    if (flags & SB_MANDLOCK)
+        warn_mandlock();
 
     /* Default to relatime unless overriden */
     if (!(flags & MS_NOATIME))
@@ -547,33 +600,42 @@ int path_mount(const char *dev_name, struct path *path,
     /* The default atime for remount is preservation */
     if ((flags & MS_REMOUNT) &&
         ((flags & (MS_NOATIME | MS_NODIRATIME | MS_RELATIME |
-            MS_STRICTATIME)) == 0)) {
+               MS_STRICTATIME)) == 0)) {
         mnt_flags &= ~MNT_ATIME_MASK;
         mnt_flags |= path->mnt->mnt_flags & MNT_ATIME_MASK;
     }
 
     sb_flags = flags & (SB_RDONLY |
-            SB_SYNCHRONOUS |
-            SB_MANDLOCK |
-            SB_DIRSYNC |
-            SB_SILENT |
-            SB_POSIXACL |
-            SB_LAZYTIME |
-            SB_I_VERSION);
+                SB_SYNCHRONOUS |
+                SB_MANDLOCK |
+                SB_DIRSYNC |
+                SB_SILENT |
+                SB_POSIXACL |
+                SB_LAZYTIME |
+                SB_I_VERSION);
 
+    /* mount --bind -o remount,ro */
     if ((flags & (MS_REMOUNT | MS_BIND)) == (MS_REMOUNT | MS_BIND))
         return do_reconfigure_mnt(path, mnt_flags);
+
+    /* mount -o remount,ro /dev/sda1 /mnt */
     if (flags & MS_REMOUNT)
-        return do_remount(path, flags, sb_flags, mnt_flags, data_page);
+        return do_remount(path, sb_flags, mnt_flags, data_page);
+
+    /* mount --bind /src /dst */
     if (flags & MS_BIND)
         return do_loopback(path, dev_name, flags & MS_REC);
+
+    /* mount --make-shared /mnt */
     if (flags & (MS_SHARED | MS_PRIVATE | MS_SLAVE | MS_UNBINDABLE))
         return do_change_type(path, flags);
+
+    /* mount --move /old /new */
     if (flags & MS_MOVE)
         return do_move_mount_old(path, dev_name);
 
-    return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name,
-          data_page);
+    /* mount -t ext4 /dev/sda1 /mnt */
+    return do_new_mount(path, type_page, sb_flags, mnt_flags, dev_name, data_page);
 }
 ```
 
@@ -652,7 +714,7 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
             fc->fs_type         = get_filesystem(fs_type);
             fc->cred            = get_current_cred();
             fc->net_ns          = get_net(current->nsproxy->net_ns);
-            fc->log.prefix       = fs_type->name;
+            fc->log.prefix      = fs_type->name;
 
             mutex_init(&fc->uapi_mutex);
 
@@ -670,15 +732,31 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
                 break;
             }
 
-            /* TODO: Make all filesystems support this unconditionally */
-            init_fs_context = fc->fs_type->init_fs_context;
-            if (!init_fs_context)
-                init_fs_context = legacy_init_fs_context;
-
-            ret = init_fs_context(fc) {
+            ret = fc->fs_type->init_fs_context(fc) {
                 = sysfs_init_fs_context() { }
-                = shmem_init_fs_context() { }
                 = rootfs_init_fs_context() { }
+                = shmem_init_fs_context() {
+                    struct shmem_options *ctx;
+
+                    ctx = kzalloc_obj(struct shmem_options);
+                    if (!ctx)
+                        return -ENOMEM;
+
+                    ctx->mode = 0777 | S_ISVTX;
+                    ctx->uid = current_fsuid();
+                    ctx->gid = current_fsgid();
+
+                #if IS_ENABLED(CONFIG_UNICODE)
+                    ctx->encoding = NULL;
+                #endif
+
+                    fc->fs_private = ctx;
+                    fc->ops = &shmem_fs_context_ops;
+                #ifdef CONFIG_TMPFS
+                    fc->sb_flags |= SB_I_VERSION;
+                #endif
+                    return 0;
+                }
             }
             if (ret < 0)
                 goto err_fc;
@@ -708,41 +786,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
          unsigned int mnt_flags)
 {
     struct super_block *sb;
-    struct vfsmount *mnt __free(mntput) = fc_mount(fc) {
-        int err = vfs_get_tree(fc);
-        if (!err) {
-            up_write(&fc->root->d_sb->s_umount);
-            return vfs_create_mount(fc) {
-                struct mount *mnt;
-
-                if (!fc->root)
-                    return ERR_PTR(-EINVAL);
-
-                mnt = alloc_vfsmnt(fc->source);
-                if (!mnt)
-                    return ERR_PTR(-ENOMEM);
-
-                if (fc->sb_flags & SB_KERNMOUNT)
-                    mnt->mnt.mnt_flags = MNT_INTERNAL;
-
-                setup_mnt(mnt, fc->root) {
-                    struct super_block *s = root->d_sb;
-
-                    atomic_inc(&s->s_active);
-                    m->mnt.mnt_sb = s;
-                    m->mnt.mnt_root = dget(root);
-                    m->mnt_mountpoint = m->mnt.mnt_root;
-                    m->mnt_parent = m;
-
-                    guard(mount_locked_reader)();
-                    mnt_add_instance(m, s);
-                }
-
-                return &mnt->mnt;
-            }
-        }
-        return ERR_PTR(err);
-    }
+    struct vfsmount *mnt __free(mntput) = fc_mount(fc);
     int error;
 
     if (IS_ERR(mnt))
@@ -795,102 +839,7 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
             if (d_is_dir(mp->m_dentry) != d_is_dir(mnt->mnt.mnt_root))
                 return -ENOTDIR;
 
-            return attach_recursive_mnt(mnt/*source_mnt*/, p/*top_mnt*/, mp/*dest_mp*/, false/*moving*/) {
-                struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
-                beneath = flags & MNT_TREE_BENEATH;
-                dest_mnt = (beneath) ? top_mnt->mnt_parent : top_mnt;
-                HLIST_HEAD(tree_list);
-                struct mnt_namespace *ns = dest_mnt->mnt_ns;
-                struct mountpoint *smp;
-                struct mount *child, *p;
-                struct hlist_node *n;
-                int err;
-
-                /* Preallocate a mountpoint in case the new mounts need
-                 * to be tucked under other mounts. */
-                smp = get_mountpoint(source_mnt->mnt.mnt_root);
-                    --->
-                if (IS_ERR(smp))
-                    return PTR_ERR(smp);
-
-                /* Is there space to add these mounts to the mount namespace? */
-                if (!moving) {
-                    err = count_mounts(ns, source_mnt);
-                    if (err)
-                        goto out;
-                }
-
-                if (IS_MNT_SHARED(dest_mnt)) {
-                    err = invent_group_ids(source_mnt, true) {
-                        struct mount *p;
-                        for (p = mnt; p; p = recurse ? next_mnt(p, mnt) : NULL) {
-                            if (!p->mnt_group_id && !IS_MNT_SHARED(p)) {
-                                int err = mnt_alloc_group_id(p) {
-                                    int res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
-                                    if (res < 0)
-                                        return res;
-                                    mnt->mnt_group_id = res;
-                                    return 0;
-                                }
-                                if (err) {
-                                    cleanup_group_ids(mnt, p);
-                                    return err;
-                                }
-                            }
-                        }
-
-                        return 0;
-                    }
-                    if (err)
-                        goto out;
-                    err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
-                        --->
-                    lock_mount_hash();
-                    if (err)
-                        goto out_cleanup_ids;
-                    for (p = source_mnt; p; p = next_mnt(p, source_mnt))
-                        set_mnt_shared(p);
-                } else {
-                    lock_mount_hash();
-                }
-
-                if (moving) {
-                    unhash_mnt(source_mnt);
-                    attach_mnt(source_mnt, dest_mnt, dest_mp);
-                    touch_mnt_namespace(source_mnt->mnt_ns);
-                } else {
-                    if (source_mnt->mnt_ns) {
-                        /* move from anon - the caller will destroy */
-                        list_del_init(&source_mnt->mnt_ns->list);
-                    }
-                    mnt_set_mountpoint(dest_mnt/*mnt*/, dest_mp/*mp*/, source_mnt/*child_mnt*/) {
-                        mp->m_count++;
-                        mnt_add_count(mnt, 1); /* essentially, that's mntget */
-                        child_mnt->mnt_mountpoint = mp->m_dentry;
-                        child_mnt->mnt_parent = mnt;
-                        child_mnt->mnt_mp = mp;
-                        hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
-                    }
-                    commit_tree(source_mnt/*mnt*/);
-                }
-
-                hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
-                    struct mount *q;
-                    hlist_del_init(&child->mnt_hash);
-                    q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
-                    if (q)
-                        mnt_change_mountpoint(child, smp, q);
-                    /* Notice when we are propagating across user namespaces */
-                    if (child->mnt_parent->mnt_ns->user_ns != user_ns)
-                        lock_mnt_tree(child);
-                    child->mnt.mnt_flags &= ~MNT_LOCKED;
-                    commit_tree(child);
-                }
-                put_mountpoint(smp);
-                unlock_mount_hash();
-
-                return 0;
-            }
+            return attach_recursive_mnt(mnt, mp);
         }
     }
 
@@ -898,50 +847,256 @@ static int do_new_mount_fc(struct fs_context *fc, struct path *mountpoint,
 }
 ```
 
-#### get_mountpoint
+#### fc_mount
 
 ```c
+struct vfsmount *fc_mount(struct fs_context *fc)
+{
+    int err = vfs_get_tree(fc);
+    if (!err) {
+        up_write(&fc->root->d_sb->s_umount);
+        return vfs_create_mount(fc);
+    }
+    return ERR_PTR(err);
+}
+```
+
+```c
+int vfs_get_tree(struct fs_context *fc)
+{
+    struct super_block *sb;
+    int error;
+
+    if (fc->root)
+        return -EBUSY;
+
+    /* Get the mountable root in fc->root, with a ref on the root and a ref
+     * on the superblock. */
+    error = fc->ops->get_tree(fc) {
+        /* allocates struct super_block
+         * calls type->fill_super() to read disk, set s_op, etc.
+         * sets fc->root = root dentry of the new filesystem */
+    }
+    if (error < 0)
+        return error;
+
+    if (!fc->root) {
+        pr_err("Filesystem %s get_tree() didn't set fc->root, returned %i\n",
+               fc->fs_type->name, error);
+        /* We don't know what the locking state of the superblock is -
+         * if there is a superblock. */
+        BUG();
+    }
+
+    sb = fc->root->d_sb;
+    WARN_ON(!sb->s_bdi);
+
+    /* super_wake() contains a memory barrier which also care of
+     * ordering for super_cache_count(). We place it before setting
+     * SB_BORN as the data dependency between the two functions is
+     * the superblock structure contents that we just set up, not
+     * the SB_BORN flag. */
+    super_wake(sb, SB_BORN);
+
+    error = security_sb_set_mnt_opts(sb, fc->security, 0, NULL);
+    if (unlikely(error)) {
+        fc_drop_locked(fc);
+        return error;
+    }
+
+    /* filesystems should never set s_maxbytes larger than MAX_LFS_FILESIZE
+     * but s_maxbytes was an unsigned long long for many releases. Throw
+     * this warning for a little while to try and catch filesystems that
+     * violate this rule. */
+    WARN((sb->s_maxbytes < 0), "%s set sb->s_maxbytes to "
+        "negative value (%lld)\n", fc->fs_type->name, sb->s_maxbytes);
+
+    return 0;
+}
+```
+
+```c
+struct vfsmount *vfs_create_mount(struct fs_context *fc)
+{
+    struct mount *mnt;
+
+    if (!fc->root)
+        return ERR_PTR(-EINVAL);
+
+    mnt = alloc_vfsmnt(fc->source) {
+        struct mount *mnt = kmem_cache_zalloc(mnt_cache, GFP_KERNEL);
+        if (mnt) {
+            int err;
+
+            err = mnt_alloc_id(mnt);
+            if (err)
+                goto out_free_cache;
+
+            if (name)
+                mnt->mnt_devname = kstrdup_const(name, GFP_KERNEL_ACCOUNT);
+            else
+                mnt->mnt_devname = "none";
+            if (!mnt->mnt_devname)
+                goto out_free_id;
+
+    #ifdef CONFIG_SMP
+            mnt->mnt_pcp = alloc_percpu(struct mnt_pcp);
+            if (!mnt->mnt_pcp)
+                goto out_free_devname;
+
+            this_cpu_add(mnt->mnt_pcp->mnt_count, 1);
+    #else
+            mnt->mnt_count = 1;
+            mnt->mnt_writers = 0;
+    #endif
+
+            INIT_HLIST_NODE(&mnt->mnt_hash);
+            INIT_LIST_HEAD(&mnt->mnt_child);
+            INIT_LIST_HEAD(&mnt->mnt_mounts);
+            INIT_LIST_HEAD(&mnt->mnt_list);
+            INIT_LIST_HEAD(&mnt->mnt_expire);
+            INIT_LIST_HEAD(&mnt->mnt_share);
+            INIT_HLIST_HEAD(&mnt->mnt_slave_list);
+            INIT_HLIST_NODE(&mnt->mnt_slave);
+            INIT_HLIST_NODE(&mnt->mnt_mp_list);
+            INIT_HLIST_HEAD(&mnt->mnt_stuck_children);
+            INIT_HLIST_NODE(&mnt->mnt_ns_visible);
+            RB_CLEAR_NODE(&mnt->mnt_node);
+            mnt->mnt.mnt_idmap = &nop_mnt_idmap;
+        }
+        return mnt;
+    }
+    if (!mnt)
+        return ERR_PTR(-ENOMEM);
+
+    if (fc->sb_flags & SB_KERNMOUNT)
+        mnt->mnt.mnt_flags = MNT_INTERNAL;
+
+    setup_mnt(mnt, fc->root) {
+        struct super_block *s = root->d_sb;
+
+        atomic_inc(&s->s_active);
+        m->mnt.mnt_sb = s;
+        m->mnt.mnt_root = dget(root);
+        m->mnt_mountpoint = m->mnt.mnt_root;
+        m->mnt_parent = m;
+
+        guard(mount_locked_reader)();
+        mnt_add_instance(m, s) {
+            struct mount *first = s->s_mounts;
+
+            if (first)
+                first->mnt_pprev_for_sb = &m->mnt_next_for_sb;
+            m->mnt_next_for_sb = first;
+            m->mnt_pprev_for_sb = &s->s_mounts;
+            s->s_mounts = m;
+        }
+    }
+
+    return &mnt->mnt;
+}
+```
+
+
+#### do_lock_mount
+
+```c
+struct pinned_mountpoint {
+    struct hlist_node   node;
+    struct mountpoint   *mp;
+    struct mount        *parent;
+};
+
+#define LOCK_MOUNT_MAYBE_BENEATH(mp, path, beneath) \
+    struct pinned_mountpoint mp __cleanup(unlock_mount) = {}; \
+    do_lock_mount((path), &mp, (beneath))
+#define LOCK_MOUNT(mp, path) LOCK_MOUNT_MAYBE_BENEATH(mp, (path), false)
+
 static struct hlist_head *mount_hashtable __ro_after_init;
 static struct hlist_head *mountpoint_hashtable __ro_after_init;
 static struct kmem_cache *mnt_cache __ro_after_init;
 
-static int get_mountpoint(struct dentry *dentry, struct pinned_mountpoint *m) {
-    struct mountpoint *mp, *new = NULL;
-    int ret;
+void do_lock_mount(const struct path *path,
+              struct pinned_mountpoint *res,
+              bool beneath)
+{
+    int err;
 
-    if (d_mountpoint(dentry) { return dentry->d_flags & DCACHE_MOUNTED; }) {
-        /* might be worth a WARN_ON() */
-        if (d_unlinked(dentry))
-            return ERR_PTR(-ENOENT);
-mountpoint:
-        read_seqlock_excl(&mount_lock);
-        mp = lookup_mountpoint(dentry) {
-            struct hlist_head *chain = mp_hash(dentry) {
-                unsigned long tmp = ((unsigned long)dentry / L1_CACHE_BYTES);
-                tmp = tmp + (tmp >> mp_hash_shift);
-                return &mountpoint_hashtable[tmp & mp_hash_mask];
-            }
-            struct mountpoint *mp;
-
-            hlist_for_each_entry(mp, chain, m_hash) {
-                if (mp->m_dentry == dentry) {
-                    hlist_add_head(&m->node, &mp->m_list);
-                    m->mp = mp;
-                    return true;
-                }
-            }
-            return NULL;
-        }
-        read_sequnlock_excl(&mount_lock);
-        if (mp)
-            goto done;
+    if (unlikely(beneath) && !path_mounted(path)) {
+        res->parent = ERR_PTR(-EINVAL);
+        return;
     }
 
-    if (!new)
-        new = kmalloc(sizeof(struct mountpoint), GFP_KERNEL);
-    if (!new)
-        return ERR_PTR(-ENOMEM);
+    do {
+        struct dentry *dentry, *d;
+        struct mount *m, *n;
 
+        scoped_guard(mount_locked_reader) {
+            m = where_to_mount(path, &dentry, beneath);
+            if (&m->mnt != path->mnt) {
+                mntget(&m->mnt);
+                dget(dentry);
+            }
+        }
+
+        inode_lock(dentry->d_inode);
+        namespace_lock();
+
+        // check if the chain of mounts (if any) has changed.
+        scoped_guard(mount_locked_reader)
+            n = where_to_mount(path, &d, beneath);
+
+        if (unlikely(n != m || dentry != d))
+            err = -EAGAIN;        // something moved, retry
+        else if (unlikely(cant_mount(dentry) || !is_mounted(path->mnt)))
+            err = -ENOENT;        // not to be mounted on
+        else if (beneath && &m->mnt == path->mnt && !m->overmount)
+            err = -EINVAL;
+        else
+            err = get_mountpoint(dentry, res);
+
+        if (unlikely(err)) {
+            res->parent = ERR_PTR(err);
+            namespace_unlock();
+            inode_unlock(dentry->d_inode);
+        } else {
+            res->parent = m;
+        }
+        /* Drop the temporary references.  This is subtle - on success
+         * we are doing that under namespace_sem, which would normally
+         * be forbidden.  However, in that case we are guaranteed that
+         * refcounts won't reach zero, since we know that path->mnt
+         * is mounted and thus all mounts reachable from it are pinned
+         * and stable, along with their mountpoints and roots. */
+        if (&m->mnt != path->mnt) {
+            dput(dentry);
+            mntput(&m->mnt);
+        }
+    } while (err == -EAGAIN);
+}
+
+int get_mountpoint(struct dentry *dentry, struct pinned_mountpoint *m)
+{
+    struct mountpoint *mp __free(kfree) = NULL;
+    bool found;
+    int ret;
+
+    if (d_mountpoint(dentry)) {
+        /* might be worth a WARN_ON() */
+        if (d_unlinked(dentry))
+            return -ENOENT;
+mountpoint:
+        read_seqlock_excl(&mount_lock);
+        found = lookup_mountpoint(dentry, m);
+        read_sequnlock_excl(&mount_lock);
+        if (found)
+            return 0;
+    }
+
+    if (!mp)
+        mp = kmalloc_obj(struct mountpoint);
+    if (!mp)
+        return -ENOMEM;
 
     /* Exactly one processes may set d_mounted */
     ret = d_set_mounted(dentry);
@@ -951,23 +1106,122 @@ mountpoint:
         goto mountpoint;
 
     /* The dentry is not available as a mountpoint? */
-    mp = ERR_PTR(ret);
     if (ret)
-        goto done;
+        return ret;
 
     /* Add the new mountpoint to the hash table */
     read_seqlock_excl(&mount_lock);
-    new->m_dentry = dget(dentry);
-    new->m_count = 1;
-    hlist_add_head(&new->m_hash, mp_hash(dentry));
-    INIT_HLIST_HEAD(&new->m_list);
+    mp->m_dentry = dget(dentry);
+    hlist_add_head(&mp->m_hash, mp_hash(dentry));
+    INIT_HLIST_HEAD(&mp->m_list);
+    hlist_add_head(&m->node, &mp->m_list);
+    m->mp = no_free_ptr(mp);
     read_sequnlock_excl(&mount_lock);
+    return 0;
+}
+```
 
-    mp = new;
-    new = NULL;
-done:
-    kfree(new);
-    return mp;
+#### attach_recursive_mnt
+
+```c
+int attach_recursive_mnt(
+    struct mount *source_mnt,
+    const struct pinned_mountpoint *dest)
+{
+    struct user_namespace *user_ns = current->nsproxy->mnt_ns->user_ns;
+    beneath = flags & MNT_TREE_BENEATH;
+    dest_mnt = (beneath) ? top_mnt->mnt_parent : top_mnt;
+    HLIST_HEAD(tree_list);
+    struct mnt_namespace *ns = dest_mnt->mnt_ns;
+    struct mountpoint *smp;
+    struct mount *child, *p;
+    struct hlist_node *n;
+    int err;
+
+    /* Preallocate a mountpoint in case the new mounts need
+        * to be tucked under other mounts. */
+    smp = get_mountpoint(source_mnt->mnt.mnt_root);
+        --->
+    if (IS_ERR(smp))
+        return PTR_ERR(smp);
+
+    /* Is there space to add these mounts to the mount namespace? */
+    if (!moving) {
+        err = count_mounts(ns, source_mnt);
+        if (err)
+            goto out;
+    }
+
+    if (IS_MNT_SHARED(dest_mnt)) {
+        err = invent_group_ids(source_mnt, true) {
+            struct mount *p;
+            for (p = mnt; p; p = recurse ? next_mnt(p, mnt) : NULL) {
+                if (!p->mnt_group_id && !IS_MNT_SHARED(p)) {
+                    int err = mnt_alloc_group_id(p) {
+                        int res = ida_alloc_min(&mnt_group_ida, 1, GFP_KERNEL);
+                        if (res < 0)
+                            return res;
+                        mnt->mnt_group_id = res;
+                        return 0;
+                    }
+                    if (err) {
+                        cleanup_group_ids(mnt, p);
+                        return err;
+                    }
+                }
+            }
+
+            return 0;
+        }
+        if (err)
+            goto out;
+        err = propagate_mnt(dest_mnt, dest_mp, source_mnt, &tree_list);
+            --->
+        lock_mount_hash();
+        if (err)
+            goto out_cleanup_ids;
+        for (p = source_mnt; p; p = next_mnt(p, source_mnt))
+            set_mnt_shared(p);
+    } else {
+        lock_mount_hash();
+    }
+
+    if (moving) {
+        unhash_mnt(source_mnt);
+        attach_mnt(source_mnt, dest_mnt, dest_mp);
+        touch_mnt_namespace(source_mnt->mnt_ns);
+    } else {
+        if (source_mnt->mnt_ns) {
+            /* move from anon - the caller will destroy */
+            list_del_init(&source_mnt->mnt_ns->list);
+        }
+        mnt_set_mountpoint(dest_mnt/*mnt*/, dest_mp/*mp*/, source_mnt/*child_mnt*/) {
+            mp->m_count++;
+            mnt_add_count(mnt, 1); /* essentially, that's mntget */
+            child_mnt->mnt_mountpoint = mp->m_dentry;
+            child_mnt->mnt_parent = mnt;
+            child_mnt->mnt_mp = mp;
+            hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
+        }
+        commit_tree(source_mnt/*mnt*/);
+    }
+
+    hlist_for_each_entry_safe(child, n, &tree_list, mnt_hash) {
+        struct mount *q;
+        hlist_del_init(&child->mnt_hash);
+        q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
+        if (q)
+            mnt_change_mountpoint(child, smp, q);
+        /* Notice when we are propagating across user namespaces */
+        if (child->mnt_parent->mnt_ns->user_ns != user_ns)
+            lock_mnt_tree(child);
+        child->mnt.mnt_flags &= ~MNT_LOCKED;
+        commit_tree(child);
+    }
+    put_mountpoint(smp);
+    unlock_mount_hash();
+
+    return 0;
 }
 ```
 
@@ -1036,6 +1290,17 @@ void mnt_add_to_ns(struct mnt_namespace *ns, struct mount *mnt)
     }
 }
 ```
+
+
+### do_remount
+
+### do_loopback
+
+### do_change_type
+
+### do_move_mount_old
+
+### do_reconfigure_mnt
 
 ## alloc_file
 
@@ -7522,10 +7787,10 @@ struct gendisk {
 #### ext4_get_tree
 ```c
 static const struct fs_context_operations ext4_context_ops = {
-    .parse_param    = ext4_parse_param,
-    .get_tree       = ext4_get_tree,
-    .reconfigure    = ext4_reconfigure,
-    .free           = ext4_fc_free,
+    .parse_param        = ext4_parse_param,
+    .get_tree           = ext4_get_tree,
+    .reconfigure        = ext4_reconfigure,
+    .free               = ext4_fc_free,
 };
 
 static int ext4_get_tree(struct fs_context *fc)
@@ -12487,31 +12752,6 @@ out:
 }
 ```
 
-# Tuning
-
-## Application Calls
-
-performance of synchronous write workloads can be improved by using **fsync**(2) to flush a logical group of writes, instead of individually when using the O_DSYNC/O_RSYNC open(2) flags
-
-
-```sh
-int posix_fadvise(int fd, off_t offset, off_t len, int advice);
-int madvise(void *addr, size_t length, int advice);
-```
-
-Advice | Description
-- | -
-POSIX_FADV_SEQUENTIAL | The specified data range will be accessed sequentially.
-POSIX_FADV_RANDOM | The specified data range will be accessed randomly.
-POSIX_FADV_NOREUSE | The data will not be reused.
-POSIX_FADV_WILLNEED | The data will be used again in the near future.
-POSIX_FADV_DONTNEED | The data will not be used again in the near future.
-MADV_RANDOM | Offsets will be accessed in random order.
-MADV_SEQUENTIAL | Offsets will be accessed in sequential order.
-MADV_WILLNEED | Data will be needed again (please cache).
-MADV_DONTNEED | Data will not be needed again (no need to cache).
-
-
 # FS
 
 ## core
@@ -14058,8 +14298,8 @@ int sysfs_init_fs_context(struct fs_context *fc)
 }
 
 static const struct fs_context_operations sysfs_fs_context_ops = {
-    .free        = sysfs_fs_context_free,
-    .get_tree    = kernfs_get_tree,
+    .free               = sysfs_fs_context_free,
+    .get_tree           = kernfs_get_tree,
 };
 ```
 
@@ -15977,6 +16217,14 @@ static struct file_system_type proc_fs_type = {
     .fs_flags           = FS_USERNS_MOUNT | FS_DISALLOW_NOTIFY_PERM,
 };
 
+struct proc_fs_context {
+    struct pid_namespace    *pid_ns;
+    unsigned int            mask;
+    enum proc_hidepid       hidepid;
+    int                     gid;
+    enum proc_pidonly       pidonly;
+};
+
 static int proc_init_fs_context(struct fs_context *fc)
 {
     struct proc_fs_context *ctx;
@@ -15994,15 +16242,39 @@ static int proc_init_fs_context(struct fs_context *fc)
 }
 
 static const struct fs_context_operations proc_fs_context_ops = {
-    .free           = proc_fs_context_free,
-    .parse_param    = proc_parse_param,
-    .get_tree       = proc_get_tree,
-    .reconfigure    = proc_reconfigure,
+    .free               = proc_fs_context_free,
+    .parse_param        = proc_parse_param,
+    .get_tree           = proc_get_tree,
+    .reconfigure        = proc_reconfigure,
 };
 
 static int proc_get_tree(struct fs_context *fc)
 {
-    return get_tree_nodev(fc, proc_fill_super);
+    return get_tree_nodev(fc, proc_fill_super) {
+        return vfs_get_super(fc, NULL, fill_super) {
+            struct super_block *sb;
+            int err;
+
+            sb = sget_fc(fc, test, set_anon_super_fc);
+            if (IS_ERR(sb))
+                return PTR_ERR(sb);
+
+            if (!sb->s_root) {
+                err = fill_super(sb, fc);
+                if (err)
+                    goto error;
+
+                sb->s_flags |= SB_ACTIVE;
+            }
+
+            fc->root = dget(sb->s_root);
+            return 0;
+
+        error:
+            deactivate_locked_super(sb);
+            return err;
+        }
+    }
 }
 
 int proc_fill_super(struct super_block *s, struct fs_context *fc)
@@ -16044,6 +16316,7 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
         return -ENOMEM;
     }
 
+    /* make a dentry for root inode */
     s->s_root = d_make_root(root_inode);
     if (!s->s_root) {
         pr_err("proc_fill_super: allocate dentry failed\n");
@@ -16056,6 +16329,19 @@ int proc_fill_super(struct super_block *s, struct fs_context *fc)
     }
     return proc_setup_thread_self(s);
 }
+```
+
+#### proc_sops
+
+```c
+const struct super_operations proc_sops = {
+    .alloc_inode        = proc_alloc_inode,
+    .free_inode         = proc_free_inode,
+    .drop_inode         = inode_just_drop,
+    .evict_inode        = proc_evict_inode,
+    .statfs             = simple_statfs,
+    .show_options       = proc_show_options,
+};
 ```
 
 ### proc_root
@@ -16376,100 +16662,6 @@ end_instantiate:
 }
 ```
 
-### proc_vfs
-
-#### proc_reg_file_ops
-
-```c
-static const struct file_operations proc_reg_file_ops = {
-    .llseek             = proc_reg_llseek,
-    .read               = proc_reg_read() {
-        return pde_read(pde, file, buf, count, ppos) {
-            const auto read = pde->proc_ops->proc_read;
-            if (read)
-                return read(file, buf, count, ppos);
-            return -EIO;
-        }
-    }
-    .write              = proc_reg_write() {
-        return pde_write(pde, file, buf, count, ppos) {
-            const auto write = pde->proc_ops->proc_write;
-            if (write)
-                return write(file, buf, count, ppos);
-            return -EIO;
-        }
-    }
-    .poll               = proc_reg_poll,
-    .unlocked_ioctl     = proc_reg_unlocked_ioctl,
-    .mmap               = proc_reg_mmap,
-    .get_unmapped_area  = proc_reg_get_unmapped_area,
-    .open               = proc_reg_open,
-    .release            = proc_reg_release,
-};
-```
-
-```c
-int proc_reg_open(struct inode *inode, struct file *file)
-{
-    struct proc_dir_entry *pde = PDE(inode);
-    int rv = 0;
-    typeof_member(struct proc_ops, proc_open) open;
-    struct pde_opener *pdeo;
-
-    if (!pde_has_proc_lseek(pde))
-        file->f_mode &= ~FMODE_LSEEK;
-
-    if (pde_is_permanent(pde)) {
-        open = pde->proc_ops->proc_open;
-        if (open)
-            rv = open(inode, file);
-        return rv;
-    }
-
-    /* Ensure that
-     * 1) PDE's ->release hook will be called no matter what
-     *    either normally by close()/->release, or forcefully by
-     *    rmmod/remove_proc_entry.
-     *
-     * 2) rmmod isn't blocked by opening file in /proc and sitting on
-     *    the descriptor (including "rmmod foo </proc/foo" scenario).
-     *
-     * Save every "struct file" with custom ->release hook. */
-    if (!use_pde(pde))
-        return -ENOENT;
-
-    const auto release = pde->proc_ops->proc_release;
-    if (release) {
-        pdeo = kmem_cache_alloc(pde_opener_cache, GFP_KERNEL);
-        if (!pdeo) {
-            rv = -ENOMEM;
-            goto out_unuse;
-        }
-    }
-
-    open = pde->proc_ops->proc_open;
-    if (open)
-        rv = open(inode, file);
-
-    if (release) {
-        if (rv == 0) {
-            /* To know what to release. */
-            pdeo->file = file;
-            pdeo->closing = false;
-            pdeo->c = NULL;
-            spin_lock(&pde->pde_unload_lock);
-            list_add(&pdeo->lh, &pde->pde_openers);
-            spin_unlock(&pde->pde_unload_lock);
-        } else
-            kmem_cache_free(pde_opener_cache, pdeo);
-    }
-
-out_unuse:
-    unuse_pde(pde);
-    return rv;
-}
-```
-
 ### proc_create
 
 ```c
@@ -16677,6 +16869,101 @@ struct proc_dir_entry *proc_mkdir(const char *name,
 }
 ```
 
+### proc_vfs
+
+#### proc_reg_file_ops
+
+```c
+static const struct file_operations proc_reg_file_ops = {
+    .llseek             = proc_reg_llseek,
+    .read               = proc_reg_read() {
+        return pde_read(pde, file, buf, count, ppos) {
+            const auto read = pde->proc_ops->proc_read;
+            if (read)
+                return read(file, buf, count, ppos);
+            return -EIO;
+        }
+    }
+    .write              = proc_reg_write() {
+        return pde_write(pde, file, buf, count, ppos) {
+            const auto write = pde->proc_ops->proc_write;
+            if (write)
+                return write(file, buf, count, ppos);
+            return -EIO;
+        }
+    }
+    .poll               = proc_reg_poll,
+    .unlocked_ioctl     = proc_reg_unlocked_ioctl,
+    .mmap               = proc_reg_mmap,
+    .get_unmapped_area  = proc_reg_get_unmapped_area,
+    .open               = proc_reg_open,
+    .release            = proc_reg_release,
+};
+```
+
+```c
+int proc_reg_open(struct inode *inode, struct file *file)
+{
+    struct proc_dir_entry *pde = PDE(inode);
+    int rv = 0;
+    typeof_member(struct proc_ops, proc_open) open;
+    struct pde_opener *pdeo;
+
+    if (!pde_has_proc_lseek(pde))
+        file->f_mode &= ~FMODE_LSEEK;
+
+    if (pde_is_permanent(pde)) {
+        open = pde->proc_ops->proc_open;
+        if (open)
+            rv = open(inode, file);
+        return rv;
+    }
+
+    /* Ensure that
+     * 1) PDE's ->release hook will be called no matter what
+     *    either normally by close()/->release, or forcefully by
+     *    rmmod/remove_proc_entry.
+     *
+     * 2) rmmod isn't blocked by opening file in /proc and sitting on
+     *    the descriptor (including "rmmod foo </proc/foo" scenario).
+     *
+     * Save every "struct file" with custom ->release hook. */
+    if (!use_pde(pde))
+        return -ENOENT;
+
+    const auto release = pde->proc_ops->proc_release;
+    if (release) {
+        pdeo = kmem_cache_alloc(pde_opener_cache, GFP_KERNEL);
+        if (!pdeo) {
+            rv = -ENOMEM;
+            goto out_unuse;
+        }
+    }
+
+    open = pde->proc_ops->proc_open;
+    if (open)
+        rv = open(inode, file);
+
+    if (release) {
+        if (rv == 0) {
+            /* To know what to release. */
+            pdeo->file = file;
+            pdeo->closing = false;
+            pdeo->c = NULL;
+            spin_lock(&pde->pde_unload_lock);
+            list_add(&pdeo->lh, &pde->pde_openers);
+            spin_unlock(&pde->pde_unload_lock);
+        } else
+            kmem_cache_free(pde_opener_cache, pdeo);
+    }
+
+out_unuse:
+    unuse_pde(pde);
+    return rv;
+}
+```
+
+
 #### proc_dir_operations
 
 ```c
@@ -16753,106 +17040,7 @@ static const struct inode_operations proc_dir_inode_operations = {
 };
 ```
 
-### proc_create_xxx
-
-```c
-#define proc_create_single(name, mode, parent, show) \
-    proc_create_single_data(name, mode, parent, show, NULL)
-
-struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
-        struct proc_dir_entry *parent,
-        int (*show)(struct seq_file *, void *), void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-
-    p->proc_ops = &proc_single_ops;
-    p->single_show = show;
-
-    return proc_register(parent, p);
-}
-
-struct proc_dir_entry *proc_create_seq_private(const char *name, umode_t mode,
-        struct proc_dir_entry *parent, const struct seq_operations *ops,
-        unsigned int state_size, void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    p->proc_ops = &proc_seq_ops;
-    p->seq_ops = ops;
-    p->state_size = state_size;
-    return proc_register(parent, p);
-}
-
-struct proc_dir_entry *proc_create_single_data(const char *name, umode_t mode,
-        struct proc_dir_entry *parent,
-        int (*show)(struct seq_file *, void *), void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    p->proc_ops = &proc_single_ops;
-    p->single_show = show;
-    return proc_register(parent, p);
-}
-
-struct proc_dir_entry *proc_create_net_data(const char *name, umode_t mode,
-        struct proc_dir_entry *parent, const struct seq_operations *ops,
-        unsigned int state_size, void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    pde_force_lookup(p);
-    p->proc_ops = &proc_net_seq_ops;
-    p->seq_ops = ops;
-    p->state_size = state_size;
-    return proc_register(parent, p);
-}
-
-struct proc_dir_entry *proc_create_net_single(const char *name, umode_t mode,
-        struct proc_dir_entry *parent,
-        int (*show)(struct seq_file *, void *), void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    pde_force_lookup(p);
-    p->proc_ops = &proc_net_single_ops;
-    p->single_show = show;
-    return proc_register(parent, p);
-}
-
-struct proc_dir_entry *proc_create_net_single_write(const char *name, umode_t mode,
-        struct proc_dir_entry *parent,
-        int (*show)(struct seq_file *, void *),
-        proc_write_t write,
-        void *data)
-{
-    struct proc_dir_entry *p;
-
-    p = proc_create_reg(name, mode, &parent, data);
-    if (!p)
-        return NULL;
-    pde_force_lookup(p);
-    p->proc_ops = &proc_net_single_ops;
-    p->single_show = show;
-    p->write = write;
-    return proc_register(parent, p);
-}
-```
+### proc_ops
 
 #### proc_seq_ops
 
@@ -16864,21 +17052,18 @@ static const struct proc_ops proc_seq_ops = {
     .proc_lseek         = seq_lseek,
     .proc_release       = proc_seq_release,
 };
+
+int proc_seq_open(struct inode *inode, struct file *file)
+{
+    struct proc_dir_entry *de = PDE(inode);
+
+    if (de->state_size)
+        return seq_open_private(file, de->seq_ops, de->state_size);
+    return seq_open(file, de->seq_ops);
+}
 ```
 
 #### proc_single_ops
-
-```c
-static const struct proc_ops proc_single_ops = {
-    /* not permanent -- can call into arbitrary ->single_show */
-    .proc_open      = proc_single_open,
-    .proc_read_iter = seq_read_iter,
-    .proc_lseek     = seq_lseek,
-    .proc_release   = single_release,
-};
-```
-
-### proc_single_ops
 
 ```c
 static const struct proc_ops proc_single_ops = {
@@ -16890,7 +17075,7 @@ static const struct proc_ops proc_single_ops = {
 };
 ```
 
-#### proc_singel_open
+##### proc_singel_open
 
 ```c
 static int proc_single_open(struct inode *inode, struct file *file)
@@ -18336,10 +18521,10 @@ cat /sys/fs/cgroup/mygroup/memory.current
 
 ```c
 static const struct fs_context_operations cgroup_fs_context_ops = {
-    .free           = cgroup_fs_context_free,
-    .parse_param    = cgroup2_parse_param,
-    .get_tree       = cgroup_get_tree,
-    .reconfigure    = cgroup_reconfigure,
+    .free               = cgroup_fs_context_free,
+    .parse_param        = cgroup2_parse_param,
+    .get_tree           = cgroup_get_tree,
+    .reconfigure        = cgroup_reconfigure,
 };
 
 static struct file_system_type cgroup2_fs_type = {
@@ -18356,6 +18541,34 @@ static struct kernfs_syscall_ops cgroup_kf_syscall_ops = {
     .rmdir          = cgroup_rmdir,
     .show_path      = cgroup_show_path,
 };
+```
+#### cgroup_init_fs_context
+
+```c
+int cgroup_init_fs_context(struct fs_context *fc)
+{
+    struct cgroup_fs_context *ctx;
+
+    ctx = kzalloc_obj(struct cgroup_fs_context);
+    if (!ctx)
+        return -ENOMEM;
+
+    ctx->ns = current->nsproxy->cgroup_ns;
+    get_cgroup_ns(ctx->ns);
+    fc->fs_private = &ctx->kfc;
+    if (fc->fs_type == &cgroup2_fs_type)
+        fc->ops = &cgroup_fs_context_ops;
+    else
+        fc->ops = &cgroup1_fs_context_ops;
+    put_user_ns(fc->user_ns);
+    fc->user_ns = get_user_ns(ctx->ns->user_ns);
+    fc->global = true;
+
+    if (have_favordynmods)
+        ctx->flags |= CGRP_ROOT_FAVOR_DYNMODS;
+
+    return 0;
+}
 ```
 
 #### cgroup_get_tree
@@ -19631,10 +19844,10 @@ static int tracefs_init_fs_context(struct fs_context *fc)
 }
 
 static const struct fs_context_operations tracefs_context_ops = {
-    .free           = tracefs_free_fc,
-    .parse_param    = tracefs_parse_param,
-    .get_tree       = tracefs_get_tree,
-    .reconfigure    = tracefs_reconfigure,
+    .free               = tracefs_free_fc,
+    .parse_param        = tracefs_parse_param,
+    .get_tree           = tracefs_get_tree,
+    .reconfigure        = tracefs_reconfigure,
 };
 
 static int tracefs_get_tree(struct fs_context *fc)
@@ -20378,10 +20591,10 @@ static int debugfs_init_fs_context(struct fs_context *fc)
 }
 
 static const struct fs_context_operations debugfs_context_ops = {
-    .free           = debugfs_free_fc,
-    .parse_param    = debugfs_parse_param,
-    .get_tree       = debugfs_get_tree,
-    .reconfigure    = debugfs_reconfigure,
+    .free               = debugfs_free_fc,
+    .parse_param        = debugfs_parse_param,
+    .get_tree           = debugfs_get_tree,
+    .reconfigure        = debugfs_reconfigure,
 };
 
 static int debugfs_get_tree(struct fs_context *fc)
@@ -20604,3 +20817,27 @@ int path_pivot_root(struct path *new, struct path *old)
     return 0;
 }
 ```
+
+# Tuning
+
+## Application Calls
+
+performance of synchronous write workloads can be improved by using **fsync**(2) to flush a logical group of writes, instead of individually when using the O_DSYNC/O_RSYNC open(2) flags
+
+
+```sh
+int posix_fadvise(int fd, off_t offset, off_t len, int advice);
+int madvise(void *addr, size_t length, int advice);
+```
+
+Advice | Description
+- | -
+POSIX_FADV_SEQUENTIAL | The specified data range will be accessed sequentially.
+POSIX_FADV_RANDOM | The specified data range will be accessed randomly.
+POSIX_FADV_NOREUSE | The data will not be reused.
+POSIX_FADV_WILLNEED | The data will be used again in the near future.
+POSIX_FADV_DONTNEED | The data will not be used again in the near future.
+MADV_RANDOM | Offsets will be accessed in random order.
+MADV_SEQUENTIAL | Offsets will be accessed in sequential order.
+MADV_WILLNEED | Data will be needed again (please cache).
+MADV_DONTNEED | Data will not be needed again (no need to cache).

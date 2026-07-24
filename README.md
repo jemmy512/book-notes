@@ -10,7 +10,7 @@ Patch | Merged
 
 Patch | RFC
  :- | :-:
-[[PATCH] net/rps: consolidate RPS dispatch into netif_rps() helpers](https://lore.kernel.org/all/20260702152830.39065-1-jemmywong512@gmail.com/) |
+[[PATCH v2] net/rps: consolidate RPS dispatch into helpers](https://lore.kernel.org/all/20260711121009.76842-1-jemmywong512@gmail.com/) |
 [[PATCH] sched: Add _TIF_NEED_RESCHED_LAZY to __resched_curr check](https://lore.kernel.org/all/20250928151421.60919-1-jemmywong512@gmail.com/) |
 [[PATCH v1] sched/eevdf: propagate min slice during {throttle, unthrottle}_cfs_rq](https://lore.kernel.org/all/20250714040516.10196-1-jemmywong512@gmail.com/) |
 [[PATCH v1] sched: Move curr check into __enqueue_entity and __dequeue_entity](https://lore.kernel.org/all/20250621142055.7110-1-jemmywong512@gmail.com/) |
