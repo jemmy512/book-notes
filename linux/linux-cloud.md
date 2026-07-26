@@ -14,7 +14,8 @@
 * [k8s 基于 cgroup 的资源限额（capacity enforcement）：模型设计与代码实现（2023）](https://arthurchiao.art/blog/k8s-cgroup-zh/)
 * [[PATCH v7 00/19] The new cgroup slab memory controller](https://lore.kernel.org/all/20200623015846.1141975-1-guro@fb.com/)
     * [[PATCH v7 06/19] mm: memcg/slab: obj_cgroup API](https://lore.kernel.org/all/20200623015846.1141975-7-guro@fb.com/)
-    * [[PATCH v6 00/33] Eliminate Dying Memory Cgroup](https://lore.kernel.org/all/cover.1772711148.git.zhengqi.arch@bytedance.com/)
+* [[PATCH v6 00/33] Eliminate Dying Memory Cgroup](https://lore.kernel.org/all/cover.1772711148.git.zhengqi.arch@bytedance.com/) ⊙ [2021 RFC](https://lore.kernel.org/all/20210330101531.82752-1-songmuchun@bytedance.com/) ⊙ [2021 v6](https://lore.kernel.org/all/20220621125658.64935-1-songmuchun@bytedance.com/) ⊙ [2023 RFC](https://lore.kernel.org/all/20230720070825.992023-1-yosryahmed@google.com/) ⊙ [2025 RFC](https://lore.kernel.org/all/20250415024532.26632-1-songmuchun@bytedance.com/) ⊙ [2026 v1](https://lore.kernel.org/all/cover.1761658310.git.zhengqi.arch@bytedance.com/)
+
     > Object cgroup is basically a pointer to a memory cgroup with a per-cpu reference counter.  It substitutes a memory cgroup in places where it's necessary to charge a custom amount of bytes instead of pages.
 
     > It prevents long-living objects from pinning the original memory cgroup in the memory.
@@ -5636,14 +5637,43 @@ struct task_struct {
 
 struct nsproxy {
     refcount_t count;
-    struct uts_namespace    *uts_ns;
-    struct ipc_namespace    *ipc_ns;
-    struct mnt_namespace    *mnt_ns;
-    struct pid_namespace    *pid_ns_for_children;
-    struct net              *net_ns;
-    struct time_namespace   *time_ns;
-    struct time_namespace   *time_ns_for_children;
-    struct cgroup_namespace *cgroup_ns;
+    struct uts_namespace        *uts_ns;
+    struct ipc_namespace        *ipc_ns;
+    struct mnt_namespace        *mnt_ns;
+    struct pid_namespace        *pid_ns_for_children;
+    struct net                  *net_ns;
+    struct time_namespace       *time_ns;
+    struct time_namespace       *time_ns_for_children;
+    struct cgroup_namespace     *cgroup_ns;
+};
+
+
+struct ns_common {
+    struct {
+        refcount_t __ns_ref; /* do not use directly */
+    } ____cacheline_aligned_in_smp;
+    u32                             ns_type;
+    struct dentry                   *stashed;
+    const struct proc_ns_operations *ops;
+    unsigned int                    inum;
+    union {
+        struct ns_tree;
+        struct rcu_head             ns_rcu;
+    };
+};
+
+struct ns_tree {
+    u64 ns_id;
+    atomic_t __ns_ref_active;
+    struct ns_tree_node ns_unified_node;
+    struct ns_tree_node ns_tree_node;
+    struct ns_tree_node ns_owner_node;
+    struct ns_tree_root ns_owner_root;
+};
+
+struct ns_tree_node {
+    struct rb_node      ns_node;
+    struct list_head    ns_list_entry;
 };
 ```
 
@@ -6019,6 +6049,99 @@ clone() {
 }
 ```
 
+## pivot_root
+
+```c
+SYSCALL_DEFINE2(pivot_root, const char __user *, new_root,
+        const char __user *, put_old)
+{
+    struct path new __free(path_put) = {};
+    struct path old __free(path_put) = {};
+    int error;
+
+    error = user_path_at(AT_FDCWD, new_root, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &new);
+    if (error)
+        return error;
+
+    error = user_path_at(AT_FDCWD, put_old, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &old);
+    if (error)
+        return error;
+
+    return path_pivot_root(&new, &old);
+}
+
+int path_pivot_root(struct path *new, struct path *old)
+{
+    struct path root __free(path_put) = {};
+    struct mount *new_mnt, *root_mnt, *old_mnt, *root_parent, *ex_parent;
+    int error;
+
+    if (!may_mount())
+        return -EPERM;
+
+    error = security_sb_pivotroot(old, new);
+    if (error)
+        return error;
+
+    get_fs_root(current->fs, &root);
+
+    LOCK_MOUNT(old_mp, old);
+    old_mnt = old_mp.parent;
+    if (IS_ERR(old_mnt))
+        return PTR_ERR(old_mnt);
+
+    new_mnt = real_mount(new->mnt);
+    root_mnt = real_mount(root.mnt);
+    ex_parent = new_mnt->mnt_parent;
+    root_parent = root_mnt->mnt_parent;
+    if (IS_MNT_SHARED(old_mnt) ||
+        IS_MNT_SHARED(ex_parent) ||
+        IS_MNT_SHARED(root_parent))
+        return -EINVAL;
+    if (!check_mnt(root_mnt) || !check_mnt(new_mnt))
+        return -EINVAL;
+    if (new_mnt->mnt.mnt_flags & MNT_LOCKED)
+        return -EINVAL;
+    if (d_unlinked(new->dentry))
+        return -ENOENT;
+    if (new_mnt == root_mnt || old_mnt == root_mnt)
+        return -EBUSY; /* loop, on the same file system  */
+    if (!path_mounted(&root))
+        return -EINVAL; /* not a mountpoint */
+    if (!mnt_has_parent(root_mnt))
+        return -EINVAL; /* absolute root */
+    if (!path_mounted(new))
+        return -EINVAL; /* not a mountpoint */
+    if (!mnt_has_parent(new_mnt))
+        return -EINVAL; /* absolute root */
+    /* make sure we can reach put_old from new_root */
+    if (!is_path_reachable(old_mnt, old_mp.mp->m_dentry, new))
+        return -EINVAL;
+    /* make certain new is below the root */
+    if (!is_path_reachable(new_mnt, new->dentry, &root))
+        return -EINVAL;
+    lock_mount_hash();
+    umount_mnt(new_mnt);
+    if (root_mnt->mnt.mnt_flags & MNT_LOCKED) {
+        new_mnt->mnt.mnt_flags |= MNT_LOCKED;
+        root_mnt->mnt.mnt_flags &= ~MNT_LOCKED;
+    }
+    /* mount new_root on / */
+    attach_mnt(new_mnt, root_parent, root_mnt->mnt_mp);
+    umount_mnt(root_mnt);
+    /* mount old root on put_old */
+    attach_mnt(root_mnt, old_mnt, old_mp.mp);
+    touch_mnt_namespace(current->nsproxy->mnt_ns);
+    /* A moved mount should not expire automatically */
+    list_del_init(&new_mnt->mnt_expire);
+    unlock_mount_hash();
+    mnt_notify_add(root_mnt);
+    mnt_notify_add(new_mnt);
+    chroot_fs_refs(&root, new);
+    return 0;
+}
+```
+
 ## pid_namespace
 
 ![](../images/kernel/ns-pid.svg)
@@ -6095,13 +6218,6 @@ struct pid_namespace {
     int reboot;
     struct ns_common        ns;
 }
-
-struct ns_common {
-    struct dentry *stashed;
-    const struct proc_ns_operations *ops;
-    unsigned int inum;
-    refcount_t count;
-};
 ```
 
 ### getpid_xxx
@@ -6892,55 +7008,6 @@ struct mnt_namespace {
     unsigned int            nr_mounts; /* # of mounts in the namespace */
     unsigned int            pending_mounts;
 }
-
-struct mount {
-    struct hlist_node mnt_hash;
-    struct mount *mnt_parent;
-    struct dentry *mnt_mountpoint;
-    struct vfsmount mnt;
-
-    struct list_head mnt_mounts;    /* list of children, anchored here */
-    struct list_head mnt_child;    /* anchored at parent */
-    struct list_head mnt_instance;    /* mount instance on sb->s_mounts */
-    const char *mnt_devname;    /* Name of device e.g. /dev/dsk/hda1 */
-    union {
-        struct rb_node mnt_node;    /* Under ns->mounts */
-        struct list_head mnt_list;
-    };
-    struct list_head mnt_expire;    /* link in fs-specific expiry list */
-    struct list_head mnt_share;    /* circular list of shared mounts */
-    struct list_head mnt_slave_list;/* list of slave mounts */
-    struct list_head mnt_slave;    /* slave list entry */
-    struct mount *mnt_master;    /* slave is on master->mnt_slave_list */
-    struct mnt_namespace *mnt_ns;    /* containing namespace */
-    struct mountpoint *mnt_mp;    /* where is it mounted */
-    union {
-        struct hlist_node mnt_mp_list;    /* list mounts with the same mountpoint */
-        struct hlist_node mnt_umount;
-    };
-    struct list_head mnt_umounting; /* list entry for umount propagation */
-
-    int mnt_id;            /* mount identifier, reused */
-    u64 mnt_id_unique;        /* mount ID unique until reboot */
-    int mnt_group_id;        /* peer group identifier */
-    int mnt_expiry_mark;        /* true if marked for expiry */
-    struct hlist_head mnt_pins;
-    struct hlist_head mnt_stuck_children;
-}
-
-struct vfsmount {
-    struct dentry *mnt_root;    /* root of the mounted tree */
-    struct super_block *mnt_sb; /* pointer to superblock */
-    int mnt_flags;
-    struct mnt_idmap *mnt_idmap;
-}
-
-struct mountpoint {
-    struct hlist_node   m_hash;
-    struct dentry       *m_dentry;
-    struct hlist_head   m_list;
-    int                 m_count;
-};
 ```
 
 ### copy_mnt_ns
@@ -7290,6 +7357,42 @@ out:
 }
 ```
 
+#### next_group
+
+```c
+static struct mount *next_group(struct mount *m, struct mount *origin)
+{
+    while (1) {
+        while (1) {
+            struct mount *next;
+            if (!IS_MNT_NEW(m) && !hlist_empty(&m->mnt_slave_list))
+                return first_slave(m);
+            next = next_peer(m);
+            if (m->mnt_group_id == origin->mnt_group_id) {
+                if (next == origin)
+                    return NULL;
+            } else if (m->mnt_slave.next != &next->mnt_slave)
+                break;
+            m = next;
+        }
+        /* m is the last peer */
+        while (1) {
+            struct mount *master = m->mnt_master;
+            if (m->mnt_slave.next)
+                return next_slave(m);
+            m = next_peer(master);
+            if (master->mnt_group_id == origin->mnt_group_id)
+                break;
+            if (master->mnt_slave.next == &m->mnt_slave)
+                break;
+            m = master;
+        }
+        if (m == origin)
+            return NULL;
+    }
+}
+```
+
 ### propagate_umount
 
 ```c
@@ -7420,7 +7523,7 @@ int propagate_umount(struct list_head *list)
 }
 ```
 
-### cgroup_namespace
+## cgroup_namespace
 
 * Cgroup namespaces virtualize the view of a process's cgroups (see cgroups(7)) as seen via /proc/pid/cgroup and /proc/pid/mountinfo.
 * When a process creates a new cgroup namespace using clone(2) or unshare(2) with the CLONE_NEWCGROUP flag, its current cgroups directories become the cgroup root directories of the new namespace.

@@ -115,6 +115,7 @@ struct mountpoint {
 ```
 
 ## inode
+
 ```c
 struct inode {
   const struct inode_operations   *i_op;
@@ -397,89 +398,45 @@ void __init mnt_init(void) {
 **Call stack**
 
 ```c
-mount(dev_name, dir_name, type, flags, data) {
-    copy_mount_string(); /* type, dev_name, data */
-    do_mount() {
-        struct path path;
-        user_path_at(&path) { /* search the path by name */
-            user_path_at_empty() {
-                filename_lookup() {
-                    path_lookupat() {
-                        path_init(nd, flags);
-                        link_path_walk();
-                        lookup_last();
-                    }
-                }
-            }
-        }
-
-        path_mount(&path) {
-            do_new_mount() {
-                struct file_system_type *type = get_fs_type(fstype);
-                struct fs_context *fc = fs_context_for_mount(type, sb_flags);
-
-                vfs_parse_fs_string();
-
-                /* Get the mountable root */
-                vfs_get_tree(fc) {
-                    fc->ops->get_tree(fc); /* ext4_get_tree */
-                    struct super_block *sb = fc->root->d_sb;
-                }
-
-                do_new_mount_fc(fc, path, mnt_flags) {
-                    struct vfsmount *mnt = vfs_create_mount(fc) {
-                        struct mount *mnt = alloc_vfsmnt(fc->source ?: "none");
-                        mnt->mnt.mnt_sb         = fc->root->d_sb;
-                        mnt->mnt.mnt_root       = dget(fc->root);
-                        mnt->mnt_mountpoint     = mnt->mnt.mnt_root;
-                        mnt->mnt_parent         = mnt;
-                        list_add_tail(&mnt->mnt_instance, &mnt->mnt.mnt_sb->s_mounts);
-                    }
-                    /* lookup the mnt in mount_hashtable and lock it*/
-                    struct mountpoint *mp = lock_mount(mountpoint);
-                    do_add_mount(real_mount(mnt), mp, mountpoint, mnt_flags) {
-                        struct mount *parent = real_mount(path->mnt);
-                        graft_tree(newmnt, parent, mp) {
-                            attach_recursive_mnt(mnt, p, mp, false) {
-                                mnt_set_mountpoint(dest_mnt, dest_mp, source_mnt) {
-                                    child_mnt->mnt_mountpoint = mp->m_dentry;
-                                    child_mnt->mnt_parent = mnt;
-                                    child_mnt->mnt_mp = mp;
-                                    hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
-                                }
-                                commit_tree(source_mnt) {
-                                    mnt_add_to_ns();
-                                    list_add_tail(&mnt->mnt_child, &parent->mnt_mounts);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            do_reconfigure_mnt() {
-
-            }
-
-            do_remount() {
-
-            }
-
-            do_loopback() {
-
-            }
-
-            do_change_type() {
-
-            }
-
-            do_move_mount_old() {
-
-            }
-        }
-    }
-}
-
+sys_mount()                          [fs/namespace.c:4367]
+│  copy userspace strings (dev_name, type, options)
+└─► do_mount()                     [fs/namespace.c:4165]
+    │  user_path_at() — resolve dir_name to struct path
+    └─► path_mount()             [fs/namespace.c:4086]
+        │  security_sb_mount() — LSM check
+        │  flags dispatch:
+        │    MS_REMOUNT|MS_BIND → do_reconfigure_mnt()
+        │    MS_REMOUNT        → do_remount()
+        │    MS_BIND           → do_loopback()
+        │    MS_SHARED/PRIVATE/SLAVE/UNBINDABLE → do_change_type()
+        │    MS_MOVE           → do_move_mount_old()
+        └─► do_new_mount()     [fs/namespace.c:3794]   ← normal case
+            │  get_fs_type() — look up file_system_type
+            │  fs_context_for_mount() — allocate fs_context
+            │  vfs_parse_fs_string() — parse "source", "subtype"
+            │  parse_monolithic_mount_data() — parse fs-specific data
+            └─► do_new_mount_fc()   [fs/namespace.c:3761]
+                │
+                ├─► fc_mount()   [fs/namespace.c:1196]
+                │     ├─► vfs_get_tree(fc)   [fs/super.c:1683]
+                │     │     └─► fc->ops->get_tree(fc)
+                │     │           └─► (filesystem-specific, e.g.
+                │     │                ext4_get_tree, xfs_get_tree …)
+                │     │                sets fc->root / fc->root->d_sb
+                │     └─► vfs_create_mount(fc)   — alloc struct mount
+                │
+                ├─► security_sb_kern_mount()
+                ├─► mount_too_revealing()
+                │
+                └─► do_add_mount()   [fs/namespace.c:3724]
+                    │  check_mnt() — must be in current ns
+                    └─► graft_tree()   [fs/namespace.c:2836]
+                        └─► attach_recursive_mnt()   [fs/namespace.c:2564]
+                            │  count_mounts()
+                            │  invent_group_ids()   (if shared)
+                            │  propagate_mnt()      (if shared)
+                            │  mnt_set_mountpoint()
+                            └─► commit_tree()       — hash into ns tree
 ```
 
 ```c
@@ -650,6 +607,7 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
     const char *subtype = NULL;
     int err = 0;
 
+/* 1. look up file_system_type */
     type = get_fs_type(fstype) {
         struct file_system_type *fs;
         const char *dot = strchr(name, '.');
@@ -698,6 +656,7 @@ int do_new_mount(struct path *path, const char *fstype, int sb_flags,
         }
     }
 
+/* 2. allocate fs_context */
     fc = fs_context_for_mount(type, sb_flags) {
         return alloc_fs_context(fs_type, NULL, sb_flags, 0, FS_CONTEXT_FOR_MOUNT) {
             int (*init_fs_context)(struct fs_context *);
