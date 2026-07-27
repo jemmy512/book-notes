@@ -7350,7 +7350,8 @@ int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
 	if (dest_mnt->mnt_master)
 		SET_MNT_MARK(dest_mnt->mnt_master);
 
-	/* iterate over peer groups, depth first */
+	/* iterate over peer groups, depth first
+     * m: the first member of each peer group encountered */
 	for (m = dest_mnt; m && !err; m = next_group(m, dest_mnt)) {
 		if (m == dest_mnt) { // have one for dest_mnt itself
 			copy = source_mnt;
@@ -7368,8 +7369,29 @@ int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
 		do {
 			if (!need_secondary(n, dest_mp))
 				continue;
-			if (type & CL_SLAVE) // first in this peer group
-				copy = find_master(n, copy, source_mnt);
+			if (type & CL_SLAVE) {// first in this peer group
+				copy = find_master(n, copy, source_mnt) {
+                    struct mount *p;
+
+                    // ascend until there's a copy for something with the same master
+                    for (;;) {
+                        p = m->mnt_master;
+                        if (!p || IS_MNT_MARKED(p))
+                            break;
+                        m = p;
+                    }
+                    while (!peers(last_copy, original)) {
+                        struct mount *parent = last_copy->mnt_parent;
+                        if (parent->mnt_master == p) {
+                            if (!peers(parent, m))
+                                last_copy = last_copy->mnt_master;
+                            break;
+                        }
+                        last_copy = last_copy->mnt_master;
+                    }
+                    return last_copy;
+                }
+            }
 			this = copy_tree(copy, copy->mnt.mnt_root, type);
 			if (IS_ERR(this)) {
 				err = PTR_ERR(this);

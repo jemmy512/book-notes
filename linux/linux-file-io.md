@@ -1167,6 +1167,31 @@ int attach_recursive_mnt(struct mount *source_mnt,
             lock_mnt_tree(child);
         q = __lookup_mnt(&child->mnt_parent->mnt, child->mnt_mountpoint);
         commit_tree(child);
+
+        // q: an existing mount already sitting at child's mountpoint slot.
+        // __lookup_mnt is called BEFORE commit_tree so q is found before child
+        // is inserted into the hash. After commit_tree, child is at the head of
+        // the bucket (hlist_add_head_rcu in make_visible), so __lookup_mnt would
+        // return child — but q is now second in the same bucket and unreachable,
+        // because __traverse_mounts only follows one mount per dentry and stops
+        // at child's root (no DCACHE_MOUNTED there yet). q would be leaked.
+        //
+        // mnt_change_mountpoint(r, mp, q) fixes this by re-parenting q onto
+        // child's root (r = topmost_overmount(child)), giving q a NEW hash key:
+        //   old key: (child->mnt_parent, child->mnt_mountpoint)  ← same as child
+        //   new key: (r->mnt, r->mnt_root)                       ← different bucket
+        //
+        // After re-parenting, path traversal at dentry_X does two hops:
+        //   lookup_mnt(parent, dentry_X) → child
+        //   lookup_mnt(child, child_root) → q        (DCACHE_MOUNTED on child_root)
+        // q stays on top (reachable first), child is beneath it. This is the
+        // correct semantic: q was explicitly mounted by the user in that namespace
+        // and must take priority over the automatically propagated child clone.
+        //
+        // Contrast with normal user-space double mount (mount B /mnt after mount A):
+        //   where_to_mount() follows topmost_overmount(A) and places B at A's root,
+        //   giving B a different hash key from the start — no re-parenting needed.
+        //   Propagation bypasses where_to_mount, so the fix must be done manually.
         if (q) {
             struct mount *r = topmost_overmount(child);
             struct mountpoint *mp = root.mp;
@@ -1391,6 +1416,79 @@ struct mount *__do_loopback(const struct path *old_path,
 ### do_move_mount_old
 
 ### do_reconfigure_mnt
+
+### lab
+
+```sh
+dest_mnt ←→ peer_1 ←→ peer_2      writes at any peer reach all peers
+    ↓                   ↓
+slave_C              slave_A ←→ slave_A_peer    slaves receive, don't send back
+                        ↓
+                       slave_B
+```
+
+```sh
+mkdir -p /tmp/{shared,peer1,peer2,slaveA,slaveA_peer,slaveB,slaveC,src}
+
+# root as shared so bind mounts inherit propagation
+mount --make-shared /
+
+# dest_mnt: shared tmpfs at /tmp/shared
+mount -t tmpfs tmpfs /tmp/shared
+mount --make-shared /tmp/shared
+
+# peer_1, peer_2: bind peers of dest_mnt
+mount --bind /tmp/shared /tmp/peer1   # peer_1 ↔ dest_mnt
+mount --bind /tmp/shared /tmp/peer2   # peer_2 ↔ dest_mnt
+# now:  dest_mnt ↔ peer_1 ↔ peer_2  (shared peer ring)
+
+# slave_A: slave of peer_2  (also shared, has its own peer)
+mount --bind /tmp/peer2 /tmp/slaveA
+mount --make-slave /tmp/slaveA        # slave of peer_2
+mount --make-shared /tmp/slaveA       # also shared (for slave_A_peer)
+
+mount --bind /tmp/slaveA /tmp/slaveA_peer   # peer of slave_A
+
+# slave_B: slave of slave_A
+mount --bind /tmp/slaveA /tmp/slaveB
+mount --make-slave /tmp/slaveB
+
+# slave_C: slave of dest_mnt
+mount --bind /tmp/shared /tmp/slaveC
+mount --make-slave /tmp/slaveC
+
+mkdir /tmp/shared/data   # dest_mp dentry
+```
+
+```sh
+mount -t tmpfs source /tmp/shared/data
+echo "hello" > /tmp/shared/data/file.txt
+
+/tmp# tree
+.
+├── peer1
+│   └── data
+│       └── file.txt
+├── peer2
+│   └── data
+│       └── file.txt
+├── shared
+│   └── data
+│       └── file.txt
+├── slaveA
+│   └── data
+│       └── file.txt
+├── slaveA_peer
+│   └── data
+│       └── file.txt
+├── slaveB
+│   └── data
+│       └── file.txt
+├── slaveC
+│   └── data
+│       └── file.txt
+```
+
 
 ## alloc_file
 
