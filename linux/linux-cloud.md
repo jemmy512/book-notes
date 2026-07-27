@@ -7015,251 +7015,326 @@ struct mnt_namespace {
 ![](../images/kernel/ns-mnt-hierarchy.svg)
 
 ```c
-struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
+struct mnt_namespace *copy_mnt_ns(u64 flags, struct mnt_namespace *ns,
         struct user_namespace *user_ns, struct fs_struct *new_fs)
 {
     struct mnt_namespace *new_ns;
-    struct vfsmount *rootmnt = NULL, *pwdmnt = NULL;
+    struct path old_root __free(path_put) = {};
+    struct path old_pwd __free(path_put) = {};
+    struct mount *p, *q;
     struct mount *old;
     struct mount *new;
     int copy_flags;
-/* 1. alloc a new mnt_namespace */
-    old = ns->root;
-    new_ns = alloc_mnt_ns(user_ns, false/*anon*/) {
-        struct mnt_namespace *new_ns;
-        struct ucounts *ucounts;
-        int ret;
 
-        new_ns = kzalloc(sizeof(struct mnt_namespace), GFP_KERNEL_ACCOUNT);
-        if (!anon) {
-            ret = ns_alloc_inum(&new_ns->ns);
-        }
-        new_ns->ns.ops = &mntns_operations {
-            .name       = "mnt",
-            .type       = CLONE_NEWNS,
-            .get        = mntns_get,
-            .put        = mntns_put,
-            .install    = mntns_install,
-            .owner      = mntns_owner,
-        };
-        if (!anon)
-            new_ns->seq = atomic64_add_return(1, &mnt_ns_seq);
-        refcount_set(&new_ns->ns.count, 1);
-        new_ns->mounts = RB_ROOT;
-        init_waitqueue_head(&new_ns->poll);
-        new_ns->user_ns = get_user_ns(user_ns);
-        new_ns->ucounts = ucounts;
-        return new_ns;
+    BUG_ON(!ns);
+
+    if (likely(!(flags & CLONE_NEWNS))) {
+        get_mnt_ns(ns);
+        return ns;
     }
 
-    /* First pass: copy the tree topology */
-    copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;
+    old = ns->root;
+
+    new_ns = alloc_mnt_ns(user_ns, false);
+    if (IS_ERR(new_ns))
+        return new_ns;
+
+    guard(namespace_excl)();
+
+    if (flags & CLONE_EMPTY_MNTNS)
+        copy_flags = 0;
+    else
+        copy_flags = CL_COPY_UNBINDABLE | CL_EXPIRE;
     if (user_ns != ns->user_ns)
-        copy_flags |= CL_SHARED_TO_SLAVE;
+        copy_flags |= CL_SLAVE;
 
-/* 2. copy parent mnt hierarchy */
-    new = copy_tree(old/*src_root*/, old->mnt.mnt_root/*dentry*/, copy_flags) {
-        struct mount *res, *src_parent, *src_root_child, *src_mnt,
-            *dst_parent, *dst_mnt;
+    if (flags & CLONE_EMPTY_MNTNS)
+        new = clone_mnt(old, old->mnt.mnt_root, copy_flags);
+    else
+        new = copy_tree(old, old->mnt.mnt_root, copy_flags);
+    if (IS_ERR(new)) {
+        emptied_ns = new_ns;
+        return ERR_CAST(new);
+    }
+    if (user_ns != ns->user_ns) {
+        guard(mount_writer)();
+        lock_mnt_tree(new);
+    }
+    new_ns->root = new;
 
-        if (!(flag & CL_COPY_UNBINDABLE) && IS_MNT_UNBINDABLE(src_root))
-            return ERR_PTR(-EINVAL);
+    if (flags & CLONE_EMPTY_MNTNS) {
+        /* Empty mount namespace: only the root mount exists.
+         * Reset root and pwd to the cloned mount's root dentry. */
+        if (new_fs) {
+            old_root = new_fs->root;
+            old_pwd = new_fs->pwd;
 
-        if (!(flag & CL_COPY_MNT_NS_FILE) && is_mnt_ns_file(dentry))
-            return ERR_PTR(-EINVAL);
+            new_fs->root.mnt = mntget(&new->mnt);
+            new_fs->root.dentry = dget(new->mnt.mnt_root);
 
-        res = dst_mnt = clone_mnt(src_root/*old*/, dentry, flag) {
-            struct super_block *sb = old->mnt.mnt_sb;
-            struct mount *mnt;
-            int err;
-
-            mnt = alloc_vfsmnt(old->mnt_devname);
-
-            mnt->mnt.mnt_flags = old->mnt.mnt_flags;
-            mnt->mnt.mnt_flags &= ~(MNT_WRITE_HOLD|MNT_MARKED|MNT_INTERNAL|MNT_ONRB);
-
-            atomic_inc(&sb->s_active);
-            mnt->mnt.mnt_idmap = mnt_idmap_get(mnt_idmap(&old->mnt));
-
-            mnt->mnt.mnt_sb = sb;
-            mnt->mnt.mnt_root = dget(root);
-            mnt->mnt_mountpoint = mnt->mnt.mnt_root;
-            mnt->mnt_parent = mnt;
-            list_add_tail(&mnt->mnt_instance, &sb->s_mounts);
-
-            if ((flag & CL_SLAVE) ||
-                ((flag & CL_SHARED_TO_SLAVE) && IS_MNT_SHARED(old))) {
-                list_add(&mnt->mnt_slave, &old->mnt_slave_list);
-                mnt->mnt_master = old;
-                CLEAR_MNT_SHARED(mnt);
-            } else if (!(flag & CL_PRIVATE)) {
-                if ((flag & CL_MAKE_SHARED) || IS_MNT_SHARED(old))
-                    list_add(&mnt->mnt_share, &old->mnt_share);
-                if (IS_MNT_SLAVE(old))
-                    list_add(&mnt->mnt_slave, &old->mnt_slave);
-                mnt->mnt_master = old->mnt_master;
-            } else {
-                CLEAR_MNT_SHARED(mnt);
-            }
-            if (flag & CL_MAKE_SHARED)
-                set_mnt_shared(mnt);
-
-            /* stick the duplicate mount on the same expiry list
-                * as the original if that was on one */
-            if (flag & CL_EXPIRE) {
-                if (!list_empty(&old->mnt_expire))
-                    list_add(&mnt->mnt_expire, &old->mnt_expire);
-            }
-
-            return mnt;
+            new_fs->pwd.mnt = mntget(&new->mnt);
+            new_fs->pwd.dentry = dget(new->mnt.mnt_root);
         }
-        if (IS_ERR(dst_mnt))
-            return dst_mnt;
-
-        src_parent = src_root;
-        dst_mnt->mnt_mountpoint = src_root->mnt_mountpoint;
-
-        list_for_each_entry(src_root_child, &src_root->mnt_mounts, mnt_child) {
-            if (!is_subdir(src_root_child->mnt_mountpoint, dentry))
-                continue;
-
-            struct mount *next_mnt(struct mount *p, struct mount *root) {
-                struct list_head *next = p->mnt_mounts.next;
-                if (next == &p->mnt_mounts) {
-                    while (1) {
-                        if (p == root)
-                            return NULL;
-                        next = p->mnt_child.next;
-                        if (next != &p->mnt_parent->mnt_mounts)
-                            break;
-                        p = p->mnt_parent;
-                    }
+        mnt_add_to_ns(new_ns, new);
+        new_ns->nr_mounts++;
+    } else {
+        /* Full copy: walk old and new trees in parallel, switching
+         * the tsk->fs->* elements and marking new vfsmounts as
+         * belonging to new namespace.  We have already acquired a
+         * private fs_struct, so tsk->fs->lock is not needed. */
+        p = old;
+        q = new;
+        while (p) {
+            mnt_add_to_ns(new_ns, q);
+            new_ns->nr_mounts++;
+            if (new_fs) {
+                if (&p->mnt == new_fs->root.mnt) {
+                    old_root.mnt = new_fs->root.mnt;
+                    new_fs->root.mnt = mntget(&q->mnt);
                 }
-                return list_entry(next, struct mount, mnt_child);
+                if (&p->mnt == new_fs->pwd.mnt) {
+                    old_pwd.mnt = new_fs->pwd.mnt;
+                    new_fs->pwd.mnt = mntget(&q->mnt);
+                }
             }
+            p = next_mnt(p, old);
+            q = next_mnt(q, new);
+            if (!q)
+                break;
+            // an mntns binding we'd skipped?
+            while (p->mnt.mnt_root != q->mnt.mnt_root)
+                p = next_mnt(skip_mnt_tree(p), old);
+        }
+    }
+    ns_tree_add_raw(new_ns);
+    return new_ns;
+}
+```
 
-            for (src_mnt = src_root_child; src_mnt;
-                src_mnt = next_mnt(src_mnt, src_root_child)) {
-                if (!(flag & CL_COPY_UNBINDABLE) &&
-                    IS_MNT_UNBINDABLE(src_mnt)) {
-                    if (src_mnt->mnt.mnt_flags & MNT_LOCKED) {
-                        /* Both unbindable and locked. */
-                        dst_mnt = ERR_PTR(-EPERM);
-                        goto out;
-                    } else {
-                        src_mnt = skip_mnt_tree(src_mnt);
-                        continue;
-                    }
-                }
-                if (!(flag & CL_COPY_MNT_NS_FILE) &&
-                    is_mnt_ns_file(src_mnt->mnt.mnt_root)) {
+### copy_tree
+
+```c
+struct mount *copy_tree(struct mount *src_root, struct dentry *dentry,
+                    int flag)
+{
+    struct mount *res, *src_parent, *src_root_child, *src_mnt,
+        *dst_parent, *dst_mnt;
+
+    if (!(flag & CL_COPY_UNBINDABLE) && IS_MNT_UNBINDABLE(src_root))
+        return ERR_PTR(-EINVAL);
+
+    if (!(flag & CL_COPY_MNT_NS_FILE) && is_mnt_ns_file(dentry))
+        return ERR_PTR(-EINVAL);
+
+    res = dst_mnt = clone_mnt(src_root, dentry, flag);
+    if (IS_ERR(dst_mnt))
+        return dst_mnt;
+
+    src_parent = src_root;
+
+    list_for_each_entry(src_root_child, &src_root->mnt_mounts, mnt_child) {
+        if (!is_subdir(src_root_child->mnt_mountpoint, dentry))
+            continue;
+
+        for (src_mnt = src_root_child; src_mnt;
+            src_mnt = next_mnt(src_mnt, src_root_child)) {
+            if (!(flag & CL_COPY_UNBINDABLE) &&
+                IS_MNT_UNBINDABLE(src_mnt)) {
+                if (src_mnt->mnt.mnt_flags & MNT_LOCKED) {
+                    /* Both unbindable and locked. */
+                    dst_mnt = ERR_PTR(-EPERM);
+                    goto out;
+                } else {
                     src_mnt = skip_mnt_tree(src_mnt);
                     continue;
                 }
-                while (src_parent != src_mnt->mnt_parent) {
-                    src_parent = src_parent->mnt_parent;
-                    dst_mnt = dst_mnt->mnt_parent;
-                }
-
-                src_parent = src_mnt;
-                dst_parent = dst_mnt;
-                dst_mnt = clone_mnt(src_mnt, src_mnt->mnt.mnt_root, flag);
-                if (IS_ERR(dst_mnt))
-                    goto out;
-                lock_mount_hash();
-                list_add_tail(&dst_mnt->mnt_list, &res->mnt_list);
-                attach_mnt(dst_mnt, dst_parent, src_parent->mnt_mp, false) {
-                    if (beneath) {
-                        mnt_set_mountpoint_beneath(mnt/*new_parent*/, n_prnt/*top_mnt*/, mp) {
-                            struct mount *old_top_parent = top_mnt->mnt_parent;
-                            struct mountpoint *old_top_mp = top_mnt->mnt_mp;
-
-                            mnt_set_mountpoint(old_top_parent/*mnt*/, old_top_mp/*mp*/, new_parent/*child_mnt*/) {
-                                mp->m_count++;
-                                mnt_add_count(mnt, 1);    /* essentially, that'o_mnt mntget */
-                                child_mnt->mnt_mountpoint = mp->m_dentry;
-                                child_mnt->mnt_parent = mnt;
-                                child_mnt->mnt_mp = mp;
-                                hlist_add_head(&child_mnt->mnt_mp_list, &mp->m_list);
-                            }
-
-                            mnt_change_mountpoint(new_parent/*n_prnt*/, new_mp/*mp*/, top_mnt/*mnt*/) {
-                                struct mountpoint *old_mp = mnt->mnt_mp;
-                                struct mount *old_parent = mnt->mnt_parent;
-
-                                list_del_init(&mnt->mnt_child);
-                                hlist_del_init(&mnt->mnt_mp_list);
-                                hlist_del_init_rcu(&mnt->mnt_hash);
-
-                                attach_mnt(mnt, n_prnt, mp, false);
-
-                                put_mountpoint(old_mp);
-                                mnt_add_count(old_parent, -1);
-                            }
-                        }
-                    } else {
-                        mnt_set_mountpoint(n_prnt, mp, mnt);
-                    }
-
-                    __attach_mnt(mnt, mnt->mnt_parent) {
-                        hlist_add_head_rcu(&mnt->mnt_hash, m_hash(&n_prnt->mnt, mnt->mnt_mountpoint));
-                        list_add_tail(&mnt->mnt_child, &n_prnt->mnt_mounts);
-                    }
-                }
             }
+            if (!(flag & CL_COPY_MNT_NS_FILE) &&
+                is_mnt_ns_file(src_mnt->mnt.mnt_root)) {
+                src_mnt = skip_mnt_tree(src_mnt);
+                continue;
+            }
+            while (src_parent != src_mnt->mnt_parent) {
+                src_parent = src_parent->mnt_parent;
+                dst_mnt = dst_mnt->mnt_parent;
+            }
+
+            src_parent = src_mnt;
+            dst_parent = dst_mnt;
+            dst_mnt = clone_mnt(src_mnt, src_mnt->mnt.mnt_root, flag);
+            if (IS_ERR(dst_mnt))
+                goto out;
+            lock_mount_hash();
+            if (src_mnt->mnt.mnt_flags & MNT_LOCKED)
+                dst_mnt->mnt.mnt_flags |= MNT_LOCKED;
+            if (unlikely(flag & CL_EXPIRE)) {
+                /* stick the duplicate mount on the same expiry
+                 * list as the original if that was on one */
+                if (!list_empty(&src_mnt->mnt_expire))
+                    list_add(&dst_mnt->mnt_expire,
+                         &src_mnt->mnt_expire);
+            }
+            attach_mnt(dst_mnt, dst_parent, src_parent->mnt_mp);
+            unlock_mount_hash();
         }
-        return res;
     }
-    if (user_ns != ns->user_ns) {
+    return res;
+
+out:
+    if (res) {
         lock_mount_hash();
-        lock_mnt_tree(new);
+        umount_tree(res, UMOUNT_SYNC);
         unlock_mount_hash();
     }
-    new_ns->root = new;
-/* 3. add the new mnt into ns */
-    /* Second pass: switch the tsk->fs->* elements and mark new vfsmounts
-     * as belonging to new namespace. */
-    o_mnt = old;
-    n_mnt = new;
-    while (o_mnt) {
-        mnt_add_to_ns(new_ns/*ns*/, n_mnt/*mnt*/) {
-            struct rb_node **link = &ns->mounts.rb_node;
-            struct rb_node *parent = NULL;
+    return dst_mnt;
+}
+```
 
-            mnt->mnt_ns = ns;
-            while (*link) {
-                parent = *link;
-                if (mnt->mnt_id_unique < node_to_mount(parent)->mnt_id_unique)
-                    link = &parent->rb_left;
-                else
-                    link = &parent->rb_right;
-            }
-            rb_link_node(&mnt->mnt_node, parent, link);
-            rb_insert_color(&mnt->mnt_node, &ns->mounts);
-            mnt->mnt.mnt_flags |= MNT_ONRB;
-        }
+### clone_mnt
 
-        new_ns->nr_mounts++;
-        if (new_fs) {
-            if (&o_mnt->mnt == new_fs->root.mnt) {
-                new_fs->root.mnt = mntget(&n_mnt->mnt);
-                rootmnt = &o_mnt->mnt;
-            }
-            if (&o_mnt->mnt == new_fs->pwd.mnt) {
-                new_fs->pwd.mnt = mntget(&n_mnt->mnt);
-                pwdmnt = &o_mnt->mnt;
-            }
-        }
-        o_mnt = next_mnt(o_mnt, old);
-        n_mnt = next_mnt(n_mnt, new);
-        if (!n_mnt)
-            break;
-        // an mntns binding we'd skipped?
-        while (o_mnt->mnt.mnt_root != n_mnt->mnt.mnt_root)
-            o_mnt = next_mnt(skip_mnt_tree(o_mnt), old);
+```c
+struct mount *clone_mnt(struct mount *old, struct dentry *root,
+                    int flag)
+{
+    struct mount *mnt;
+    int err;
+
+    mnt = alloc_vfsmnt(old->mnt_devname);
+    if (!mnt)
+        return ERR_PTR(-ENOMEM);
+
+    mnt->mnt.mnt_flags = READ_ONCE(old->mnt.mnt_flags) &
+                 ~MNT_INTERNAL_FLAGS;
+
+    if (flag & (CL_SLAVE | CL_PRIVATE))
+        mnt->mnt_group_id = 0; /* not a peer of original */
+    else
+        mnt->mnt_group_id = old->mnt_group_id;
+
+    if ((flag & CL_MAKE_SHARED) && !mnt->mnt_group_id) {
+        err = mnt_alloc_group_id(mnt);
+        if (err)
+            goto out_free;
     }
 
-    return new_ns;
+    if (mnt->mnt_group_id)
+        set_mnt_shared(mnt);
+
+    mnt->mnt.mnt_idmap = mnt_idmap_get(mnt_idmap(&old->mnt));
+
+    setup_mnt(mnt, root);
+
+    if (flag & CL_PRIVATE)    // we are done with it
+        return mnt;
+
+    if (peers(mnt, old))
+        list_add(&mnt->mnt_share, &old->mnt_share);
+
+    if ((flag & CL_SLAVE) && old->mnt_group_id) {
+        hlist_add_head(&mnt->mnt_slave, &old->mnt_slave_list);
+        mnt->mnt_master = old;
+    } else if (IS_MNT_SLAVE(old)) {
+        hlist_add_behind(&mnt->mnt_slave, &old->mnt_slave);
+        mnt->mnt_master = old->mnt_master;
+    }
+    return mnt;
+
+ out_free:
+    mnt_free_id(mnt);
+    free_vfsmnt(mnt);
+    return ERR_PTR(err);
+}
+```
+
+### ns_tree_add_raw
+
+```c
+#define ns_tree_add_raw(__ns) __ns_tree_add_raw(to_ns_common(__ns), to_ns_tree(__ns))
+
+#define to_ns_tree(__ns)                    \
+    _Generic((__ns),                    \
+        struct cgroup_namespace *: &(cgroup_ns_tree),    \
+        struct ipc_namespace *:    &(ipc_ns_tree),    \
+        struct net *:              &(net_ns_tree),    \
+        struct pid_namespace *:    &(pid_ns_tree),    \
+        struct mnt_namespace *:    &(mnt_ns_tree),    \
+        struct time_namespace *:   &(time_ns_tree),    \
+        struct user_namespace *:   &(user_ns_tree),    \
+        struct uts_namespace *:    &(uts_ns_tree))
+
+struct ns_tree_root pid_ns_tree = {
+    .ns_rb = RB_ROOT,
+    .ns_list_head = LIST_HEAD_INIT(pid_ns_tree.ns_list_head),
+};
+
+struct ns_tree_root cgroup_ns_tree = {
+    .ns_rb = RB_ROOT,
+    .ns_list_head = LIST_HEAD_INIT(cgroup_ns_tree.ns_list_head),
+};
+
+struct ns_tree_root time_ns_tree = {
+    .ns_rb = RB_ROOT,
+    .ns_list_head = LIST_HEAD_INIT(time_ns_tree.ns_list_head),
+};
+
+void __ns_tree_add_raw(struct ns_common *ns, struct ns_tree_root *ns_tree)
+{
+    struct rb_node *node;
+    const struct proc_ns_operations *ops = ns->ops;
+
+    VFS_WARN_ON_ONCE(!ns->ns_id);
+
+    guard(ns_tree_writer)();
+
+    /* Add to per-type tree and list */
+    node = ns_tree_node_add(&ns->ns_tree_node, ns_tree, ns_cmp);
+
+    /* Add to unified tree and list */
+    ns_tree_node_add(&ns->ns_unified_node, &ns_unified_root, ns_cmp_unified);
+
+    /* Add to owner's tree if applicable */
+    if (ops) {
+        struct user_namespace *user_ns;
+
+        VFS_WARN_ON_ONCE(!ops->owner);
+        user_ns = ops->owner(ns);
+        if (user_ns) {
+            struct ns_common *owner = &user_ns->ns;
+            VFS_WARN_ON_ONCE(owner->ns_type != CLONE_NEWUSER);
+
+            /* Insert into owner's tree and list */
+            ns_tree_node_add(&ns->ns_owner_node, &owner->ns_owner_root, ns_cmp_owner);
+        } else {
+            /* Only the initial user namespace doesn't have an owner. */
+            VFS_WARN_ON_ONCE(ns != to_ns_common(&init_user_ns));
+        }
+    }
+
+    VFS_WARN_ON_ONCE(node);
+}
+
+struct rb_node *ns_tree_node_add(struct ns_tree_node *node,
+                  struct ns_tree_root *root,
+                  int (*cmp)(struct rb_node *, const struct rb_node *))
+{
+    struct rb_node *ret, *prev;
+
+    /* Add to rbtree */
+    ret = rb_find_add_rcu(&node->ns_node, &root->ns_rb, cmp);
+
+    /* Add to list in sorted order */
+    prev = rb_prev(&node->ns_node);
+    if (!prev) {
+        /* No previous node, add at head */
+        list_add_rcu(&node->ns_list_entry, &root->ns_list_head);
+    } else {
+        /* Add after previous node */
+        struct ns_tree_node *prev_node;
+        prev_node = rb_entry(prev, struct ns_tree_node, ns_node);
+        list_add_rcu(&node->ns_list_entry, &prev_node->ns_list_entry);
+    }
+
+    return ret;
 }
 ```
 
@@ -7267,93 +7342,60 @@ struct mnt_namespace *copy_mnt_ns(unsigned long flags, struct mnt_namespace *ns,
 
 ```c
 int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
-            struct mount *source_mnt, struct hlist_head *tree_list)
+		  struct mount *source_mnt, struct hlist_head *tree_list)
 {
-    struct mount *m, *n;
-    int ret = 0;
+	struct mount *m, *n, *copy, *this;
+	int err = 0, type;
 
-    last_dest = dest_mnt;
-    first_source = source_mnt;
-    last_source = source_mnt;
-    list = tree_list;
-    dest_master = dest_mnt->mnt_master;
+	if (dest_mnt->mnt_master)
+		SET_MNT_MARK(dest_mnt->mnt_master);
 
-    /* all peers of dest_mnt, except dest_mnt itself */
-    for (n = next_peer(dest_mnt); n != dest_mnt; n = next_peer(n)) {
-        ret = propagate_one(n, dest_mp);
-        if (ret)
-            goto out;
-    }
+	/* iterate over peer groups, depth first */
+	for (m = dest_mnt; m && !err; m = next_group(m, dest_mnt)) {
+		if (m == dest_mnt) { // have one for dest_mnt itself
+			copy = source_mnt;
+			type = CL_MAKE_SHARED;
+			n = next_peer(m);
+			if (n == m)
+				continue;
+		} else {
+			type = CL_SLAVE;
+			/* beginning of peer group among the slaves? */
+			if (IS_MNT_SHARED(m))
+				type |= CL_MAKE_SHARED;
+			n = m;
+		}
+		do {
+			if (!need_secondary(n, dest_mp))
+				continue;
+			if (type & CL_SLAVE) // first in this peer group
+				copy = find_master(n, copy, source_mnt);
+			this = copy_tree(copy, copy->mnt.mnt_root, type);
+			if (IS_ERR(this)) {
+				err = PTR_ERR(this);
+				break;
+			}
+			scoped_guard(mount_locked_reader)
+				mnt_set_mountpoint(n, dest_mp, this);
+			if (n->mnt_master)
+				SET_MNT_MARK(n->mnt_master);
+			copy = this;
+			hlist_add_head(&this->mnt_hash, tree_list);
+			err = count_mounts(n->mnt_ns, this);
+			if (err)
+				break;
+			type = CL_MAKE_SHARED;
+		} while ((n = next_peer(n)) != m);
+	}
 
-    /* all slave groups */
-    for (m = next_group(dest_mnt, dest_mnt); m; m = next_group(m, dest_mnt)) {
-        /* everything in that slave group */
-        n = m;
-        do {
-            ret = propagate_one(n, dest_mp) {
-                struct mount *child;
-                int type;
-                /* skip ones added by this propagate_mnt() */
-                if (IS_MNT_NEW(m))
-                    return 0;
-                /* skip if mountpoint isn't covered by it */
-                if (!is_subdir(dest_mp->m_dentry, m->mnt.mnt_root))
-                    return 0;
-                if (peers(m, last_dest)) {
-                    /* return m1->mnt_group_id == m2->mnt_group_id && m1->mnt_group_id; */
-                    type = CL_MAKE_SHARED;
-                } else {
-                    struct mount *n, *p;
-                    bool done;
-                    for (n = m; ; n = p) {
-                        p = n->mnt_master;
-                        if (p == dest_master || IS_MNT_MARKED(p))
-                            break;
-                    }
-                    do {
-                        struct mount *parent = last_source->mnt_parent;
-                        if (peers(last_source, first_source))
-                            break;
-                        done = parent->mnt_master == p;
-                        if (done && peers(n, parent))
-                            break;
-                        last_source = last_source->mnt_master;
-                    } while (!done);
-
-                    type = CL_SLAVE;
-                    /* beginning of peer group among the slaves? */
-                    if (IS_MNT_SHARED(m))
-                        type |= CL_MAKE_SHARED;
-                }
-
-                child = copy_tree(last_source, last_source->mnt.mnt_root, type);
-                    --->
-                if (IS_ERR(child))
-                    return PTR_ERR(child);
-                read_seqlock_excl(&mount_lock);
-                mnt_set_mountpoint(m, dest_mp, child);
-                if (m->mnt_master != dest_master)
-                    SET_MNT_MARK(m->mnt_master);
-                read_sequnlock_excl(&mount_lock);
-                last_dest = m;
-                last_source = child;
-                hlist_add_head(&child->mnt_hash, list);
-                return count_mounts(m->mnt_ns, child);
-            }
-            if (ret)
-                goto out;
-            n = next_peer(n);
-        } while (n != m);
-    }
-out:
-    read_seqlock_excl(&mount_lock);
-    hlist_for_each_entry(n, tree_list, mnt_hash) {
-        m = n->mnt_parent;
-        if (m->mnt_master != dest_mnt->mnt_master)
-            CLEAR_MNT_MARK(m->mnt_master);
-    }
-    read_sequnlock_excl(&mount_lock);
-    return ret;
+	hlist_for_each_entry(n, tree_list, mnt_hash) {
+		m = n->mnt_parent;
+		if (m->mnt_master)
+			CLEAR_MNT_MARK(m->mnt_master);
+	}
+	if (dest_mnt->mnt_master)
+		CLEAR_MNT_MARK(dest_mnt->mnt_master);
+	return err;
 }
 ```
 
@@ -7416,34 +7458,9 @@ int propagate_umount(struct list_head *list)
             continue;
 
         list_add_tail(&mnt->mnt_umounting, &visited);
-        propagation_next(m, origin) {
-            /* are there any slaves of this mount? */
-            if (!IS_MNT_NEW(m) && !list_empty(&m->mnt_slave_list))
-                return first_slave(m);
-
-            while (1) {
-                struct mount *master = m->mnt_master;
-
-                if (master == origin->mnt_master) {
-                    struct mount *next = next_peer(m);
-                    return (next == origin) ? NULL : next;
-                } else if (m->mnt_slave.next != &master->mnt_slave_list)
-                    return next_slave(m);
-
-                /* back at master */
-                m = master;
-            }
-        }
+        propagation_next(m, origin);
         for (m = propagation_next(parent, parent); m; m = propagation_next(m, parent)) {
-            struct mount *child = __lookup_mnt(&m->mnt, mnt->mnt_mountpoint) {
-                struct hlist_head *head = m_hash(mnt, dentry);
-                struct mount *p;
-
-                hlist_for_each_entry_rcu(p, head, mnt_hash)
-                    if (&p->mnt_parent->mnt == mnt && p->mnt_mountpoint == dentry)
-                        return p;
-                return NULL;
-            }
+            struct mount *child = __lookup_mnt(&m->mnt, mnt->mnt_mountpoint);
             if (!child)
                 continue;
 
@@ -7520,6 +7537,44 @@ int propagate_umount(struct list_head *list)
     list_splice_tail(&to_umount, list);
 
     return 0;
+}
+```
+
+#### propagation_next
+
+![](../images/kernel/ns-propagation_next.svg)
+
+```c
+static struct mount *propagation_next(struct mount *m,
+                     struct mount *origin)
+{
+    /* are there any slaves of this mount? */
+    if (!IS_MNT_NEW(m) && !hlist_empty(&m->mnt_slave_list))
+        return first_slave(m);
+
+    return __propagation_next(m, origin);
+}
+
+static struct mount *__propagation_next(struct mount *m,
+                     struct mount *origin)
+{
+    while (1) {
+        struct mount *master = m->mnt_master;
+
+        if (master == origin->mnt_master) {
+            struct mount *next = next_peer(m) {
+                return list_entry(p->mnt_share.next, struct mount, mnt_share);
+            }
+            return (next == origin) ? NULL : next;
+        } else if (m->mnt_slave.next) {
+            return next_slave(m) {
+                return hlist_entry(p->mnt_slave.next, struct mount, mnt_slave);
+            }
+        }
+
+        /* back at master */
+        m = master;
+    }
 }
 ```
 
