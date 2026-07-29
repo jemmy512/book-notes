@@ -24955,7 +24955,538 @@ unsigned long kernel_physical_mapping_init(
 
 # get_user_pages
 
-> mm/gup.c
+```c
+long get_user_pages(unsigned long start, unsigned long nr_pages,
+            unsigned int gup_flags, struct page **pages)
+{
+    int locked = 1;
+
+    if (!is_valid_gup_args(pages, NULL, &gup_flags, FOLL_TOUCH))
+        return -EINVAL;
+
+    return __get_user_pages_locked(current->mm, start, nr_pages, pages,
+                       &locked, gup_flags);
+}
+
+long __get_user_pages_locked(struct mm_struct *mm,
+                        unsigned long start,
+                        unsigned long nr_pages,
+                        struct page **pages,
+                        int *locked,
+                        unsigned int flags)
+{
+    long ret, pages_done;
+    bool must_unlock = false;
+
+    if (!nr_pages)
+        return 0;
+
+    /* The internal caller expects GUP to manage the lock internally and the
+     * lock must be released when this returns. */
+    if (!*locked) {
+        if (mmap_read_lock_killable(mm))
+            return -EAGAIN;
+        must_unlock = true;
+        *locked = 1;
+    }
+    else
+        mmap_assert_locked(mm);
+
+    if (flags & FOLL_PIN)
+        mm_set_has_pinned_flag(mm);
+
+    /* FOLL_PIN and FOLL_GET are mutually exclusive. Traditional behavior
+     * is to set FOLL_GET if the caller wants pages[] filled in (but has
+     * carelessly failed to specify FOLL_GET), so keep doing that, but only
+     * for FOLL_GET, not for the newer FOLL_PIN.
+     *
+     * FOLL_PIN always expects pages to be non-null, but no need to assert
+     * that here, as any failures will be obvious enough. */
+    if (pages && !(flags & FOLL_PIN))
+        flags |= FOLL_GET;
+
+    pages_done = 0;
+    for (;;) {
+        ret = __get_user_pages(mm, start, nr_pages, flags, pages, locked);
+        if (!(flags & FOLL_UNLOCKABLE)) {
+            /* VM_FAULT_RETRY couldn't trigger, bypass */
+            pages_done = ret;
+            break;
+        }
+
+        /* VM_FAULT_RETRY or VM_FAULT_COMPLETED cannot return errors */
+        VM_WARN_ON_ONCE(!*locked && (ret < 0 || ret >= nr_pages));
+
+        if (ret > 0) {
+            nr_pages -= ret;
+            pages_done += ret;
+            if (!nr_pages)
+                break;
+        }
+        if (*locked) {
+            /* VM_FAULT_RETRY didn't trigger or it was a
+             * FOLL_NOWAIT. */
+            if (!pages_done)
+                pages_done = ret;
+            break;
+        }
+        /* VM_FAULT_RETRY triggered, so seek to the faulting offset.
+         * For the prefault case (!pages) we only update counts. */
+        if (likely(pages))
+            pages += ret;
+        start += ret << PAGE_SHIFT;
+
+        /* The lock was temporarily dropped, so we must unlock later */
+        must_unlock = true;
+
+retry:
+        /* Repeat on the address that fired VM_FAULT_RETRY
+         * with both FAULT_FLAG_ALLOW_RETRY and
+         * FAULT_FLAG_TRIED.  Note that GUP can be interrupted
+         * by fatal signals of even common signals, depending on
+         * the caller's request. So we need to check it before we
+         * start trying again otherwise it can loop forever. */
+        if (gup_signal_pending(flags)) {
+            if (!pages_done)
+                pages_done = -EINTR;
+            break;
+        }
+
+        ret = mmap_read_lock_killable(mm);
+        if (ret) {
+            if (!pages_done)
+                pages_done = ret;
+            break;
+        }
+
+        *locked = 1;
+        ret = __get_user_pages(mm, start, 1, flags | FOLL_TRIED,
+                       pages, locked);
+        if (!*locked) {
+            /* Continue to retry until we succeeded */
+            VM_WARN_ON_ONCE(ret != 0);
+            goto retry;
+        }
+        if (ret != 1) {
+            VM_WARN_ON_ONCE(ret > 1);
+            if (!pages_done)
+                pages_done = ret;
+            break;
+        }
+        nr_pages--;
+        pages_done++;
+        if (!nr_pages)
+            break;
+        if (likely(pages))
+            pages++;
+        start += PAGE_SIZE;
+    }
+    if (must_unlock && *locked) {
+        /* We either temporarily dropped the lock, or the caller
+         * requested that we both acquire and drop the lock. Either way,
+         * we must now unlock, and notify the caller of that state. */
+        mmap_read_unlock(mm);
+        *locked = 0;
+    }
+
+    /* Failing to pin anything implies something has gone wrong (except when
+     * FOLL_NOWAIT is specified). */
+    if (WARN_ON_ONCE(pages_done == 0 && !(flags & FOLL_NOWAIT)))
+        return -EFAULT;
+
+    return pages_done;
+}
+```
+
+### __get_user_pages
+
+```c
+long __get_user_pages(struct mm_struct *mm,
+        unsigned long start, unsigned long nr_pages,
+        unsigned int gup_flags, struct page **pages,
+        int *locked)
+{
+    long ret = 0, i = 0;
+    struct vm_area_struct *vma = NULL;
+    unsigned long page_mask = 0;
+
+    if (!nr_pages)
+        return 0;
+
+    start = untagged_addr_remote(mm, start);
+
+    VM_WARN_ON_ONCE(!!pages != !!(gup_flags & (FOLL_GET | FOLL_PIN)));
+
+    /* FOLL_GET and FOLL_PIN are mutually exclusive. */
+    VM_WARN_ON_ONCE((gup_flags & (FOLL_PIN | FOLL_GET)) ==
+            (FOLL_PIN | FOLL_GET));
+
+    do {
+        struct page *page;
+        unsigned int page_increm;
+
+        /* first iteration or cross vma bound */
+        if (!vma || start >= vma->vm_end) {
+            /* MADV_POPULATE_(READ|WRITE) wants to handle VMA
+             * lookups+error reporting differently. */
+            if (gup_flags & FOLL_MADV_POPULATE) {
+                vma = vma_lookup(mm, start);
+                if (!vma) {
+                    ret = -ENOMEM;
+                    goto out;
+                }
+                if (check_vma_flags(vma, gup_flags)) {
+                    ret = -EINVAL;
+                    goto out;
+                }
+                goto retry;
+            }
+            vma = gup_vma_lookup(mm, start);
+            if (!vma && in_gate_area(mm, start)) {
+                ret = get_gate_page(mm, start & PAGE_MASK,
+                        gup_flags, &vma,
+                        pages ? &page : NULL);
+                if (ret)
+                    goto out;
+                page_mask = 0;
+                goto next_page;
+            }
+
+            if (!vma) {
+                ret = -EFAULT;
+                goto out;
+            }
+            ret = check_vma_flags(vma, gup_flags);
+            if (ret)
+                goto out;
+        }
+retry:
+        /* If we have a pending SIGKILL, don't keep faulting pages and
+         * potentially allocating memory. */
+        if (fatal_signal_pending(current)) {
+            ret = -EINTR;
+            goto out;
+        }
+        cond_resched();
+
+        page = follow_page_mask(vma, start, gup_flags, &page_mask);
+        if (!page || PTR_ERR(page) == -EMLINK) {
+            ret = faultin_page(vma, start, gup_flags,
+                       PTR_ERR(page) == -EMLINK, locked);
+            switch (ret) {
+            case 0:
+                goto retry;
+            case -EBUSY:
+            case -EAGAIN:
+                ret = 0;
+                fallthrough;
+            case -EFAULT:
+            case -ENOMEM:
+            case -EHWPOISON:
+                goto out;
+            }
+            BUG();
+        } else if (PTR_ERR(page) == -EEXIST) {
+            /* Proper page table entry exists, but no corresponding
+             * struct page. If the caller expects **pages to be
+             * filled in, bail out now, because that can't be done
+             * for this page. */
+            if (pages) {
+                ret = PTR_ERR(page);
+                goto out;
+            }
+        } else if (IS_ERR(page)) {
+            ret = PTR_ERR(page);
+            goto out;
+        }
+next_page:
+        page_increm = 1 + (~(start >> PAGE_SHIFT) & page_mask);
+        if (page_increm > nr_pages)
+            page_increm = nr_pages;
+
+        if (pages) {
+            struct page *subpage;
+            unsigned int j;
+
+            /* This must be a large folio (and doesn't need to
+             * be the whole folio; it can be part of it), do
+             * the refcount work for all the subpages too.
+             *
+             * NOTE: here the page may not be the head page
+             * e.g. when start addr is not thp-size aligned.
+             * try_grab_folio() should have taken care of tail
+             * pages. */
+            if (page_increm > 1) {
+                struct folio *folio = page_folio(page);
+
+                /* Since we already hold refcount on the
+                 * large folio, this should never fail. */
+                if (try_grab_folio(folio, page_increm - 1,
+                           gup_flags)) {
+                    /* Release the 1st page ref if the
+                     * folio is problematic, fail hard. */
+                    gup_put_folio(folio, 1, gup_flags);
+                    ret = -EFAULT;
+                    goto out;
+                }
+            }
+
+            for (j = 0; j < page_increm; j++) {
+                subpage = page + j;
+                pages[i + j] = subpage;
+                flush_anon_page(vma, subpage, start + j * PAGE_SIZE);
+                flush_dcache_page(subpage);
+            }
+        }
+
+        i += page_increm;
+        start += page_increm * PAGE_SIZE;
+        nr_pages -= page_increm;
+    } while (nr_pages);
+out:
+    return i ? i : ret;
+}
+```
+
+### follow_page_mask
+
+```c
+struct page *follow_page_mask(struct vm_area_struct *vma,
+			      unsigned long address, unsigned int flags,
+			      unsigned long *page_mask)
+{
+	pgd_t *pgd;
+	struct mm_struct *mm = vma->vm_mm;
+	struct page *page;
+
+	vma_pgtable_walk_begin(vma) {
+        if (is_vm_hugetlb_page(vma))
+		    hugetlb_vma_lock_read(vma);
+    }
+
+	*page_mask = 0;
+	pgd = pgd_offset(mm, address);
+
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+		page = no_page_table(vma, flags, address);
+	else
+		page = follow_p4d_mask(vma, address, pgd, flags, page_mask);
+
+	vma_pgtable_walk_end(vma);
+
+	return page;
+}
+
+struct page *follow_p4d_mask(struct vm_area_struct *vma,
+				    unsigned long address, pgd_t *pgdp,
+				    unsigned int flags,
+				    unsigned long *page_mask)
+{
+	p4d_t *p4dp, p4d;
+
+	p4dp = p4d_offset(pgdp, address);
+	p4d = p4dp_get(p4dp);
+	BUILD_BUG_ON(p4d_leaf(p4d));
+
+	if (!p4d_present(p4d) || p4d_bad(p4d))
+		return no_page_table(vma, flags, address);
+
+	return follow_pud_mask(vma, address, p4dp, flags, page_mask);
+}
+
+struct page *follow_pud_mask(struct vm_area_struct *vma,
+				    unsigned long address, p4d_t *p4dp,
+				    unsigned int flags,
+				    unsigned long *page_mask)
+{
+	pud_t *pudp, pud;
+	spinlock_t *ptl;
+	struct page *page;
+	struct mm_struct *mm = vma->vm_mm;
+
+	pudp = pud_offset(p4dp, address);
+	pud = pudp_get(pudp);
+	if (!pud_present(pud))
+		return no_page_table(vma, flags, address);
+	if (pud_leaf(pud)) {
+		ptl = pud_lock(mm, pudp);
+		page = follow_huge_pud(vma, address, pudp, flags, page_mask);
+		spin_unlock(ptl);
+		if (page)
+			return page;
+		return no_page_table(vma, flags, address);
+	}
+	if (unlikely(pud_bad(pud)))
+		return no_page_table(vma, flags, address);
+
+	return follow_pmd_mask(vma, address, pudp, flags, page_mask);
+}
+
+struct page *follow_pmd_mask(struct vm_area_struct *vma,
+				    unsigned long address, pud_t *pudp,
+				    unsigned int flags,
+				    unsigned long *page_mask)
+{
+	pmd_t *pmd, pmdval;
+	spinlock_t *ptl;
+	struct page *page;
+	struct mm_struct *mm = vma->vm_mm;
+
+	pmd = pmd_offset(pudp, address);
+	pmdval = pmdp_get_lockless(pmd);
+	if (pmd_none(pmdval))
+		return no_page_table(vma, flags, address);
+	if (!pmd_present(pmdval))
+		return no_page_table(vma, flags, address);
+	if (likely(!pmd_leaf(pmdval)))
+		return follow_page_pte(vma, address, pmd, flags);
+
+	if (pmd_protnone(pmdval) && !gup_can_follow_protnone(vma, flags))
+		return no_page_table(vma, flags, address);
+
+	ptl = pmd_lock(mm, pmd);
+	pmdval = *pmd;
+	if (unlikely(!pmd_present(pmdval))) {
+		spin_unlock(ptl);
+		return no_page_table(vma, flags, address);
+	}
+	if (unlikely(!pmd_leaf(pmdval))) {
+		spin_unlock(ptl);
+		return follow_page_pte(vma, address, pmd, flags);
+	}
+	if (pmd_trans_huge(pmdval) && (flags & FOLL_SPLIT_PMD)) {
+		spin_unlock(ptl);
+		split_huge_pmd(vma, pmd, address);
+		/* If pmd was left empty, stuff a page table in there quickly */
+		return pte_alloc(mm, pmd) ? ERR_PTR(-ENOMEM) :
+			follow_page_pte(vma, address, pmd, flags);
+	}
+	page = follow_huge_pmd(vma, address, pmd, flags, page_mask);
+	spin_unlock(ptl);
+	return page;
+}
+
+struct page *follow_page_pte(struct vm_area_struct *vma,
+		unsigned long address, pmd_t *pmd, unsigned int flags)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct folio *folio;
+	struct page *page;
+	spinlock_t *ptl;
+	pte_t *ptep, pte;
+	int ret;
+
+	ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+	if (!ptep)
+		return no_page_table(vma, flags, address);
+	pte = ptep_get(ptep);
+	if (!pte_present(pte))
+		goto no_page;
+	if (pte_protnone(pte) && !gup_can_follow_protnone(vma, flags))
+		goto no_page;
+
+	page = vm_normal_page(vma, address, pte);
+
+	/*
+	 * We only care about anon pages in can_follow_write_pte().
+	 */
+	if ((flags & FOLL_WRITE) &&
+	    !can_follow_write_pte(pte, page, vma, flags)) {
+		page = NULL;
+		goto out;
+	}
+
+	if (unlikely(!page)) {
+		if (flags & FOLL_DUMP) {
+			/* Avoid special (like zero) pages in core dumps */
+			page = ERR_PTR(-EFAULT);
+			goto out;
+		}
+
+		if (is_zero_pfn(pte_pfn(pte))) {
+			page = pte_page(pte);
+		} else {
+			ret = follow_pfn_pte(vma, address, ptep, flags);
+			page = ERR_PTR(ret);
+			goto out;
+		}
+	}
+	folio = page_folio(page);
+
+	if (!pte_write(pte) && gup_must_unshare(vma, flags, page)) {
+		page = ERR_PTR(-EMLINK);
+		goto out;
+	}
+
+	VM_WARN_ON_ONCE_PAGE((flags & FOLL_PIN) && PageAnon(page) &&
+			     !PageAnonExclusive(page), page);
+
+	/* try_grab_folio() does nothing unless FOLL_GET or FOLL_PIN is set. */
+	ret = try_grab_folio(folio, 1, flags);
+	if (unlikely(ret)) {
+		page = ERR_PTR(ret);
+		goto out;
+	}
+
+	/*
+	 * We need to make the page accessible if and only if we are going
+	 * to access its content (the FOLL_PIN case).  Please see
+	 * Documentation/core-api/pin_user_pages.rst for details.
+	 */
+	if (flags & FOLL_PIN) {
+		ret = arch_make_folio_accessible(folio);
+		if (ret) {
+			unpin_user_page(page);
+			page = ERR_PTR(ret);
+			goto out;
+		}
+	}
+	if (flags & FOLL_TOUCH) {
+		if ((flags & FOLL_WRITE) &&
+		    !pte_dirty(pte) && !folio_test_dirty(folio))
+			folio_mark_dirty(folio);
+		/*
+		 * pte_mkyoung() would be more correct here, but atomic care
+		 * is needed to avoid losing the dirty bit: it is easier to use
+		 * folio_mark_accessed().
+		 */
+		folio_mark_accessed(folio);
+	}
+out:
+	pte_unmap_unlock(ptep, ptl);
+	return page;
+no_page:
+	pte_unmap_unlock(ptep, ptl);
+	if (!pte_none(pte))
+		return NULL;
+	return no_page_table(vma, flags, address);
+}
+
+struct page *no_page_table(struct vm_area_struct *vma,
+				  unsigned int flags, unsigned long address)
+{
+	if (!(flags & FOLL_DUMP))
+		return NULL;
+
+	/*
+	 * When core dumping, we don't want to allocate unnecessary pages or
+	 * page tables.  Return error instead of NULL to skip handle_mm_fault,
+	 * then get_dump_page() will return NULL to leave a hole in the dump.
+	 * But we can only make this optimization where a hole would surely
+	 * be zero-filled if handle_mm_fault() actually did handle it.
+	 */
+	if (is_vm_hugetlb_page(vma)) {
+		struct hstate *h = hstate_vma(vma);
+
+		if (!hugetlbfs_pagecache_present(h, vma, address))
+			return ERR_PTR(-EFAULT);
+	} else if ((vma_is_anonymous(vma) || !vma->vm_ops->fault)) {
+		return ERR_PTR(-EFAULT);
+	}
+
+	return NULL;
+}
+```
 
 # HMM
 
