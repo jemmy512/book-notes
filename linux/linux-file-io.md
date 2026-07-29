@@ -1420,11 +1420,22 @@ struct mount *__do_loopback(const struct path *old_path,
 ### lab
 
 ```sh
-dest_mnt ←→ peer_1 ←→ peer_2      writes at any peer reach all peers
+dest_mnt <-> peer_1 <-> peer_2      writes at any peer reach all peers
     ↓                   ↓
-slave_C              slave_A ←→ slave_A_peer    slaves receive, don't send back
+slave_C              slave_A <-> slave_A_peer    slaves receive, don't send back
                         ↓
                        slave_B
+```
+
+```sh
+# after propogation_mnt
+S at dest_mnt <-> S1 at peer_1 <-> S2 at peer_2
+                                      |
+                                      +-- slave --> SC at slave_C
+                                      |
+                                      +-- slave --> SA at slave_A <-> SAp at slave_A_peer
+                                                                            |
+                                                                            +-- slave --> SB at slave_B
 ```
 
 ```sh

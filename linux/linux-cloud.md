@@ -7370,27 +7370,8 @@ int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
 			if (!need_secondary(n, dest_mp))
 				continue;
 			if (type & CL_SLAVE) {// first in this peer group
-				copy = find_master(n, copy, source_mnt) {
-                    struct mount *p;
-
-                    // ascend until there's a copy for something with the same master
-                    for (;;) {
-                        p = m->mnt_master;
-                        if (!p || IS_MNT_MARKED(p))
-                            break;
-                        m = p;
-                    }
-                    while (!peers(last_copy, original)) {
-                        struct mount *parent = last_copy->mnt_parent;
-                        if (parent->mnt_master == p) {
-                            if (!peers(parent, m))
-                                last_copy = last_copy->mnt_master;
-                            break;
-                        }
-                        last_copy = last_copy->mnt_master;
-                    }
-                    return last_copy;
-                }
+                /* Return the last-created copy in the matching parent peer group. */
+				copy = find_master(n, copy, source_mnt);
             }
 			this = copy_tree(copy, copy->mnt.mnt_root, type);
 			if (IS_ERR(this)) {
@@ -7457,6 +7438,40 @@ static struct mount *next_group(struct mount *m, struct mount *origin)
 }
 ```
 
+#### find_master
+
+```c
+/* Return the last-created copy in the matching parent peer group. */
+static struct mount *find_master(struct mount *m,
+				struct mount *last_copy,
+				struct mount *original)
+{
+    struct mount *p;
+
+    // Phase 1: walk m's master chain until hitting a MARKED master
+    for (;;) {
+        p = m->mnt_master;
+        if (!p || IS_MNT_MARKED(p))
+            break;
+        m = p;
+    }
+    // p = first MARKED ancestor (or NULL)
+    // m = last mount just below p
+
+    // Phase 2: find the copy in last_copy's chain whose parent
+    //          was placed under the slave group containing m
+    while (!peers(last_copy, original)) {
+        struct mount *parent = last_copy->mnt_parent;
+        if (parent->mnt_master == p) {
+            if (!peers(parent, m))
+                last_copy = last_copy->mnt_master;
+            break;
+        }
+        last_copy = last_copy->mnt_master;
+    }
+    return last_copy;
+}
+```
 ### propagate_umount
 
 ```c
