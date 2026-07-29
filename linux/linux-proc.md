@@ -6287,7 +6287,14 @@ static void dequeue_task_rt(struct rq *rq, struct task_struct *p, int flags) {
             rq->rt.highest_prio.next = MAX_RT_PRIO-1;
 
             if (rq->rt.overloaded) {
-                rt_clear_overload(rq);
+                rt_clear_overload(rq) {
+                    if (!rq->online)
+                        return;
+
+                    /* the order here really doesn't matter */
+                    atomic_dec(&rq->rd->rto_count);
+                    cpumask_clear_cpu(rq->cpu, rq->rd->rto_mask);
+                }
                 rq->rt.overloaded = 0;
             }
         }
@@ -6819,6 +6826,11 @@ void pull_rt_task(struct rq *this_rq) {
     if (likely(!rt_overload_count))
         return;
 
+    /* Match the barrier from rt_set_overloaded; this guarantees that if we
+     * see overloaded we must also see the rto_mask bit. */
+    smp_rmb();
+
+    /* If we are the only overloaded CPU do nothing */
     if (rt_overload_count == 1 &&  cpumask_test_cpu(this_rq->cpu, this_rq->rd->rto_mask))
         return;
 
@@ -6841,6 +6853,8 @@ void pull_rt_task(struct rq *this_rq) {
             continue;
 
         push_task = NULL;
+        double_lock_balance(this_rq, src_rq);
+
         p = pick_highest_pushable_task(src_rq, this_cpu) {
             struct plist_head *head = &rq->rt.pushable_tasks;
             struct task_struct *p;
@@ -6860,7 +6874,12 @@ void pull_rt_task(struct rq *this_rq) {
         }
 
         if (p && (p->prio < this_rq->rt.highest_prio.curr)) {
-            /* dont pull tasks which prio is higher than src_rq curr prio */
+            /* There's a chance that p is higher in priority
+             * than what's currently running on its CPU.
+             * This is just that p is waking up and hasn't
+             * had a chance to schedule. We only pull
+             * p if it is lower in priority than the
+             * current task on the run queue */
             if (p->prio < src_rq->curr->prio)
                 goto skip;
 
@@ -6886,6 +6905,8 @@ void pull_rt_task(struct rq *this_rq) {
             }
         }
 skip:
+        double_unlock_balance(this_rq, src_rq);
+
         if (push_task) {
             preempt_disable();
             raw_spin_rq_unlock(this_rq);
@@ -7068,7 +7089,7 @@ static void push_rt_tasks(struct rq *rq)
 /* If the current CPU has more than one RT task, see if the non
  * running task can migrate over to a CPU that is running a task
  * of lesser priority. */
-static int push_rt_task(struct rq *rq, bool pull)
+static int push_rt_task(struct rq *rq, bool pull) {
     if (!rq->rt.overloaded)
         return 0;
 
@@ -7140,76 +7161,7 @@ retry:
         goto retry;
     }
 
-    move_queued_task_locked(rq, lowest_rq, next_task) {
-        deactivate_task(rq, next_task, 0) {
-            WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
-            dequeue_task(rq, p, flags) {
-                if (sched_core_enabled(rq)) {
-                    sched_core_dequeue(rq, p, flags);
-                }
-
-                if (!(flags & DEQUEUE_NOCLOCK))
-                    update_rq_clock(rq);
-
-                if (!(flags & DEQUEUE_SAVE)) {
-                    sched_info_dequeue(rq, p);
-                    psi_dequeue(p, flags & DEQUEUE_SLEEP);
-                }
-
-                uclamp_rq_dec(rq, p);
-                p->sched_class->dequeue_task(rq, p, flags);
-            }
-        }
-
-        set_task_cpu(next_task, lowest_rq->cpu);
-
-        activate_task(lowest_rq, next_task, 0) {
-            if (task_on_rq_migrating(p))
-                flags |= ENQUEUE_MIGRATED;
-            if (flags & ENQUEUE_MIGRATED)
-                sched_mm_cid_migrate_to(rq, p);
-
-            enqueue_task(rq, p, flags) {
-                if (!(flags & ENQUEUE_NOCLOCK))
-                    update_rq_clock(rq);
-
-                p->sched_class->enqueue_task(rq, p, flags);
-
-                /*  Must be after ->enqueue_task() because ENQUEUE_DELAYED can clear
-                 * ->sched_delayed. */
-                uclamp_rq_inc(rq, p) {
-                    enum uclamp_id clamp_id;
-
-                    if (!static_branch_unlikely(&sched_uclamp_used))
-                        return;
-
-                    if (unlikely(!p->sched_class->uclamp_enabled))
-                        return;
-
-                    if (p->se.sched_delayed)
-                        return;
-
-                    for_each_clamp_id(clamp_id)
-                        uclamp_rq_inc_id(rq, p, clamp_id);
-
-                    /* Reset clamp idle holding when there is one RUNNABLE task */
-                    if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
-                        rq->uclamp_flags &= ~UCLAMP_FLAG_IDLE;
-                }
-
-                psi_enqueue(p, flags);
-
-                if (!(flags & ENQUEUE_RESTORE))
-                    sched_info_enqueue(rq, p);
-
-                if (sched_core_enabled(rq))
-                    sched_core_enqueue(rq, p);
-            }
-
-            p->on_rq = TASK_ON_RQ_QUEUED;
-        }
-        wakeup_preempt(dst_rq, task, 0);
-    }
+    move_queued_task_locked(rq, lowest_rq, next_task);
     resched_curr(lowest_rq);
     ret = 1;
 
@@ -7408,6 +7360,99 @@ int find_lowest_rq(struct task_struct *task) {
     }
 
     return -1;
+}
+```
+
+### move_queued_task_locked
+
+```c
+void move_queued_task_locked(struct rq *src_rq, struct rq *dst_rq, struct task_struct *task)
+{
+    deactivate_task(rq, next_task, 0) {
+        WRITE_ONCE(p->on_rq, TASK_ON_RQ_MIGRATING);
+        dequeue_task(rq, p, flags) {
+            if (sched_core_enabled(rq)) {
+                sched_core_dequeue(rq, p, flags);
+            }
+
+            if (!(flags & DEQUEUE_NOCLOCK))
+                update_rq_clock(rq);
+
+            if (!(flags & DEQUEUE_SAVE)) {
+                sched_info_dequeue(rq, p);
+                psi_dequeue(p, flags & DEQUEUE_SLEEP);
+            }
+
+            uclamp_rq_dec(rq, p);
+            p->sched_class->dequeue_task(rq, p, flags);
+        }
+    }
+
+    set_task_cpu(next_task, lowest_rq->cpu);
+
+    activate_task(lowest_rq, next_task, 0) {
+        if (task_on_rq_migrating(p))
+            flags |= ENQUEUE_MIGRATED;
+        if (flags & ENQUEUE_MIGRATED)
+            sched_mm_cid_migrate_to(rq, p);
+
+        enqueue_task(rq, p, flags) {
+            if (!(flags & ENQUEUE_NOCLOCK))
+                update_rq_clock(rq);
+
+            p->sched_class->enqueue_task(rq, p, flags);
+
+            /*  Must be after ->enqueue_task() because ENQUEUE_DELAYED can clear
+                * ->sched_delayed. */
+            uclamp_rq_inc(rq, p) {
+                enum uclamp_id clamp_id;
+
+                if (!static_branch_unlikely(&sched_uclamp_used))
+                    return;
+
+                if (unlikely(!p->sched_class->uclamp_enabled))
+                    return;
+
+                if (p->se.sched_delayed)
+                    return;
+
+                for_each_clamp_id(clamp_id)
+                    uclamp_rq_inc_id(rq, p, clamp_id);
+
+                /* Reset clamp idle holding when there is one RUNNABLE task */
+                if (rq->uclamp_flags & UCLAMP_FLAG_IDLE)
+                    rq->uclamp_flags &= ~UCLAMP_FLAG_IDLE;
+            }
+
+            psi_enqueue(p, flags);
+
+            if (!(flags & ENQUEUE_RESTORE))
+                sched_info_enqueue(rq, p);
+
+            if (sched_core_enabled(rq))
+                sched_core_enqueue(rq, p);
+        }
+
+        p->on_rq = TASK_ON_RQ_QUEUED;
+    }
+
+    wakeup_preempt(dst_rq, task, 0) {
+        struct task_struct *donor = rq->donor;
+
+        if (p->sched_class == rq->next_class) {
+            rq->next_class->wakeup_preempt(rq, p, flags);
+
+        } else if (sched_class_above(p->sched_class, rq->next_class)) {
+            rq->next_class->wakeup_preempt(rq, p, flags);
+            resched_curr(rq);
+            rq->next_class = p->sched_class;
+        }
+
+        /* A queue event has occurred, and we're going to schedule.  In
+        * this case, we can save a useless back to back clock update. */
+        if (task_on_rq_queued(donor) && test_tsk_need_resched(rq->curr))
+            rq_clock_skip_update(rq);
+    }
 }
 ```
 
@@ -16973,13 +17018,12 @@ bool is_cpu_allowed(struct task_struct *p, int cpu)
 
 ```c
 void set_task_cpu(struct task_struct *p, unsigned int new_cpu) {
+    unsigned int state = READ_ONCE(p->__state);
+
     if (task_cpu(p) != new_cpu) {
-        if (p->sched_class->migrate_task_rq) {
+        if (p->sched_class->migrate_task_rq)
             p->sched_class->migrate_task_rq(p, new_cpu);
-        }
         p->se.nr_migrations++;
-        rseq_migrate(p);
-        sched_mm_cid_migrate_from(p);
         perf_event_task_migrate(p);
     }
 
@@ -17003,8 +17047,16 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu) {
             p->rt.rt_rq  = tg->rt_rq[cpu];
             p->rt.parent = tg->rt_se[cpu];
         }
+
+        /* After ->cpu is set up to a new value, task_rq_lock(p, ...) can be
+        * successfully executed on another CPU. We must ensure that updates of
+        * per-task data have been completed by this moment. */
+        smp_wmb();
         WRITE_ONCE(task_thread_info(p)->cpu, cpu);
         p->wake_cpu = cpu;
+        rseq_sched_set_ids_changed(p) {
+            t->rseq.event.ids_changed = true;
+        }
     }
 }
 ```
