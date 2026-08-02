@@ -9,9 +9,9 @@
 * [奇小葩 - linux cgroup](https://blog.csdn.net/u012489236/category_11288796.html)
 * [极客时间](https://time.geekbang.org/column/article/115582)
 * [Docker 背后的内核知识 - cgroups 资源限制](https://www.infoq.cn/news/docker-kernel-knowledge-cgroups-resource-isolation)
-* [Coolshell - DOCKER基础技术：LINUX CGROUP](https://coolshell.cn/articles/17049.html)
-* [Docker底层原理：Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
-* [k8s 基于 cgroup 的资源限额（capacity enforcement）：模型设计与代码实现（2023）](https://arthurchiao.art/blog/k8s-cgroup-zh/)
+* [Coolshell - DOCKER基础技术: LINUX CGROUP](https://coolshell.cn/articles/17049.html)
+* [Docker底层原理: Cgroup V2的使用](https://blog.csdn.net/qq_67733273/article/details/134109156)
+* [k8s 基于 cgroup 的资源限额(capacity enforcement): 模型设计与代码实现(2023)](https://arthurchiao.art/blog/k8s-cgroup-zh/)
 * [[PATCH v7 00/19] The new cgroup slab memory controller](https://lore.kernel.org/all/20200623015846.1141975-1-guro@fb.com/)
     * [[PATCH v7 06/19] mm: memcg/slab: obj_cgroup API](https://lore.kernel.org/all/20200623015846.1141975-7-guro@fb.com/)
 * [[PATCH v6 00/33] Eliminate Dying Memory Cgroup](https://lore.kernel.org/all/cover.1772711148.git.zhengqi.arch@bytedance.com/) ⊙ [2021 RFC](https://lore.kernel.org/all/20210330101531.82752-1-songmuchun@bytedance.com/) ⊙ [2021 v6](https://lore.kernel.org/all/20220621125658.64935-1-songmuchun@bytedance.com/) ⊙ [2023 RFC](https://lore.kernel.org/all/20230720070825.992023-1-yosryahmed@google.com/) ⊙ [2025 RFC](https://lore.kernel.org/all/20250415024532.26632-1-songmuchun@bytedance.com/) ⊙ [2026 v1](https://lore.kernel.org/all/cover.1761658310.git.zhengqi.arch@bytedance.com/)
@@ -903,94 +903,93 @@ err_free_css:
 ### cgroup_rmdir
 
 ```sh
-# Stage 1 — kill_css(): Initiate Destruction
+# Stage 1 - kill_css(): Initiate Destruction
 userspace: rmdir /sys/fs/cgroup/memory/foo
-    │
-    └─ kernfs → cgroup_rmdir()                         cgroup.c:5981
-        └─ cgroup_destroy_locked()                   cgroup.c:5908
-            │
-            ├─ checks: no tasks (populated=0), no online children
-            │
-            ├─ for_each_css(css, ssid, cgrp):
-            │    kill_css(css)                      cgroup.c:5850
-            │      css->flags |= CSS_DYING
-            │      css_get(css)  ← take extra ref to keep alive until css_offline
-            │      percpu_ref_kill_and_confirm(
-            │        &css->refcnt,
-            │        css_killed_ref_fn)   ← fires when killed on ALL CPUs
-            │
-            └─ percpu_ref_kill(&cgrp->self.refcnt)
+│
+└─ kernfs → cgroup_rmdir()                         cgroup.c:5981
+    └─ cgroup_destroy_locked()                   cgroup.c:5908
+        │
+        ├─ checks: no tasks (populated=0), no online children
+        │
+        ├─ for_each_css(css, ssid, cgrp):
+        │   kill_css(css)                      cgroup.c:5850
+        │       css->flags |= CSS_DYING
+        │       css_get(css)  ← take extra ref to keep alive until css_offline
+        │       percpu_ref_kill_and_confirm(
+        │           &css->refcnt,
+        │           css_killed_ref_fn)   ← fires when killed on ALL CPUs
+        │
+        └─ percpu_ref_kill(&cgrp->self.refcnt)
 
-# Stage 2 — css_offline (mem_cgroup_css_offline): Go Offline
+# Stage 2 - css_offline (mem_cgroup_css_offline): Go Offline
 
 percpu_ref confirmed killed on all CPUs
+│
+└─ css_killed_ref_fn()
+    atomic_dec_and_test(&css->online_cnt)
     │
-    └─ css_killed_ref_fn()                             cgroup.c:5830
-        atomic_dec_and_test(&css->online_cnt)
+    └─ INIT_WORK(&css->destroy_work, css_killed_work_fn)
+        queue_work(cgroup_offline_wq, ...)   ← flags=0, NOT WQ_FREEZABLE
         │
-        └─ INIT_WORK(&css->destroy_work, css_killed_work_fn)
-            queue_work(cgroup_offline_wq, ...)   ← flags=0, NOT WQ_FREEZABLE
+        └─ css_killed_work_fn()
+            cgroup_lock()
+            do {
+                offline_css(css)
                 │
-                └─ css_killed_work_fn()              cgroup.c:5812
-                    cgroup_lock()
-                    do {
-                        offline_css(css)             cgroup.c:5532
-                        │
-                        └─ ss->css_offline(css)
-                                mem_cgroup_css_offline()  ← called HERE
-                                    event cleanup
-                                    page_counter reset
-                                    memcg_offline_kmem()
-                                    wb_memcg_offline()
-                                    drain_all_stock()
-                                    mem_cgroup_id_put()
-                                    ← NO cancel of pgcache_limit_work!
-                                    ← NO clear of allow_pgcache_limit!
-                            css->flags &= ~CSS_ONLINE
-                            css->cgroup->subsys[ss->id] = NULL
+                └─ ss->css_offline(css)
+                        mem_cgroup_css_offline()  ← called HERE
+                            event cleanup
+                            page_counter reset
+                            memcg_offline_kmem()
+                            wb_memcg_offline()
+                            drain_all_stock()
+                            mem_cgroup_id_put()
+                            ← NO cancel of pgcache_limit_work!
+                            ← NO clear of allow_pgcache_limit!
+                    css->flags &= ~CSS_ONLINE
+                    css->cgroup->subsys[ss->id] = NULL
 
-                        css_put(css)  ← drop the extra ref from kill_css()
-                            │           ← if this is the LAST ref, triggers:
-                            └─ css_release()  (refcount → 0)
-                    } while (parent && online_cnt reaches 0)
+                css_put(css)    ← drop the extra ref from kill_css()
+                │               ← if this is the LAST ref, triggers:
+                └─ css_release()  (refcount → 0)
+            } while (parent && online_cnt reaches 0)
 
-# Stage 3 — css_release: Schedule RCU Callback
+# Stage 3 - css_release: Schedule RCU Callback
 
 css_put(css)  [last reference dropped]
-    └─ percpu_ref → 0
-        └─ css_release()                              cgroup.c:5473
-            INIT_WORK(&css->destroy_work, css_release_work_fn)
-            queue_work(cgroup_release_wq, ...)  ← flags=0, NOT WQ_FREEZABLE
+└─ percpu_ref → 0
+    └─ css_release()                              cgroup.c:5473
+        INIT_WORK(&css->destroy_work, css_release_work_fn)
+        queue_work(cgroup_release_wq, ...)  ← flags=0, NOT WQ_FREEZABLE
+        │
+        └─ css_release_work_fn()           cgroup.c:5419
+            list_del_rcu(&css->sibling)  ← removed from cgroup tree
+            ss->css_released(css)
+                mem_cgroup_css_released()
+                invalidate_reclaim_iterators(memcg)
+            INIT_RCU_WORK(&css->destroy_rwork, css_free_rwork_fn)
+            queue_rcu_work(cgroup_free_wq, ...)
                 │
-                └─ css_release_work_fn()           cgroup.c:5419
-                    list_del_rcu(&css->sibling)  ← removed from cgroup tree
-                    ss->css_released(css)
-                        mem_cgroup_css_released()
-                        invalidate_reclaim_iterators(memcg)
-                    INIT_RCU_WORK(&css->destroy_rwork, css_free_rwork_fn)
-                    queue_rcu_work(cgroup_free_wq, ...)
-                        │
-                        │  ← waits for RCU grace period
+                │  ← waits for RCU grace period
 
-# Stage 4 — css_free (mem_cgroup_css_free): Free Memory
+# Stage 4 - css_free (mem_cgroup_css_free): Free Memory
 
 [RCU grace period elapsed]
-    │
-    └─ css_free_rwork_fn()                             cgroup.c:5370
-        percpu_ref_exit(&css->refcnt)
-        ss->css_free(css)
-            mem_cgroup_css_free()                   ← called HERE
-                wb_wait_for_completion()
-                vmpressure_cleanup()
-                cancel_work_sync(&memcg->high_work)
-                cancel_delayed_work_sync(                ← line 5761
-                    &memcg->pgcache_limit_work)
-                mem_cgroup_remove_from_trees()
-                free_shrinker_info()
-                mem_cgroup_free(memcg)
-                    └─ kfree(memcg)  ← struct FREED here
+│
+└─ css_free_rwork_fn()                             cgroup.c:5370
+    percpu_ref_exit(&css->refcnt)
+    ss->css_free(css)
+        mem_cgroup_css_free()                   ← called HERE
+            wb_wait_for_completion()
+            vmpressure_cleanup()
+            cancel_work_sync(&memcg->high_work)
+            cancel_delayed_work_sync(                ← line 5761
+                &memcg->pgcache_limit_work)
+            mem_cgroup_remove_from_trees()
+            free_shrinker_info()
+            mem_cgroup_free(memcg)
+                └─ kfree(memcg)  ← struct FREED here
 ```
-
 
 ```c
 int cgroup_rmdir(struct kernfs_node *kn)
@@ -2274,26 +2273,43 @@ struct cgroup_subsys memory_cgrp_subsys = {
 
 ```c
 struct mem_cgroup {
-    struct cgroup_subsys_state css;
+    struct cgroup_subsys_state      css;
+
+    /* Private memcg ID. Used to ID objects that outlive the cgroup */
+    struct mem_cgroup_private_id    id;
 
     /* Accounted resources */
-    struct page_counter memory;     /* Both v1 & v2 */
-
+    struct page_counter             memory;     /* Both v1 & v2 */
     union {
-        struct page_counter swap;   /* v2 only */
-        struct page_counter memsw;  /* v1 only */
+        struct page_counter         swap;   /* v2 only */
+        struct page_counter         memsw;  /* v1 only */
     };
 
-    struct obj_cgroup __rcu    *objcg;
-    struct obj_cgroup        *orig_objcg;
-    /* list of inherited objcgs, protected by objcg_lock */
-    struct list_head        objcg_list;
 
-    struct list_head cgwb_list;
-    struct wb_domain cgwb_domain;
-    struct memcg_cgwb_frn cgwb_frn[MEMCG_CGWB_FRN_CNT];
 
-    struct mem_cgroup_per_node *nodeinfo[];
+    /* registered local peak watchers */
+    struct list_head                memory_peaks;
+    struct list_head                swap_peaks;
+    spinlock_t                        peaks_lock;
+
+    /* Range enforcement for interrupt charges */
+    struct work_struct              high_work;
+
+    /* memory.events and memory.events.local */
+    struct cgroup_file              events_file;
+    struct cgroup_file              events_local_file;
+
+    /* handle for "memory.swap.events" */
+    struct cgroup_file              swap_events_file;
+
+    int                             kmemcg_id;
+    struct list_head                cgwb_list;
+    struct wb_domain                cgwb_domain;
+    struct memcg_cgwb_frn           cgwb_frn[MEMCG_CGWB_FRN_CNT];
+
+    struct lru_gen_mm_list          mm_list;
+
+    struct mem_cgroup_per_node      *nodeinfo[];
 };
 
 struct page_counter {
@@ -2315,7 +2331,6 @@ struct page_counter {
     unsigned long watermark;
     /* Latest cg2 reset watermark */
     unsigned long local_watermark;
-    unsigned long failcnt;
 
     /* Keep all the read most fields in a separete cacheline. */
     CACHELINE_PADDING(_pad2_);
@@ -2327,6 +2342,38 @@ struct page_counter {
     unsigned long max;
     struct page_counter *parent;
 }
+
+struct mem_cgroup_per_node {
+    /* Keep the read-only fields at the start */
+    struct mem_cgroup    *memcg;    /* Back pointer, we cannot */
+                                    /* use container_of       */
+
+    struct lruvec_stats_percpu __percpu    *lruvec_stats_percpu;
+    struct lruvec_stats                     *lruvec_stats;
+    struct shrinker_info __rcu              *shrinker_info;
+
+    CACHELINE_PADDING(_pad1_);
+
+    /* Fields which get updated often at the end. */
+    struct lruvec                           lruvec;
+    CACHELINE_PADDING(_pad2_);
+    unsigned long                           lru_zone_size[MAX_NR_ZONES][NR_LRU_LISTS];
+    struct mem_cgroup_reclaim_iter          iter;
+
+    /* objcg is wiped out as a part of the objcg repaprenting process.
+     * orig_objcg preserves a pointer (and a reference) to the original
+     * objcg until the end of live of memcg. */
+    struct obj_cgroup __rcu                 *objcg;
+    struct obj_cgroup                       *orig_objcg;
+    /* list of inherited objcgs, protected by objcg_lock */
+    struct list_head                        objcg_list;
+
+#ifdef CONFIG_MEMCG_NMI_SAFETY_REQUIRES_ATOMIC
+    /* slab stats for nmi context */
+    atomic_t                                slab_reclaimable;
+    atomic_t                                slab_unreclaimable;
+#endif
+};
 ```
 
 ### mem_cgroup_css_online
@@ -2546,70 +2593,41 @@ void drain_all_stock(struct mem_cgroup *root_memcg)
      * per-cpu data. CPU up doesn't touch memcg_stock at all. */
     migrate_disable();
     curcpu = smp_processor_id();
+
     for_each_online_cpu(cpu) {
         struct memcg_stock_pcp *memcg_st = &per_cpu(memcg_stock, cpu);
         struct obj_stock_pcp *obj_st = &per_cpu(obj_stock, cpu);
 
         if (!test_bit(FLUSHING_CACHED_CHARGE, &memcg_st->flags) &&
-            is_memcg_drain_needed(memcg_st, root_memcg) &&
-            !test_and_set_bit(FLUSHING_CACHED_CHARGE,
-                      &memcg_st->flags)) {
+            is_memcg_drain_needed(memcg_st, root_memcg) && /* is descendant */
+            !test_and_set_bit(FLUSHING_CACHED_CHARGE, &memcg_st->flags))
+        {
             if (cpu == curcpu)
                 drain_local_memcg_stock(&memcg_st->work);
-            else if (!cpu_is_isolated(cpu))
-                schedule_work_on(cpu, &memcg_st->work);
+            else
+                schedule_drain_work(cpu, &memcg_st->work);
         }
 
         if (!test_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags) &&
-            obj_stock_flush_required(obj_st, root_memcg) &&
-            !test_and_set_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags)) {
+            obj_stock_flush_required(obj_st, root_memcg) && /* is descendant */
+            !test_and_set_bit(FLUSHING_CACHED_CHARGE, &obj_st->flags))
+        {
             if (cpu == curcpu)
                 drain_local_obj_stock(&obj_st->work);
-            else if (!cpu_is_isolated(cpu))
-                schedule_work_on(cpu, &obj_st->work);
+            else
+                schedule_drain_work(cpu, &obj_st->work);
         }
     }
     migrate_enable();
     mutex_unlock(&percpu_charge_mutex);
 }
+```
 
-static void drain_local_memcg_stock(struct work_struct *dummy)
-{
-    struct memcg_stock_pcp *stock;
+##### drain_local_memcg_stock
 
-    if (WARN_ONCE(!in_task(), "drain in non-task context"))
-        return;
+##### drain_local_obj_stock
 
-    local_lock(&memcg_stock.lock);
-
-    stock = this_cpu_ptr(&memcg_stock);
-    drain_stock_fully(stock)  {
-        int i;
-
-        for (i = 0; i < NR_MEMCG_STOCK; ++i) {
-            drain_stock(stock, i) {
-                struct mem_cgroup *old = READ_ONCE(stock->cached[i]);
-                uint8_t stock_pages;
-
-                if (!old)
-                    return;
-
-                stock_pages = READ_ONCE(stock->nr_pages[i]);
-                if (stock_pages) {
-                    memcg_uncharge(old, stock_pages);
-                    WRITE_ONCE(stock->nr_pages[i], 0);
-                }
-
-                css_put(&old->css);
-                WRITE_ONCE(stock->cached[i], NULL);
-            }
-        }
-    }
-    clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
-
-    local_unlock(&memcg_stock.lock);
-}
-
+```c
 static void drain_local_obj_stock(struct work_struct *dummy)
 {
     struct obj_stock_pcp *stock;
@@ -2620,61 +2638,7 @@ static void drain_local_obj_stock(struct work_struct *dummy)
     local_lock(&obj_stock.lock);
 
     stock = this_cpu_ptr(&obj_stock);
-    drain_obj_stock(stock) {
-        struct obj_cgroup *old = READ_ONCE(stock->cached_objcg);
-
-        if (!old)
-            return;
-
-        if (stock->nr_bytes) {
-            unsigned int nr_pages = stock->nr_bytes >> PAGE_SHIFT;
-            unsigned int nr_bytes = stock->nr_bytes & (PAGE_SIZE - 1);
-
-            if (nr_pages) {
-                struct mem_cgroup *memcg;
-
-                memcg = get_mem_cgroup_from_objcg(old);
-
-                mod_memcg_state(memcg, MEMCG_KMEM, -nr_pages);
-                memcg1_account_kmem(memcg, -nr_pages);
-                if (!mem_cgroup_is_root(memcg))
-                    memcg_uncharge(memcg, nr_pages);
-
-                css_put(&memcg->css);
-            }
-
-            /* The leftover is flushed to the centralized per-memcg value.
-            * On the next attempt to refill obj stock it will be moved
-            * to a per-cpu stock (probably, on an other CPU), see
-            * refill_obj_stock().
-            *
-            * How often it's flushed is a trade-off between the memory
-            * limit enforcement accuracy and potential CPU contention,
-            * so it might be changed in the future. */
-            atomic_add(nr_bytes, &old->nr_charged_bytes);
-            stock->nr_bytes = 0;
-        }
-
-        /* Flush the vmstat data in current stock */
-        if (stock->nr_slab_reclaimable_b || stock->nr_slab_unreclaimable_b) {
-            if (stock->nr_slab_reclaimable_b) {
-                mod_objcg_mlstate(old, stock->cached_pgdat,
-                        NR_SLAB_RECLAIMABLE_B,
-                        stock->nr_slab_reclaimable_b);
-                stock->nr_slab_reclaimable_b = 0;
-            }
-            if (stock->nr_slab_unreclaimable_b) {
-                mod_objcg_mlstate(old, stock->cached_pgdat,
-                        NR_SLAB_UNRECLAIMABLE_B,
-                        stock->nr_slab_unreclaimable_b);
-                stock->nr_slab_unreclaimable_b = 0;
-            }
-            stock->cached_pgdat = NULL;
-        }
-
-        WRITE_ONCE(stock->cached_objcg, NULL);
-        obj_cgroup_put(old);
-    }
+    drain_obj_stock(stock);
     clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
 
     local_unlock(&obj_stock.lock);
@@ -2736,6 +2700,132 @@ struct obj_cgroup *__memcg_reparent_objcgs(struct mem_cgroup *memcg,
     list_splice(&pn->objcg_list, &parent_pn->objcg_list);
 
     return objcg;
+}
+```
+
+##### lru_gen_reparent_memcg
+
+```c
+void lru_gen_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid)
+{
+    struct lruvec *child_lruvec, *parent_lruvec;
+    int type, zid;
+    struct zone *zone;
+    enum lru_list lru;
+
+    child_lruvec = get_lruvec(memcg, nid);
+    parent_lruvec = get_lruvec(parent, nid);
+
+    for_each_managed_zone_pgdat(zone, NODE_DATA(nid), zid, MAX_NR_ZONES - 1)
+        for (type = 0; type < ANON_AND_FILE; type++)
+            __lru_gen_reparent_memcg(child_lruvec, parent_lruvec, zid, type);
+
+    for_each_lru(lru) {
+        for_each_managed_zone_pgdat(zone, NODE_DATA(nid), zid, MAX_NR_ZONES - 1) {
+            unsigned long size = mem_cgroup_get_zone_lru_size(child_lruvec, lru, zid) {
+                struct mem_cgroup_per_node *mz;
+
+                mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+                return READ_ONCE(mz->lru_zone_size[zone_idx][lru]);
+            }
+
+            mem_cgroup_update_lru_size(parent_lruvec, lru, zid, size);
+        }
+    }
+}
+
+void __lru_gen_reparent_memcg(struct lruvec *child_lruvec, struct lruvec *parent_lruvec,
+                     int zone, int type)
+{
+    struct lru_gen_folio *child_lrugen, *parent_lrugen;
+    enum lru_list lru = type * LRU_INACTIVE_FILE;
+    int i;
+
+    child_lrugen = &child_lruvec->lrugen;
+    parent_lrugen = &parent_lruvec->lrugen;
+
+    for (i = 0; i < get_nr_gens(child_lruvec, type); i++) {
+        int gen = lru_gen_from_seq(child_lrugen->max_seq - i);
+        long nr_pages = child_lrugen->nr_pages[gen][type][zone];
+        int child_lru_active = lru_gen_is_active(child_lruvec, gen) ? LRU_ACTIVE : 0;
+        int parent_lru_active = lru_gen_is_active(parent_lruvec, gen) ? LRU_ACTIVE : 0;
+
+        /* Assuming that child pages are colder than parent pages */
+        list_splice_tail_init(&child_lrugen->folios[gen][type][zone],
+                      &parent_lrugen->folios[gen][type][zone]);
+
+        WRITE_ONCE(child_lrugen->nr_pages[gen][type][zone], 0);
+        WRITE_ONCE(parent_lrugen->nr_pages[gen][type][zone],
+               parent_lrugen->nr_pages[gen][type][zone] + nr_pages);
+
+        if (lru_gen_is_active(child_lruvec, gen) != lru_gen_is_active(parent_lruvec, gen)) {
+            __update_lru_size(child_lruvec, lru + child_lru_active, zone, -nr_pages);
+            __update_lru_size(parent_lruvec, lru + parent_lru_active, zone, nr_pages);
+        }
+    }
+}
+```
+
+##### lru_reparent_memcg
+
+```c
+void lru_reparent_memcg(struct mem_cgroup *memcg, struct mem_cgroup *parent, int nid)
+{
+    enum lru_list lru;
+    struct lruvec *child_lruvec, *parent_lruvec;
+
+    child_lruvec = mem_cgroup_lruvec(memcg, NODE_DATA(nid));
+    parent_lruvec = mem_cgroup_lruvec(parent, NODE_DATA(nid));
+    parent_lruvec->anon_cost += child_lruvec->anon_cost;
+    parent_lruvec->file_cost += child_lruvec->file_cost;
+
+    for_each_lru(lru)
+        lruvec_reparent_lru(child_lruvec, parent_lruvec, lru, nid);
+}
+
+static void lruvec_reparent_lru(struct lruvec *child_lruvec,
+                struct lruvec *parent_lruvec,
+                enum lru_list lru, int nid)
+{
+    int zid;
+    struct zone *zone;
+
+    if (lru != LRU_UNEVICTABLE)
+        list_splice_tail_init(&child_lruvec->lists[lru], &parent_lruvec->lists[lru]);
+
+    for_each_managed_zone_pgdat(zone, NODE_DATA(nid), zid, MAX_NR_ZONES - 1) {
+        unsigned long size = mem_cgroup_get_zone_lru_size(child_lruvec, lru, zid);
+
+        mem_cgroup_update_lru_size(parent_lruvec, lru, zid, size);
+    }
+}
+
+void mem_cgroup_update_lru_size(struct lruvec *lruvec, enum lru_list lru,
+                int zid, long nr_pages)
+{
+    struct mem_cgroup_per_node *mz;
+    unsigned long *lru_size;
+    long size;
+
+    if (mem_cgroup_disabled())
+        return;
+
+    mz = container_of(lruvec, struct mem_cgroup_per_node, lruvec);
+    lru_size = &mz->lru_zone_size[zid][lru];
+
+    if (nr_pages < 0)
+        *lru_size += nr_pages;
+
+    size = *lru_size;
+    if (WARN_ONCE(size < 0,
+        "%s(%p, %d, %ld): lru_size %ld\n",
+        __func__, lruvec, lru, nr_pages, size)) {
+        VM_BUG_ON(1);
+        *lru_size = 0;
+    }
+
+    if (nr_pages > 0)
+        *lru_size += nr_pages;
 }
 ```
 
@@ -2908,25 +2998,92 @@ static void mem_cgroup_attach(struct cgroup_taskset *tset)
 ![](../images/kernel/cgroup-mem_cgroup_charge.svg)
 
 ```c
-mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
+static inline int mem_cgroup_charge(struct folio *folio, struct mm_struct *mm,
+                    gfp_t gfp)
+{
+    if (mem_cgroup_disabled())
+        return 0;
+    return __mem_cgroup_charge(folio, mm, gfp);
+}
+
+int __mem_cgroup_charge(struct folio *folio, struct mm_struct *mm, gfp_t gfp)
 {
     struct mem_cgroup *memcg;
     int ret;
 
-    memcg = get_mem_cgroup_from_mm(mm);
-    ret = charge_memcg(folio, memcg, gfp) {
-        ret = try_charge(memcg, gfp, folio_nr_pages(folio)) {
-            if (mem_cgroup_is_root(memcg))
-                return 0;
+    memcg = get_mem_cgroup_from_mm(mm) {
+        struct mem_cgroup *memcg;
 
-            return try_charge_memcg(memcg, gfp_mask, nr_pages);
+        if (mem_cgroup_disabled())
+            return NULL;
+
+        if (unlikely(!mm)) {
+            memcg = active_memcg();
+            if (unlikely(memcg)) {
+                /* remote memcg must hold a ref */
+                css_get(&memcg->css);
+                return memcg;
+            }
+            mm = current->mm;
+            if (unlikely(!mm))
+                return root_mem_cgroup;
         }
-        if (ret)
-            goto out;
+
+        rcu_read_lock();
+        do {
+            memcg = mem_cgroup_from_task(rcu_dereference(mm->owner)) {
+                if (unlikely(!p))
+                    return NULL;
+
+                return mem_cgroup_from_css(task_css(p, memory_cgrp_id)) {
+                    return css ? container_of(css, struct mem_cgroup, css) : NULL;
+                }
+            }
+            if (unlikely(!memcg))
+                memcg = root_mem_cgroup;
+        } while (!css_tryget(&memcg->css));
+        rcu_read_unlock();
+
+        return memcg;
     }
 
-    commit_charge(folio, memcg) {
-        folio->memcg_data = (unsigned long)memcg;
+    ret = charge_memcg(folio, memcg, gfp) {
+        int ret = 0;
+        struct obj_cgroup *objcg;
+
+        objcg = get_obj_cgroup_from_memcg(memcg) {
+            struct obj_cgroup *objcg;
+
+            rcu_read_lock();
+            objcg = __get_obj_cgroup_from_memcg(memcg) {
+                int nid = numa_node_id();
+
+                for (; memcg; memcg = parent_mem_cgroup(memcg)) {
+                    struct obj_cgroup *objcg = rcu_dereference(memcg->nodeinfo[nid]->objcg);
+
+                    if (likely(objcg && obj_cgroup_tryget(objcg)))
+                        return objcg;
+                }
+
+                return NULL;
+            }
+            rcu_read_unlock();
+
+            return objcg;
+        }
+        /* Do not account at the root objcg level. */
+        if (!obj_cgroup_is_root(objcg)) /* return objcg->is_root; */
+            ret = try_charge_memcg(memcg, gfp, folio_nr_pages(folio));
+        if (ret) {
+            obj_cgroup_put(objcg);
+            return ret;
+        }
+        commit_charge(folio, objcg) {
+            folio->memcg_data = (unsigned long)objcg;
+        }
+        memcg1_commit_charge(folio, memcg);
+
+        return ret;
     }
     css_put(&memcg->css);
 
@@ -2941,17 +3098,23 @@ static int try_charge_memcg(struct mem_cgroup *memcg, gfp_t gfp_mask, unsigned i
     struct page_counter *counter;
     unsigned long nr_reclaimed;
     bool passed_oom = false;
-    unsigned int reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
+    unsigned int reclaim_options;
     bool drained = false;
     bool raised_max_event = false;
     unsigned long pflags;
+    bool allow_spinning = gfpflags_allow_spinning(gfp_mask);
 
 retry:
 /* 1. Initial Attempt with Stock, per-cpu optimization */
     if (consume_stock(memcg, nr_pages))
         return 0;
 
+    if (!allow_spinning)
+		/* Avoid the refill and flush of the older stock */
+		batch = nr_pages;
+
 /* 2. Try Charging the Counters: */
+    reclaim_options = MEMCG_RECLAIM_MAY_SWAP;
     if (!do_memsw_account() || page_counter_try_charge(&memcg->memsw, batch, &counter)) {
         if (page_counter_try_charge(&memcg->memory, batch, &counter))
             goto done_restock;
@@ -3081,22 +3244,7 @@ force:
 
 done_restock:
     if (batch > nr_pages) {
-        refill_stock(memcg, batch - nr_pages) {
-            struct memcg_stock_pcp *stock;
-            unsigned int stock_pages;
-
-            stock = this_cpu_ptr(&memcg_stock);
-            if (READ_ONCE(stock->cached) != memcg) { /* reset if necessary */
-                drain_stock(stock);
-                css_get(&memcg->css);
-                WRITE_ONCE(stock->cached, memcg);
-            }
-            stock_pages = READ_ONCE(stock->nr_pages) + nr_pages;
-            WRITE_ONCE(stock->nr_pages, stock_pages);
-
-            if (stock_pages > MEMCG_CHARGE_BATCH)
-                drain_stock(stock);
-        }
+        refill_stock(memcg, batch - nr_pages);
     }
 
     /* If the hierarchy is above the normal consumption range, schedule
@@ -3212,8 +3360,7 @@ void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 
     VM_WARN_ON_ONCE(mem_cgroup_is_root(memcg));
 
-    if (nr_pages > MEMCG_CHARGE_BATCH ||
-        !local_trylock(&memcg_stock.lock)) {
+    if (nr_pages > MEMCG_CHARGE_BATCH || !local_trylock(&memcg_stock.lock)) {
         /* In case of larger than batch refill or unlikely failure to
          * lock the percpu memcg_stock.lock, uncharge memcg directly. */
         memcg_uncharge(memcg, nr_pages);
@@ -3248,7 +3395,9 @@ void refill_stock(struct mem_cgroup *memcg, unsigned int nr_pages)
 
     local_unlock(&memcg_stock.lock);
 }
+```
 
+```c
 static void drain_local_memcg_stock(struct work_struct *dummy)
 {
     struct memcg_stock_pcp *stock;
@@ -3260,28 +3409,36 @@ static void drain_local_memcg_stock(struct work_struct *dummy)
 
     stock = this_cpu_ptr(&memcg_stock);
     drain_stock_fully(stock) {
-        for (int i = 0; i < NR_MEMCG_STOCK; ++i) {
-            drain_stock(stock, i) {
-                struct mem_cgroup *old = READ_ONCE(stock->cached[i]);
-                uint8_t stock_pages;
+        int i;
 
-                if (!old)
-                    return;
-
-                stock_pages = READ_ONCE(stock->nr_pages[i]);
-                if (stock_pages) {
-                    memcg_uncharge(old, stock_pages);
-                    WRITE_ONCE(stock->nr_pages[i], 0);
-                }
-
-                css_put(&old->css);
-                WRITE_ONCE(stock->cached[i], NULL);
-            }
-        }
+        for (i = 0; i < NR_MEMCG_STOCK; ++i)
+            drain_stock(stock, i);
     }
     clear_bit(FLUSHING_CACHED_CHARGE, &stock->flags);
 
     local_unlock(&memcg_stock.lock);
+}
+
+static void drain_stock(struct memcg_stock_pcp *stock, int i)
+{
+    struct mem_cgroup *old = READ_ONCE(stock->cached[i]);
+    uint8_t stock_pages;
+
+    if (!old)
+        return;
+
+    stock_pages = READ_ONCE(stock->nr_pages[i]);
+    if (stock_pages) {
+        memcg_uncharge(old, stock_pages) {
+            page_counter_uncharge(&memcg->memory, nr_pages);
+            if (do_memsw_account())
+                page_counter_uncharge(&memcg->memsw, nr_pages);
+        }
+        WRITE_ONCE(stock->nr_pages[i], 0);
+    }
+
+    css_put(&old->css);
+    WRITE_ONCE(stock->cached[i], NULL);
 }
 ```
 
@@ -3682,6 +3839,445 @@ void css_rstat_flush(struct cgroup_subsys_state *css)
 }
 ```
 
+### list_lru
+
+![](../images/kernel/cgroup-list_lru.svg)
+
+```c
+static LIST_HEAD(memcg_list_lrus);
+static DEFINE_MUTEX(list_lrus_mutex);
+```
+
+#### list_lru_init_memcg
+
+```c
+list_lru_init_memcg(&s->s_dentry_lru, s->s_shrink)
+list_lru_init_memcg(&s->s_inode_lru, s->s_shrink)
+
+#define list_lru_init(lru)                  \
+    __list_lru_init((lru), false, NULL)
+
+#define list_lru_init_memcg(lru, shrinker)  \
+    __list_lru_init((lru), true, shrinker)
+
+int __list_lru_init(struct list_lru *lru, bool memcg_aware, struct shrinker *shrinker)
+{
+    int i;
+
+#ifdef CONFIG_MEMCG
+    if (shrinker)
+        lru->shrinker_id = shrinker->id;
+    else
+        lru->shrinker_id = -1;
+
+    if (mem_cgroup_kmem_disabled())
+        memcg_aware = false;
+#endif
+
+    lru->node = kzalloc_objs(*lru->node, nr_node_ids);
+    if (!lru->node)
+        return -ENOMEM;
+
+    for_each_node(i) {
+        init_one_lru(lru, &lru->node[i].lru) {
+            NIT_LIST_HEAD(&l->list);
+            spin_lock_init(&l->lock);
+            l->nr_items = 0;
+        }
+    }
+
+    memcg_init_list_lru(lru, memcg_aware) {
+        if (memcg_aware)
+            xa_init_flags(&lru->xa, XA_FLAGS_LOCK_IRQ);
+        lru->memcg_aware = memcg_aware;
+    }
+
+    list_lru_register(lru) {
+        if (!list_lru_memcg_aware(lru))
+            return;
+
+        mutex_lock(&list_lrus_mutex);
+        list_add(&lru->list, &memcg_list_lrus);
+        mutex_unlock(&list_lrus_mutex);
+    }
+
+    return 0;
+}
+```
+
+#### memcg_list_lru_alloc
+
+```c
+int memcg_list_lru_alloc(struct mem_cgroup *memcg, struct list_lru *lru,
+             gfp_t gfp)
+{
+    if (!list_lru_memcg_aware(lru) || memcg_list_lru_allocated(memcg, lru))
+        return 0;
+    return __memcg_list_lru_alloc(memcg, lru, gfp);
+}
+
+int __memcg_list_lru_alloc(struct mem_cgroup *memcg,
+                  struct list_lru *lru, gfp_t gfp)
+{
+    unsigned long flags;
+    struct list_lru_memcg *mlru = NULL;
+    struct mem_cgroup *pos, *parent;
+    XA_STATE(xas, &lru->xa, 0);
+
+    gfp &= GFP_RECLAIM_MASK;
+    /* Because the list_lru can be reparented to the parent cgroup's
+     * list_lru, we should make sure that this cgroup and all its
+     * ancestors have allocated list_lru_memcg. */
+    do {
+        /* Keep finding the farest parent that wasn't populated
+         * until found memcg itself. */
+        pos = memcg;
+        parent = parent_mem_cgroup(pos);
+        while (!memcg_list_lru_allocated(parent, lru)) {
+            pos = parent;
+            parent = parent_mem_cgroup(pos);
+        }
+
+        if (!mlru) {
+            mlru = memcg_init_list_lru_one(lru, gfp) {
+                int nid;
+                struct list_lru_memcg *mlru;
+
+                mlru = kmalloc_flex(*mlru, node, nr_node_ids, gfp);
+                if (!mlru)
+                    return NULL;
+
+                for_each_node(nid)
+                    init_one_lru(lru, &mlru->node[nid]);
+
+                return mlru;
+            }
+            if (!mlru)
+                return -ENOMEM;
+        }
+
+        xas_set(&xas, pos->kmemcg_id);
+
+        do {
+            xas_lock_irqsave(&xas, flags);
+            if (!xas_load(&xas) && !css_is_dying(&pos->css)) {
+                xas_store(&xas, mlru);
+                if (!xas_error(&xas))
+                    mlru = NULL;
+            }
+            xas_unlock_irqrestore(&xas, flags);
+        } while (xas_nomem(&xas, gfp));
+    } while (pos != memcg && !css_is_dying(&pos->css));
+
+    if (unlikely(mlru))
+        kfree(mlru);
+
+    return xas_error(&xas);
+}
+```
+
+#### list_lru_add_obj
+
+```c
+bool list_lru_add_obj(struct list_lru *lru, struct list_head *item)
+{
+    bool ret;
+    int nid = page_to_nid(virt_to_page(item));
+
+    if (list_lru_memcg_aware(lru)) {
+        rcu_read_lock();
+        memcg = mem_cgroup_from_virt(void *p) {
+            struct slab *slab;
+
+            if (mem_cgroup_disabled())
+                return NULL;
+
+            slab = virt_to_slab(p) {
+                return page_slab(virt_to_page(addr));
+            }
+            if (slab)
+                return mem_cgroup_from_obj_slab(slab, p);
+            return folio_memcg_check(virt_to_folio(p));
+        }
+        ret = list_lru_add(lru, item, nid, memcg);
+        rcu_read_unlock();
+    } else {
+        ret = list_lru_add(lru, item, nid, NULL);
+    }
+
+    return ret;
+}
+
+/* The caller must ensure the memcg lifetime. */
+bool list_lru_add(struct list_lru *lru, struct list_head *item, int nid,
+          struct mem_cgroup *memcg)
+{
+    struct list_lru_one *l;
+    bool ret;
+
+    l = list_lru_lock(lru, nid, &memcg);
+    ret = __list_lru_add(lru, l, item, nid, memcg) {
+        if (list_empty(item)) {
+            list_add_tail(item, &l->list);
+            /* Set shrinker bit on the memcg that owns the locked
+            * sublist - lock_list_lru_of_memcg() may have walked up
+            * past a dying memcg, and the bit must be set there. */
+            if (!l->nr_items++)
+                set_shrinker_bit(memcg, nid, lru_shrinker_id(lru));
+            atomic_long_inc(&lru->node[nid].nr_items);
+            return true;
+        }
+        return false;
+    }
+    list_lru_unlock(l);
+    return ret;
+}
+
+struct shrinker_info_unit {
+    atomic_long_t nr_deferred[SHRINKER_UNIT_BITS];
+    DECLARE_BITMAP(map, SHRINKER_UNIT_BITS);
+};
+
+struct shrinker_info {
+    struct rcu_head             rcu;
+    int                         map_nr_max;
+    struct shrinker_info_unit   *unit[];
+};
+
+void set_shrinker_bit(struct mem_cgroup *memcg, int nid, int shrinker_id)
+{
+    if (shrinker_id >= 0 && memcg && !mem_cgroup_is_root(memcg)) {
+        struct shrinker_info *info;
+
+        rcu_read_lock();
+        info = rcu_dereference(memcg->nodeinfo[nid]->shrinker_info);
+        if (!WARN_ON_ONCE(shrinker_id >= info->map_nr_max)) {
+            struct shrinker_info_unit *unit;
+
+            unit = info->unit[shrinker_id_to_index(shrinker_id)] {
+                return shrinker_id / SHRINKER_UNIT_BITS;
+            }
+            /* Pairs with smp mb in shrink_slab() */
+            smp_mb__before_atomic();
+            set_bit(shrinker_id_to_offset(shrinker_id), unit->map);
+        }
+        rcu_read_unlock();
+    }
+}
+
+struct mem_cgroup *mem_cgroup_from_obj_slab(struct slab *slab, void *p)
+{
+    /* Slab objects are accounted individually, not per-page.
+     * Memcg membership data for each individual object is saved in
+     * slab->obj_exts. */
+    unsigned long obj_exts;
+    struct slabobj_ext *obj_ext;
+    unsigned int off;
+
+    obj_exts = slab_obj_exts(slab) {
+        unsigned long obj_exts = READ_ONCE(slab->obj_exts);
+        return obj_exts & ~OBJEXTS_FLAGS_MASK;
+    }
+    if (!obj_exts)
+        return NULL;
+
+    get_slab_obj_exts(obj_exts);
+    off = obj_to_index(slab->slab_cache, slab, p) {
+        if (is_kfence_address(obj))
+            return 0;
+        return __obj_to_index(cache, slab_address(slab), obj) {
+            return reciprocal_divide(kasan_reset_tag(obj) - addr, cache->reciprocal_size);
+        }
+    }
+    obj_ext = slab_obj_ext(slab, obj_exts, off) {
+        struct slabobj_ext *obj_ext;
+        obj_ext = (struct slabobj_ext *)(obj_exts + slab_get_stride(slab) * index);
+        return kasan_reset_tag(obj_ext);
+    }
+    if (obj_ext->objcg) {
+        struct obj_cgroup *objcg = obj_ext->objcg;
+
+        put_slab_obj_exts(obj_exts);
+        return obj_cgroup_memcg(objcg);
+    }
+    put_slab_obj_exts(obj_exts);
+
+    return NULL;
+}
+```
+
+#### list_lru_shrink_count
+
+```c
+static inline unsigned long list_lru_shrink_count(struct list_lru *lru,
+                          struct shrink_control *sc)
+{
+    return list_lru_count_one(lru, sc->nid, sc->memcg);
+}
+
+unsigned long list_lru_count_one(struct list_lru *lru,
+                 int nid, struct mem_cgroup *memcg)
+{
+    struct list_lru_one *l;
+    long count;
+
+    rcu_read_lock();
+    l = list_lru_from_memcg_idx(lru, nid, memcg_kmem_id(memcg)) {
+        if (list_lru_memcg_aware(lru) && idx >= 0) {
+            struct list_lru_memcg *mlru = xa_load(&lru->xa, idx);
+            return mlru ? &mlru->node[nid] : NULL;
+        }
+        return &lru->node[nid].lru;  /* fallback to global node */
+    }
+    count = l ? READ_ONCE(l->nr_items) : 0;
+    rcu_read_unlock();
+
+    if (unlikely(count < 0))
+        count = 0;
+
+    return count;
+}
+```
+
+#### list_lru_shrink_walk
+
+```c
+long prune_dcache_sb(struct super_block *sb, struct shrink_control *sc)
+{
+    LIST_HEAD(dispose);
+    long freed;
+
+    freed = list_lru_shrink_walk(&sb->s_dentry_lru, sc, dentry_lru_isolate, &dispose);
+    shrink_dentry_list(&dispose);
+    return freed;
+}
+
+static inline unsigned long
+list_lru_shrink_walk(struct list_lru *lru, struct shrink_control *sc,
+             list_lru_walk_cb isolate, void *cb_arg)
+{
+    return list_lru_walk_one(lru, sc->nid, sc->memcg, isolate, cb_arg, &sc->nr_to_scan) {
+        return __list_lru_walk_one(lru, nid, memcg, isolate, cb_arg, nr_to_walk, false);
+    }
+}
+
+static unsigned long
+__list_lru_walk_one(struct list_lru *lru, int nid, struct mem_cgroup *memcg,
+            list_lru_walk_cb isolate, void *cb_arg,
+            unsigned long *nr_to_walk, bool irq_off)
+{
+    struct list_lru_node *nlru = &lru->node[nid];
+    struct list_lru_one *l = NULL;
+    struct list_head *item, *n;
+    unsigned long isolated = 0;
+
+restart:
+    l = lock_list_lru_of_memcg(lru, nid, &memcg, /*irq=*/irq_off,
+                   /*irq_flags=*/NULL, /*skip_empty=*/true);
+    if (!l)
+        return isolated;
+    list_for_each_safe(item, n, &l->list) {
+        enum lru_status ret;
+
+        /* decrement nr_to_walk first so that we don't livelock if we
+         * get stuck on large numbers of LRU_RETRY items */
+        if (!*nr_to_walk)
+            break;
+        --*nr_to_walk;
+
+        ret = isolate(item, l, cb_arg);
+        switch (ret) {
+        /* LRU_RETRY, LRU_REMOVED_RETRY and LRU_STOP will drop the lru
+         * lock. List traversal will have to restart from scratch. */
+        case LRU_RETRY:
+            goto restart;
+        case LRU_REMOVED_RETRY:
+            fallthrough;
+        case LRU_REMOVED:
+            isolated++;
+            atomic_long_dec(&nlru->nr_items);
+            if (ret == LRU_REMOVED_RETRY)
+                goto restart;
+            break;
+        case LRU_ROTATE:
+            list_move_tail(item, &l->list);
+            break;
+        case LRU_SKIP:
+            break;
+        case LRU_STOP:
+            goto out;
+        default:
+            BUG();
+        }
+    }
+    unlock_list_lru(l, irq_off, NULL);
+out:
+    return isolated;
+}
+```
+
+#### memcg_reparent_list_lrus
+
+```c
+void memcg_reparent_list_lrus(struct mem_cgroup *memcg, struct mem_cgroup *parent)
+{
+    struct list_lru *lru;
+    int i;
+
+    mutex_lock(&list_lrus_mutex);
+    list_for_each_entry(lru, &memcg_list_lrus, list) {
+        struct list_lru_memcg *mlru;
+
+        /* css_is_dying() check in memcg_list_lru_alloc() avoids
+         * allocating a new mlru since CSS_DYING is already set for this
+         * memcg a rcu grace period ago. */
+        mlru = xa_load(&lru->xa, memcg->kmemcg_id);
+        if (!mlru)
+            continue;
+
+        /* Reparent each per-node list and mark the child dead
+         * (LONG_MIN) before clearing xarray entry otherwise a
+         * concurrent list_lru_del() may corrupt the list if it arrives
+         * after xarray clear but before reparenting as
+         * lock_list_lru_of_memcg will acquire parent's lock while the
+         * item is still on child's list. */
+        for_each_node(i)
+            memcg_reparent_list_lru_one(lru, i, &mlru->node[i], parent);
+
+        xa_erase_irq(&lru->xa, memcg->kmemcg_id);
+
+        /* Here all list_lrus corresponding to the cgroup are guaranteed
+         * to remain empty, we can safely free this lru, any further
+         * memcg_list_lru_alloc() call will simply bail out. */
+        kvfree_rcu(mlru, rcu);
+    }
+    mutex_unlock(&list_lrus_mutex);
+}
+
+void memcg_reparent_list_lru_one(struct list_lru *lru, int nid,
+                    struct list_lru_one *src,
+                    struct mem_cgroup *dst_memcg)
+{
+    int dst_idx = dst_memcg->kmemcg_id;
+    struct list_lru_one *dst;
+
+    spin_lock_irq(&src->lock);
+    dst = list_lru_from_memcg_idx(lru, nid, dst_idx);
+    spin_lock_nested(&dst->lock, SINGLE_DEPTH_NESTING);
+
+    list_splice_init(&src->list, &dst->list);
+    if (src->nr_items) {
+        WARN_ON(src->nr_items < 0);
+        dst->nr_items += src->nr_items;
+        set_shrinker_bit(dst_memcg, nid, lru_shrinker_id(lru));
+    }
+    /* Mark the list_lru_one dead */
+    src->nr_items = LONG_MIN;
+
+    spin_unlock(&dst->lock);
+    spin_unlock_irq(&src->lock);
+}
+```
 
 ## cpu_cgroup
 
@@ -5456,7 +6052,7 @@ struct cpuset {
     int partition_root_state;
 
     /* Whether cpuset is a remote partition.
-     * It used to be a list anchoring all remote partitions — we can switch back
+     * It used to be a list anchoring all remote partitions - we can switch back
      * to a list if we need to iterate over the remote partitions. */
     bool remote_partition;
 
@@ -5604,7 +6200,7 @@ struct cgroup_subsys io_cgrp_subsys = {
     * [:seven: network namespaces](https://lwn.net/Articles/580893/)
     * [Mount namespaces and shared subtrees](https://lwn.net/Articles/689856/)
     * [Mount namespaces, mount propagation, and unbindable mounts](https://lwn.net/Articles/690679/)
-* [Coolshell - DOCKER基础技术：LINUX NAMESPACE - :one:](https://coolshell.cn/articles/17010.html) ⊙ [:two:](https://coolshell.cn/articles/17029.html)
+* [Coolshell - DOCKER基础技术: LINUX NAMESPACE - :one:](https://coolshell.cn/articles/17010.html) ⊙ [:two:](https://coolshell.cn/articles/17029.html)
 * [Linux - Namespace](https://blog.csdn.net/summer_fish/article/details/134437688)
 * [Pid Namespace 原理与源码分析](https://zhuanlan.zhihu.com/p/335171876)
 * [Docker 背后的内核知识 - Namespace 资源隔离](https://www.infoq.cn/article/docker-kernel-knowledge-namespace-resource-isolation/)
@@ -7342,63 +7938,63 @@ struct rb_node *ns_tree_node_add(struct ns_tree_node *node,
 
 ```c
 int propagate_mnt(struct mount *dest_mnt, struct mountpoint *dest_mp,
-		  struct mount *source_mnt, struct hlist_head *tree_list)
+          struct mount *source_mnt, struct hlist_head *tree_list)
 {
-	struct mount *m, *n, *copy, *this;
-	int err = 0, type;
+    struct mount *m, *n, *copy, *this;
+    int err = 0, type;
 
-	if (dest_mnt->mnt_master)
-		SET_MNT_MARK(dest_mnt->mnt_master);
+    if (dest_mnt->mnt_master)
+        SET_MNT_MARK(dest_mnt->mnt_master);
 
-	/* iterate over peer groups, depth first
+    /* iterate over peer groups, depth first
      * m: the first member of each peer group encountered */
-	for (m = dest_mnt; m && !err; m = next_group(m, dest_mnt)) {
-		if (m == dest_mnt) { // have one for dest_mnt itself
-			copy = source_mnt;
-			type = CL_MAKE_SHARED;
-			n = next_peer(m);
-			if (n == m)
-				continue;
-		} else {
-			type = CL_SLAVE;
-			/* beginning of peer group among the slaves? */
-			if (IS_MNT_SHARED(m))
-				type |= CL_MAKE_SHARED;
-			n = m;
-		}
-		do {
-			if (!need_secondary(n, dest_mp))
-				continue;
-			if (type & CL_SLAVE) {// first in this peer group
+    for (m = dest_mnt; m && !err; m = next_group(m, dest_mnt)) {
+        if (m == dest_mnt) { // have one for dest_mnt itself
+            copy = source_mnt;
+            type = CL_MAKE_SHARED;
+            n = next_peer(m);
+            if (n == m)
+                continue;
+        } else {
+            type = CL_SLAVE;
+            /* beginning of peer group among the slaves? */
+            if (IS_MNT_SHARED(m))
+                type |= CL_MAKE_SHARED;
+            n = m;
+        }
+        do {
+            if (!need_secondary(n, dest_mp))
+                continue;
+            if (type & CL_SLAVE) {// first in this peer group
                 /* Return the last-created copy in the matching parent peer group. */
-				copy = find_master(n, copy, source_mnt);
+                copy = find_master(n, copy, source_mnt);
             }
-			this = copy_tree(copy, copy->mnt.mnt_root, type);
-			if (IS_ERR(this)) {
-				err = PTR_ERR(this);
-				break;
-			}
-			scoped_guard(mount_locked_reader)
-				mnt_set_mountpoint(n, dest_mp, this);
-			if (n->mnt_master)
-				SET_MNT_MARK(n->mnt_master);
-			copy = this;
-			hlist_add_head(&this->mnt_hash, tree_list);
-			err = count_mounts(n->mnt_ns, this);
-			if (err)
-				break;
-			type = CL_MAKE_SHARED;
-		} while ((n = next_peer(n)) != m);
-	}
+            this = copy_tree(copy, copy->mnt.mnt_root, type);
+            if (IS_ERR(this)) {
+                err = PTR_ERR(this);
+                break;
+            }
+            scoped_guard(mount_locked_reader)
+                mnt_set_mountpoint(n, dest_mp, this);
+            if (n->mnt_master)
+                SET_MNT_MARK(n->mnt_master);
+            copy = this;
+            hlist_add_head(&this->mnt_hash, tree_list);
+            err = count_mounts(n->mnt_ns, this);
+            if (err)
+                break;
+            type = CL_MAKE_SHARED;
+        } while ((n = next_peer(n)) != m);
+    }
 
-	hlist_for_each_entry(n, tree_list, mnt_hash) {
-		m = n->mnt_parent;
-		if (m->mnt_master)
-			CLEAR_MNT_MARK(m->mnt_master);
-	}
-	if (dest_mnt->mnt_master)
-		CLEAR_MNT_MARK(dest_mnt->mnt_master);
-	return err;
+    hlist_for_each_entry(n, tree_list, mnt_hash) {
+        m = n->mnt_parent;
+        if (m->mnt_master)
+            CLEAR_MNT_MARK(m->mnt_master);
+    }
+    if (dest_mnt->mnt_master)
+        CLEAR_MNT_MARK(dest_mnt->mnt_master);
+    return err;
 }
 ```
 
@@ -7443,8 +8039,8 @@ static struct mount *next_group(struct mount *m, struct mount *origin)
 ```c
 /* Return the last-created copy in the matching parent peer group. */
 static struct mount *find_master(struct mount *m,
-				struct mount *last_copy,
-				struct mount *original)
+                struct mount *last_copy,
+                struct mount *original)
 {
     struct mount *p;
 
