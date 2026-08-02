@@ -2249,8 +2249,7 @@ struct page *alloc_pages_noprof(gfp_t gfp, unsigned int order)
 
             if (unlikely(pol->mode == MPOL_INTERLEAVE || pol->mode == MPOL_WEIGHTED_INTERLEAVE) && page) {
                 /* skip NUMA_INTERLEAVE_HIT update if numa stats is disabled */
-                if (static_branch_likely(&vm_numa_stat_key) &&
-                    page_to_nid(page) == nid) {
+                if (static_branch_likely(&vm_numa_stat_key) && page_to_nid(page) == nid) {
                     preempt_disable();
                     __count_numa_event(page_zone(page), NUMA_INTERLEAVE_HIT);
                     preempt_enable();
@@ -5426,8 +5425,7 @@ static int calculate_sizes(struct kmem_cache_args *args, struct kmem_cache *s) {
 /* 6. | LFT_RED_ZONE + ALIGN | object_size + ALIGN | RHT_RED_ZONE | free_ptr | ALIGN | */
     aligned_size = ALIGN(size, s->align);
 #if defined(CONFIG_SLAB_OBJ_EXT) && defined(CONFIG_64BIT)
-    if (slab_args_unmergeable(args, s->flags) &&
-            (aligned_size - size >= sizeof(struct slabobj_ext)))
+    if (slab_args_unmergeable(args, s->flags) && (aligned_size - size >= sizeof(struct slabobj_ext)))
         s->flags |= SLAB_OBJ_EXT_IN_OBJ;
 #endif
     size = aligned_size;
@@ -7103,130 +7101,176 @@ unsigned int alloc_from_new_slab(struct kmem_cache *s, struct slab *slab,
 ### slab_post_alloc_hook
 
 ```c
-slab_post_alloc_hook(s, lru, gfpflags, 1, &object, init, orig_size) {
+bool slab_post_alloc_hook(struct kmem_cache *s, gfp_t flags, size_t size,
+              void **p, const struct slab_alloc_context *ac)
+{
+    bool init = slab_want_init_on_alloc(flags, s);
     unsigned int zero_size = s->object_size;
-    bool kasan_init = init;
-    size_t i;
     gfp_t init_flags = flags & gfp_allowed_mask;
+    bool kasan_init = false;
 
-    /* For kmalloc object, the allocated memory size(object_size) is likely
-    * larger than the requested size(orig_size). If redzone check is
-    * enabled for the extra space, don't zero it, as it will be redzoned
-    * soon. The redzone operation for this extra space could be seen as a
-    * replacement of current poisoning under certain debug option, and
-    * won't break other sanity checks. */
-    if (kmem_cache_debug_flags(s, SLAB_STORE_USER | SLAB_RED_ZONE) && (s->flags & SLAB_KMALLOC))
-        zero_size = orig_size;
+    /* For kmalloc object, the allocated size (object_size) can be larger
+     * than the requested size (orig_size). We however need to zero the
+     * whole object_size to handle possible later krealloc() with
+     *__GFP_ZERO properly.
+     *
+     * But if we keep track of the requested size, krealloc() uses that
+     * information. Additionally if red zoning is enabled, the extra space
+     * is also red zone, so we should not overwrite it. So limit zeroing to
+     * orig_size if we track it. */
+    if (slub_debug_orig_size(s))
+        zero_size = ac->orig_size;
 
-    /* When slab_debug is enabled, avoid memory initialization integrated
-    * into KASAN and instead zero out the memory via the memset below with
-    * the proper size. Otherwise, KASAN might overwrite SLUB redzones and
-    * cause false-positive reports. This does not lead to a performance
-    * penalty on production builds, as slab_debug is not intended to be
-    * enabled there. */
-    if (__slub_debug_enabled())
-        kasan_init = false;
+    /* ARM64 can set memory tags and zero the memory using a single
+     * instruction. Since HW_TAGS KASAN uses that while tagging the object,
+     * separate zeroing is unnecessary.
+     *
+     * However, KASAN never zeroes memory when slab_debug is enabled to
+     * avoid overwriting SLUB redzones. This does not lead to a performance
+     * penalty on production builds, as slab_debug is not intended to be
+     * enabled there. */
+    if (kasan_has_integrated_init() && !__slub_debug_enabled()) {
+        kasan_init = init;
+        init = false;
+    }
 
-    /* As memory initialization might be integrated into KASAN,
-    * kasan_slab_alloc and initialization memset must be
-    * kept together to avoid discrepancies in behavior.
-    *
-    * As p[i] might get tagged, memset and kmemleak hook come after KASAN. */
-    for (i = 0; i < size; i++) {
+    for (size_t i = 0; i < size; i++) {
         p[i] = kasan_slab_alloc(s, p[i], init_flags, kasan_init);
-        if (p[i] && init && (!kasan_init || !kasan_has_integrated_init()))
+
+        /* memset and hooks come after KASAN as p[i] might get tagged
+         *
+         * kfence zeroes the object instead of SLUB to avoid overwriting
+         * its own redzone starting at orig_size, which could happen
+         * with SLUB zeroing full s->object_size */
+        if (init && p[i] && !is_kfence_address(p[i]))
             memset(p[i], 0, zero_size);
-        if (gfpflags_allow_spinning(flags))
+
+        if (alloc_flags_allow_spinning(ac->alloc_flags))
             kmemleak_alloc_recursive(p[i], s->object_size, 1, s->flags, init_flags);
+
         kmsan_slab_alloc(s, p[i], init_flags);
-        alloc_tagging_slab_alloc_hook(s, p[i], flags);
+        alloc_tagging_slab_alloc_hook(s, p[i], flags, ac->alloc_flags);
     }
 
-    return memcg_slab_post_alloc_hook(s, lru, flags, size, p) {
-        if (likely(!memcg_kmem_online()))
-            return true;
+    return memcg_slab_post_alloc_hook(s, flags, size, p, ac);
+}
+```
 
-        if (likely(!(flags & __GFP_ACCOUNT) && !(s->flags & SLAB_ACCOUNT)))
-            return true;
+#### memcg_slab_post_alloc_hook
 
-        ret = __memcg_slab_post_alloc_hook(s, lru, flags, size, p) {
-            struct obj_cgroup *objcg;
-            struct slab *slab;
-            unsigned long off;
-            size_t i;
+```c
+bool memcg_slab_post_alloc_hook(struct kmem_cache *s, gfp_t flags,
+                size_t size, void **p,
+                const struct slab_alloc_context *ac)
+{
+    if (likely(!memcg_kmem_online()))
+        return true;
 
-            /* The obtained objcg pointer is safe to use within the current scope,
-            * defined by current task or set_active_memcg() pair.
-            * obj_cgroup_get() is used to get a permanent reference. */
-            objcg = current_obj_cgroup();
-            if (!objcg)
-                return true;
+    if (likely(!(flags & __GFP_ACCOUNT) && !(s->flags & SLAB_ACCOUNT)))
+        return true;
 
-            /* slab_alloc_node() avoids the NULL check, so we might be called with a
-            * single NULL object. kmem_cache_alloc_bulk() aborts if it can't fill
-            * the whole requested size.
-            * return success as there's nothing to free back */
-            if (unlikely(*p == NULL))
-                return true;
+    if (likely(__memcg_slab_post_alloc_hook(s, ac->lru, flags, ac->alloc_flags, size, p)))
+        return true;
 
-            flags &= gfp_allowed_mask;
-
-            if (lru) {
-                int ret;
-                struct mem_cgroup *memcg;
-
-                memcg = get_mem_cgroup_from_objcg(objcg);
-                ret = memcg_list_lru_alloc(memcg, lru, flags);
-                css_put(&memcg->css);
-
-                if (ret)
-                    return false;
-            }
-
-            for (i = 0; i < size; i++) {
-                slab = virt_to_slab(p[i]);
-
-                if (!slab_obj_exts(slab) && alloc_slab_obj_exts(slab, s, flags, false)) {
-                    continue;
-                }
-
-                /* if we fail and size is 1, memcg_alloc_abort_single() will
-                * just free the object, which is ok as we have not assigned
-                * objcg to its obj_ext yet
-                *
-                * for larger sizes, kmem_cache_free_bulk() will uncharge
-                * any objects that were already charged and obj_ext assigned
-                *
-                * TODO: we could batch this until slab_pgdat(slab) changes
-                * between iterations, with a more complicated undo */
-                if (obj_cgroup_charge_account(objcg, flags, obj_full_size(s), slab_pgdat(slab), cache_vmstat_idx(s)))
-                    return false;
-
-                off = obj_to_index(s, slab, p[i]);
-                obj_cgroup_get(objcg);
-                slab_obj_exts(slab)[off].objcg = objcg;
-            }
-
-            return true;
-        }
-        if (likely(ret))
-            return true;
-
-        if (likely(size == 1)) {
-            memcg_alloc_abort_single(s, *p) {
-                if (likely(slab_free_hook(s, object, slab_want_init_on_free(s), false))) {
-                    __slab_free(s, virt_to_slab(object), object, object, 1, _RET_IP_);
-                }
-            }
-            *p = NULL;
-        } else {
-            kmem_cache_free_bulk(s, size, p);
-        }
-
-        return false;
+    if (likely(size == 1)) {
+        memcg_alloc_abort_single(s, *p);
+        *p = NULL;
+    } else {
+        kmem_cache_free_bulk(s, size, p);
     }
+
+    return false;
 }
 
+bool __memcg_slab_post_alloc_hook(struct kmem_cache *s, struct list_lru *lru,
+                  gfp_t flags, unsigned int slab_alloc_flags,
+                  size_t size, void **p)
+{
+    size_t obj_size = obj_full_size(s);
+    struct obj_cgroup *objcg;
+    struct slab *slab;
+    unsigned long off;
+    size_t i;
+
+    /* The obtained objcg pointer is safe to use within the current scope,
+     * defined by current task or set_active_memcg() pair.
+     * obj_cgroup_get() is used to get a permanent reference. */
+    objcg = current_obj_cgroup();
+    if (!objcg || obj_cgroup_is_root(objcg))
+        return true;
+
+    /* slab_alloc_node() avoids the NULL check, so we might be called with a
+     * single NULL object. kmem_cache_alloc_bulk() aborts if it can't fill
+     * the whole requested size.
+     * return success as there's nothing to free back */
+    if (unlikely(*p == NULL))
+        return true;
+
+    flags &= gfp_allowed_mask;
+
+    if (lru) {
+        int ret;
+        struct mem_cgroup *memcg;
+
+        memcg = get_mem_cgroup_from_objcg(objcg);
+        ret = memcg_list_lru_alloc(memcg, lru, flags);
+        css_put(&memcg->css);
+
+        if (ret)
+            return false;
+    }
+
+    for (i = 0; i < size; i++) {
+        unsigned long obj_exts;
+        struct slabobj_ext *obj_ext;
+        struct obj_stock_pcp *stock;
+
+        slab = virt_to_slab(p[i]);
+
+        if (!slab_obj_exts(slab) &&
+            alloc_slab_obj_exts(slab, s, flags, slab_alloc_flags)) {
+            continue;
+        }
+
+        /* if we fail and size is 1, memcg_alloc_abort_single() will
+         * just free the object, which is ok as we have not assigned
+         * objcg to its obj_ext yet
+         *
+         * for larger sizes, kmem_cache_free_bulk() will uncharge
+         * any objects that were already charged and obj_ext assigned
+         *
+         * TODO: we could batch this until slab_pgdat(slab) changes
+         * between iterations, with a more complicated undo */
+        stock = trylock_stock();
+        if (!stock || !__consume_obj_stock(objcg, stock, obj_size)) {
+            size_t remainder;
+
+            unlock_stock(stock);
+            if (__obj_cgroup_charge(objcg, flags, obj_size, &remainder))
+                return false;
+            stock = trylock_stock();
+            if (remainder)
+                __refill_obj_stock(objcg, stock, remainder, false);
+        }
+        __account_obj_stock(objcg, stock, obj_size,
+                    slab_pgdat(slab), cache_vmstat_idx(s));
+        unlock_stock(stock);
+
+        obj_exts = slab_obj_exts(slab);
+        get_slab_obj_exts(obj_exts);
+        off = obj_to_index(s, slab, p[i]);
+        obj_ext = slab_obj_ext(slab, obj_exts, off);
+        obj_cgroup_get(objcg);
+        obj_ext->objcg = objcg;
+        put_slab_obj_exts(obj_exts);
+    }
+
+    return true;
+}
+```
+
+```
+/* TODO: delete */
 int obj_cgroup_charge_account(struct obj_cgroup *objcg, gfp_t gfp, size_t size,
                      struct pglist_data *pgdat, enum node_stat_item idx)
 {
@@ -7267,7 +7311,20 @@ int obj_cgroup_charge_account(struct obj_cgroup *objcg, gfp_t gfp, size_t size,
         struct mem_cgroup *memcg;
         int ret;
 
-        memcg = get_mem_cgroup_from_objcg(objcg);
+        memcg = get_mem_cgroup_from_objcg(objcg) {
+            struct mem_cgroup *memcg;
+
+            rcu_read_lock();
+        retry:
+            memcg = obj_cgroup_memcg(objcg) {
+                return READ_ONCE(objcg->memcg);
+            }
+            if (unlikely(!css_tryget(&memcg->css)))
+                goto retry;
+            rcu_read_unlock();
+
+            return memcg;
+        }
 
         ret = try_charge_memcg(memcg, gfp, nr_pages);
         if (ret)
@@ -7290,151 +7347,173 @@ int obj_cgroup_charge_account(struct obj_cgroup *objcg, gfp_t gfp, size_t size,
 #### consume_obj_stock
 
 ```c
+#define NR_OBJ_STOCK 5
 struct obj_stock_pcp {
     local_trylock_t     lock;
-    unsigned int        nr_bytes;
-    struct obj_cgroup   *cached_objcg;
-    struct pglist_data  *cached_pgdat;
-    int                 nr_slab_reclaimable_b;
-    int                 nr_slab_unreclaimable_b;
+    int8_t              index;
+    int16_t             node_id;
+    int16_t             nr_slab_reclaimable_b;
+    int16_t             nr_slab_unreclaimable_b;
+#if PAGE_SHIFT > 16
+    /* On rare archs with 256KiB base page size (hexagon and powerpc 44x)
+     * keep nr_bytes to unsigned int as uint16_t cannot represent the full
+e patches/memcg-uint16_t-for-nr_bytes-in-obj_stock_pcp.patch     * sub-page remainder. Such archs are not cacheline optimization target. */
+    unsigned int        nr_bytes[NR_OBJ_STOCK];
+#else
+    uint16_t            nr_bytes[NR_OBJ_STOCK];
+#endif
+    struct obj_cgroup   *cached[NR_OBJ_STOCK];
 
     struct work_struct  work;
     unsigned long       flags;
+    uint8_t             drain_idx;
 };
 
 static DEFINE_PER_CPU_ALIGNED(struct obj_stock_pcp, obj_stock) = {
-    .lock = INIT_LOCAL_TRYLOCK(lock),
+    .lock       = INIT_LOCAL_TRYLOCK(lock),
+    .index      = -1,
+    .node_id    = NUMA_NO_NODE,
 };
+
+static DEFINE_MUTEX(percpu_charge_mutex);
 ```
 
 ```c
-static bool consume_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
-                  struct pglist_data *pgdat, enum node_stat_item idx)
+static bool consume_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes)
 {
     struct obj_stock_pcp *stock;
     bool ret = false;
 
-    if (!local_trylock(&obj_stock.lock))
+    stock = trylock_stock();
+    if (!stock)
         return ret;
 
-    stock = this_cpu_ptr(&obj_stock);
-    if (objcg == READ_ONCE(stock->cached_objcg) && stock->nr_bytes >= nr_bytes) {
-        stock->nr_bytes -= nr_bytes;
-        ret = true;
-
-        if (pgdat) {
-            __account_obj_stock(objcg, stock, nr_bytes, pgdat, idx) {
-                int *bytes;
-
-                /* Save vmstat data in stock and skip vmstat array update unless
-                * accumulating over a page of vmstat data or when pgdat changes. */
-                if (stock->cached_pgdat != pgdat) {
-                    /* Flush the existing cached vmstat data */
-                    struct pglist_data *oldpg = stock->cached_pgdat;
-
-                    if (stock->nr_slab_reclaimable_b) {
-                        mod_objcg_mlstate(objcg, oldpg, NR_SLAB_RECLAIMABLE_B,
-                                stock->nr_slab_reclaimable_b);
-                        stock->nr_slab_reclaimable_b = 0;
-                    }
-                    if (stock->nr_slab_unreclaimable_b) {
-                        mod_objcg_mlstate(objcg, oldpg, NR_SLAB_UNRECLAIMABLE_B,
-                                stock->nr_slab_unreclaimable_b);
-                        stock->nr_slab_unreclaimable_b = 0;
-                    }
-                    stock->cached_pgdat = pgdat;
-                }
-
-                bytes = (idx == NR_SLAB_RECLAIMABLE_B) ? &stock->nr_slab_reclaimable_b
-                                    : &stock->nr_slab_unreclaimable_b;
-                /* Even for large object >= PAGE_SIZE, the vmstat data will still be
-                * cached locally at least once before pushing it out. */
-                if (!*bytes) {
-                    *bytes = nr;
-                    nr = 0;
-                } else {
-                    *bytes += nr;
-                    if (abs(*bytes) > PAGE_SIZE) {
-                        nr = *bytes;
-                        *bytes = 0;
-                    } else {
-                        nr = 0;
-                    }
-                }
-                if (nr)
-                    mod_objcg_mlstate(objcg, pgdat, idx, nr);
-            }
-        }
-    }
-
-    local_unlock(&obj_stock.lock);
+    ret = __consume_obj_stock(objcg, stock, nr_bytes);
+    unlock_stock(stock);
 
     return ret;
+}
+
+static bool __consume_obj_stock(struct obj_cgroup *objcg,
+                struct obj_stock_pcp *stock,
+                unsigned int nr_bytes)
+{
+    int i;
+
+    for (i = 0; i < NR_OBJ_STOCK; ++i) {
+        if (READ_ONCE(stock->cached[i]) != objcg)
+            continue;
+        if (stock->nr_bytes[i] >= nr_bytes) {
+            stock->nr_bytes[i] -= nr_bytes;
+            return true;
+        }
+        return false;
+    }
+
+    return false;
 }
 ```
 
 #### refill_obj_stock
 
 ```c
-void refill_obj_stock(struct obj_cgroup *objcg, unsigned int nr_bytes,
-        bool allow_uncharge, int nr_acct, struct pglist_data *pgdat,
-        enum node_stat_item idx)
+static void refill_obj_stock(struct obj_cgroup *objcg,
+                 unsigned int nr_bytes,
+                 bool allow_uncharge)
 {
-    struct obj_stock_pcp *stock;
-    unsigned int nr_pages = 0;
+    struct obj_stock_pcp *stock = trylock_stock();
+    __refill_obj_stock(objcg, stock, nr_bytes, allow_uncharge);
+    unlock_stock(stock);
+}
 
-    /* try lock failed */
-    if (!local_trylock(&obj_stock.lock)) {
-        if (pgdat)
-            mod_objcg_mlstate(objcg, pgdat, idx, nr_bytes);
+void __refill_obj_stock(struct obj_cgroup *objcg,
+                   struct obj_stock_pcp *stock,
+                   unsigned int nr_bytes,
+                   bool allow_uncharge)
+{
+    unsigned int nr_pages = 0;
+    unsigned int stock_nr_bytes;
+    int i, slot = -1, empty_slot = -1;
+
+    if (!stock) {
         nr_pages = nr_bytes >> PAGE_SHIFT;
         nr_bytes = nr_bytes & (PAGE_SIZE - 1);
         atomic_add(nr_bytes, &objcg->nr_charged_bytes);
         goto out;
     }
 
-    stock = this_cpu_ptr(&obj_stock);
-    if (READ_ONCE(stock->cached_objcg) != objcg) { /* reset if necessary */
-        drain_obj_stock(stock);
+    for (i = 0; i < NR_OBJ_STOCK; ++i) {
+        struct obj_cgroup *cached = READ_ONCE(stock->cached[i]);
+
+        if (!cached) {
+            if (empty_slot == -1)
+                empty_slot = i;
+            continue;
+        }
+        if (cached == objcg) {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot == -1) {
+        slot = empty_slot;
+        if (slot == -1) {
+            slot = stock->drain_idx++;
+            if (stock->drain_idx == NR_OBJ_STOCK)
+                stock->drain_idx = 0;
+            drain_obj_stock_slot(stock, slot);
+        }
         obj_cgroup_get(objcg);
-        stock->nr_bytes = atomic_read(&objcg->nr_charged_bytes)
+        /* Keep the xchg result in the unsigned int local; storing
+         * it directly into stock->nr_bytes[slot] (uint16_t) would
+         * silently truncate values >= U16_MAX and bypass the flush
+         * guard below, leaking page-counter charges. */
+        stock_nr_bytes = atomic_read(&objcg->nr_charged_bytes)
                 ? atomic_xchg(&objcg->nr_charged_bytes, 0) : 0;
-        WRITE_ONCE(stock->cached_objcg, objcg);
+        WRITE_ONCE(stock->cached[slot], objcg);
 
         allow_uncharge = true;    /* Allow uncharge when objcg changes */
-    }
-    stock->nr_bytes += nr_bytes;
-
-    if (pgdat)
-        __account_obj_stock(objcg, stock, nr_acct, pgdat, idx);
-            --->
-
-    if (allow_uncharge && (stock->nr_bytes > PAGE_SIZE)) {
-        nr_pages = stock->nr_bytes >> PAGE_SHIFT;
-        stock->nr_bytes &= (PAGE_SIZE - 1);
+    } else {
+        stock_nr_bytes = stock->nr_bytes[slot];
     }
 
-    local_unlock(&obj_stock.lock);
+    stock_nr_bytes += nr_bytes;
+
+    if ((allow_uncharge && (stock_nr_bytes > PAGE_SIZE)) ||
+        stock_nr_bytes > U16_MAX) {
+        nr_pages = stock_nr_bytes >> PAGE_SHIFT;
+        stock_nr_bytes &= (PAGE_SIZE - 1);
+    }
+    stock->nr_bytes[slot] = stock_nr_bytes;
+
 out:
-    if (nr_pages) {
+    if (nr_pages)
         obj_cgroup_uncharge_pages(objcg, nr_pages);
-    }
 }
 ```
 
 #### drain_obj_stock
 
 ```c
-void drain_obj_stock(struct obj_stock_pcp *stock)
+static void drain_obj_stock(struct obj_stock_pcp *stock)
 {
-    struct obj_cgroup *old = READ_ONCE(stock->cached_objcg);
+    int i;
+
+    for (i = 0; i < NR_OBJ_STOCK; ++i)
+        drain_obj_stock_slot(stock, i);
+}
+
+void drain_obj_stock_slot(struct obj_stock_pcp *stock, int i)
+{
+    struct obj_cgroup *old = READ_ONCE(stock->cached[i]);
 
     if (!old)
         return;
 
-    if (stock->nr_bytes) {
-        unsigned int nr_pages = stock->nr_bytes >> PAGE_SHIFT;
-        unsigned int nr_bytes = stock->nr_bytes & (PAGE_SIZE - 1);
+    if (stock->nr_bytes[i]) {
+        unsigned int nr_pages = stock->nr_bytes[i] >> PAGE_SHIFT;
+        unsigned int nr_bytes = stock->nr_bytes[i] & (PAGE_SIZE - 1);
 
         if (nr_pages) {
             struct mem_cgroup *memcg;
@@ -7458,28 +7537,124 @@ void drain_obj_stock(struct obj_stock_pcp *stock)
          * limit enforcement accuracy and potential CPU contention,
          * so it might be changed in the future. */
         atomic_add(nr_bytes, &old->nr_charged_bytes);
-        stock->nr_bytes = 0;
+        stock->nr_bytes[i] = 0;
     }
 
-    /* Flush the vmstat data in current stock */
-    if (stock->nr_slab_reclaimable_b || stock->nr_slab_unreclaimable_b) {
-        if (stock->nr_slab_reclaimable_b) {
-            mod_objcg_mlstate(old, stock->cached_pgdat,
-                      NR_SLAB_RECLAIMABLE_B,
-                      stock->nr_slab_reclaimable_b);
-            stock->nr_slab_reclaimable_b = 0;
-        }
-        if (stock->nr_slab_unreclaimable_b) {
-            mod_objcg_mlstate(old, stock->cached_pgdat,
-                      NR_SLAB_UNRECLAIMABLE_B,
-                      stock->nr_slab_unreclaimable_b);
-            stock->nr_slab_unreclaimable_b = 0;
-        }
-        stock->cached_pgdat = NULL;
-    }
+    /* Flush vmstat data when its owning slot is being drained. */
+    if (stock->index == i)
+        drain_obj_stock_stats(stock);
 
-    WRITE_ONCE(stock->cached_objcg, NULL);
+    WRITE_ONCE(stock->cached[i], NULL);
     obj_cgroup_put(old);
+}
+
+void drain_obj_stock_stats(struct obj_stock_pcp *stock)
+{
+    struct obj_cgroup *old;
+    struct pglist_data *oldpg;
+
+    if (stock->index < 0)
+        return;
+
+    old = READ_ONCE(stock->cached[stock->index]);
+    oldpg = NODE_DATA(stock->node_id);
+
+    if (stock->nr_slab_reclaimable_b) {
+        mod_objcg_mlstate(old, oldpg, NR_SLAB_RECLAIMABLE_B,
+                  stock->nr_slab_reclaimable_b);
+        stock->nr_slab_reclaimable_b = 0;
+    }
+    if (stock->nr_slab_unreclaimable_b) {
+        mod_objcg_mlstate(old, oldpg, NR_SLAB_UNRECLAIMABLE_B,
+                  stock->nr_slab_unreclaimable_b);
+        stock->nr_slab_unreclaimable_b = 0;
+    }
+    stock->index = -1;
+    stock->node_id = NUMA_NO_NODE;
+}
+```
+
+
+#### alloc_slab_obj_exts
+
+```c
+int alloc_slab_obj_exts(struct slab *slab, struct kmem_cache *s,
+            gfp_t gfp, unsigned int alloc_flags)
+{
+    const bool allow_spin = alloc_flags_allow_spinning(alloc_flags);
+    unsigned int objects = objs_per_slab(s, slab);
+    bool new_slab = alloc_flags & SLAB_ALLOC_NEW_SLAB;
+    unsigned long new_exts;
+    unsigned long old_exts;
+    struct slabobj_ext *vec;
+    size_t sz = sizeof(struct slabobj_ext) * slab->objects;
+
+    gfp &= ~OBJCGS_CLEAR_MASK;
+    /* In most cases, obj_exts arrays are allocated from normal kmalloc.
+     * However, normal kmalloc caches must allocate them from
+     * KMALLOC_NO_OBJ_EXT caches to prevent recursion. */
+    if (is_kmalloc_normal(s))
+        alloc_flags |= SLAB_ALLOC_NO_OBJ_EXT;
+
+    alloc_flags &= ~SLAB_ALLOC_NEW_SLAB;
+
+    /* This will use kmalloc_nolock() if alloc_flags say so */
+    vec = kmalloc_flags(sz, gfp | __GFP_ZERO, alloc_flags, slab_nid(slab));
+
+    if (!vec) {
+        /* Try to mark vectors which failed to allocate.
+         * If this operation fails, there may be a racing process
+         * that has already completed the allocation. */
+        if (!mark_failed_objexts_alloc(slab) && slab_obj_exts(slab))
+            return 0;
+
+        return -ENOMEM;
+    }
+
+    if (IS_ENABLED(CONFIG_DEBUG_VM)) {
+        struct kmem_cache *exts_cache;
+        struct slab *exts_slab;
+
+        exts_slab = virt_to_slab(vec);
+        if (exts_slab) {
+            /* The vector must be allocated from either normal or
+             * KMALLOC_NO_OBJ_EXT kmalloc caches to avoid cycles. */
+            exts_cache = exts_slab->slab_cache;
+            WARN_ON_ONCE(!is_kmalloc_normal(exts_cache) && !(exts_cache->flags & SLAB_NO_OBJ_EXT));
+        }
+    }
+
+    new_exts = (unsigned long)vec;
+#ifdef CONFIG_MEMCG
+    new_exts |= MEMCG_DATA_OBJEXTS;
+#endif
+
+retry:
+    old_exts = READ_ONCE(slab->obj_exts);
+    handle_failed_objexts_alloc(old_exts, vec, objects);
+
+    if (new_slab) {
+        /* If the slab is brand new and nobody can yet access its
+         * obj_exts, no synchronization is required and obj_exts can
+         * be simply assigned. */
+        slab->obj_exts = new_exts;
+    } else if (old_exts & ~OBJEXTS_FLAGS_MASK) {
+        /* If the slab is already in use, somebody can allocate and
+         * assign slabobj_exts in parallel. In this case the existing
+         * objcg vector should be reused. */
+        if (unlikely(!allow_spin))
+            kfree_nolock(vec);
+        else
+            kfree(vec);
+        return 0;
+    } else if (cmpxchg(&slab->obj_exts, old_exts, new_exts) != old_exts) {
+        /* Retry if a racing thread changed slab->obj_exts from under us. */
+        goto retry;
+    }
+
+    if (allow_spin)
+        kmemleak_not_leak(vec);
+    return 0;
 }
 ```
 
@@ -8945,7 +9120,7 @@ Q: how workingset works?
 │   └── meminfo             # Node-specific memory stats (free, used, swap for reclaim monitoring)
 ```
 
-## lru
+## lruvec
 
 * [linux内存回收之 File page的 lru list算法原理](https://zhuanlan.zhihu.com/p/421298579)
 * [[PATCH 0/6 v4] sched/mm: LRU drain flush on nohz_full](https://lore.kernel.org/20250703140717.25703-1-frederic@kernel.org/)
@@ -8974,13 +9149,13 @@ typedef struct pglist_data {
 };
 
 struct lruvec {
-    struct list_head        lists[NR_LRU_LISTS];
+    struct list_head        lists[NR_LRU_LISTS]; /* anon/file × active/inactive/unevictable */
     spinlock_t              lru_lock;
 
     unsigned long           anon_cost;
     unsigned long           file_cost;
 
-    atomic_long_t           nonresident_age;
+    atomic_long_t           nonresident_age; /* refault detection */
 
     unsigned long           refaults[ANON_AND_FILE];
 
@@ -9024,11 +9199,12 @@ enum pageflags {
  *
  * When a newly allocated page is not yet visible, so safe for non-atomic ops,
  * __SetPageReferenced(page) may be substituted for mark_page_accessed(page). */
-
 void folio_mark_accessed(struct folio *folio)
 {
+    if (folio_test_dropbehind(folio))
+        return;
     if (lru_gen_enabled()) {
-        folio_inc_refs(folio);
+        lru_gen_inc_refs(folio);
         return;
     }
 
@@ -9036,34 +9212,68 @@ void folio_mark_accessed(struct folio *folio)
         folio_set_referenced(folio);
     } else if (folio_test_unevictable(folio)) {
         /* Unevictable pages are on the "LRU_UNEVICTABLE" list. But,
-        * this list is never rotated or maintained, so marking an
-        * unevictable page accessed has no effect. */
+         * this list is never rotated or maintained, so marking an
+         * unevictable page accessed has no effect. */
     } else if (!folio_test_active(folio)) {
         /* If the folio is on the LRU, queue it for activation via
-        * cpu_fbatches.activate. Otherwise, assume the folio is in a
-        * folio_batch, mark it active and it'll be moved to the active
-        * LRU on the next drain. */
-        if (folio_test_lru(folio)) {
+         * cpu_fbatches.lru_activate. Otherwise, assume the folio is in a
+         * folio_batch, mark it active and it'll be moved to the active
+         * LRU on the next drain. */
+        if (folio_test_lru(folio))
             folio_activate(folio);
-        } else {
-            __lru_cache_activate_folio(folio) {
-                fbatch = this_cpu_ptr(&cpu_fbatches.lru_add);
-                for (i = folio_batch_count(fbatch) - 1; i >= 0; i--) {
-                    struct folio *batch_folio = fbatch->folios[i];
-                    if (batch_folio == folio) {
-                        folio_set_active(folio);
-                        break;
-                    }
-                }
-            }
-        }
+        else
+            __lru_cache_activate_folio(folio);
 
         folio_clear_referenced(folio);
         workingset_activation(folio);
     }
-    if (folio_test_idle(folio)) {
+    if (folio_test_idle(folio))
         folio_clear_idle(folio);
+}
+
+void folio_activate(struct folio *folio)
+{
+    if (folio_test_active(folio) || folio_test_unevictable(folio) ||
+        !folio_test_lru(folio))
+        return;
+
+    folio_batch_add_and_move(folio, lru_activate) {
+        __folio_batch_add_and_move(                 \
+            &cpu_fbatches.op,                       \
+            folio,                                  \
+            op,                                     \
+            offsetof(struct cpu_fbatches, op) >=    \
+            offsetof(struct cpu_fbatches, lock_irq) \
+        )
     }
+}
+
+void __lru_cache_activate_folio(struct folio *folio)
+{
+    struct folio_batch *fbatch;
+    int i;
+
+    local_lock(&cpu_fbatches.lock);
+    fbatch = this_cpu_ptr(&cpu_fbatches.lru_add);
+
+    /* Search backwards on the optimistic assumption that the folio being
+     * activated has just been added to this batch. Note that only
+     * the local batch is examined as a !LRU folio could be in the
+     * process of being released, reclaimed, migrated or on a remote
+     * batch that is currently being drained. Furthermore, marking
+     * a remote batch's folio active potentially hits a race where
+     * a folio is marked active just after it is added to the inactive
+     * list causing accounting errors and BUG_ON checks to trigger. */
+    for (i = folio_batch_count(fbatch) - 1; i >= 0; i--) {
+        struct folio *batch_folio = fbatch->folios[i];
+
+        if (batch_folio == folio) {
+            folio_set_active(folio);
+            break;
+        }
+    }
+
+    local_unlock(&cpu_fbatches.lock);
 }
 ```
 
@@ -9292,22 +9502,17 @@ bool workingset_test_recent(void *shadow, bool file, bool *workingset)
 /* folio_mark_accessed -> workingset_activation */
 void workingset_activation(struct folio *folio)
 {
-    struct mem_cgroup *memcg;
-
-    rcu_read_lock();
-
-    memcg = folio_memcg_rcu(folio);
-    if (!mem_cgroup_disabled() && !memcg)
-        goto out;
-
-    workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio)) {
-        do {
-            atomic_long_add(nr_pages, &lruvec->nonresident_age);
-        } while ((lruvec = parent_lruvec(lruvec)));
+    /* Filter non-memcg pages here, e.g. unmap can call
+     * mark_page_accessed() on VDSO pages. */
+    if (mem_cgroup_disabled() || folio_memcg_charged(folio)) {
+        rcu_read_lock();
+        workingset_age_nonresident(folio_lruvec(folio), folio_nr_pages(folio)) {
+            do {
+                atomic_long_add(nr_pages, &lruvec->nonresident_age);
+            } while ((lruvec = parent_lruvec(lruvec)));
+        }
+        rcu_read_unlock();
     }
-
-out:
-    rcu_read_unlock();
 }
 ```
 
@@ -21131,6 +21336,190 @@ do_read_fault() { /* if (!(vmf->flags & FAULT_FLAG_WRITE)) */
 }
 ```
 
+##### filemap_get_folio
+
+```c
+static inline struct folio *filemap_get_folio(struct address_space *mapping,
+                    pgoff_t index)
+{
+    return __filemap_get_folio(mapping, index, 0, 0);
+}
+
+static inline struct folio *__filemap_get_folio(struct address_space *mapping,
+        pgoff_t index, fgf_t fgf_flags, gfp_t gfp)
+{
+    return __filemap_get_folio_mpol(mapping, index, fgf_flags, gfp, NULL);
+}
+
+struct folio *__filemap_get_folio_mpol(struct address_space *mapping,
+        pgoff_t index, fgf_t fgp_flags, gfp_t gfp, struct mempolicy *policy)
+{
+    struct folio *folio;
+
+repeat:
+    folio = filemap_get_entry(mapping, index);
+    if (xa_is_value(folio))
+        folio = NULL;
+    if (!folio)
+        goto no_page;
+
+    if (fgp_flags & FGP_LOCK) {
+        if (fgp_flags & FGP_NOWAIT) {
+            if (!folio_trylock(folio)) {
+                folio_put(folio);
+                return ERR_PTR(-EAGAIN);
+            }
+        } else {
+            folio_lock(folio);
+        }
+
+        /* Has the page been truncated? */
+        if (unlikely(folio->mapping != mapping)) {
+            folio_unlock(folio);
+            folio_put(folio);
+            goto repeat;
+        }
+        VM_BUG_ON_FOLIO(!folio_contains(folio, index), folio);
+    }
+
+    if (fgp_flags & FGP_ACCESSED)
+        folio_mark_accessed(folio);
+    else if (fgp_flags & FGP_WRITE) {
+        /* Clear idle flag for buffer write */
+        if (folio_test_idle(folio))
+            folio_clear_idle(folio);
+    }
+
+    if (fgp_flags & FGP_STABLE)
+        folio_wait_stable(folio);
+
+no_page:
+    if (!folio && (fgp_flags & FGP_CREAT)) {
+        unsigned int min_order = mapping_min_folio_order(mapping);
+        unsigned int order = max(min_order, FGF_GET_ORDER(fgp_flags));
+        int err;
+        index = mapping_align_index(mapping, index);
+
+        if ((fgp_flags & FGP_WRITE) && mapping_can_writeback(mapping))
+            gfp |= __GFP_WRITE;
+        if (fgp_flags & FGP_NOFS)
+            gfp &= ~__GFP_FS;
+        if (fgp_flags & FGP_NOWAIT) {
+            gfp &= ~GFP_KERNEL;
+            gfp |= GFP_NOWAIT;
+        }
+        if (WARN_ON_ONCE(!(fgp_flags & (FGP_LOCK | FGP_FOR_MMAP))))
+            fgp_flags |= FGP_LOCK;
+
+        if (order > mapping_max_folio_order(mapping))
+            order = mapping_max_folio_order(mapping);
+        /* If we're not aligned, allocate a smaller folio */
+        if (index & ((1UL << order) - 1))
+            order = __ffs(index);
+
+        do {
+            gfp_t alloc_gfp = gfp;
+
+            err = -ENOMEM;
+            if (order > min_order)
+                alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
+            folio = filemap_alloc_folio(alloc_gfp, order, policy);
+            if (!folio)
+                continue;
+
+            /* Init accessed so avoid atomic mark_page_accessed later */
+            if (fgp_flags & FGP_ACCESSED)
+                __folio_set_referenced(folio);
+            if (fgp_flags & FGP_DONTCACHE)
+                __folio_set_dropbehind(folio);
+
+            err = filemap_add_folio(mapping, folio, index, gfp);
+            if (!err)
+                break;
+            folio_put(folio);
+            folio = NULL;
+        } while (order-- > min_order);
+
+        if (err == -EEXIST)
+            goto repeat;
+        if (err) {
+            /* When NOWAIT I/O fails to allocate folios this could
+             * be due to a nonblocking memory allocation and not
+             * because the system actually is out of memory.
+             * Return -EAGAIN so that there caller retries in a
+             * blocking fashion instead of propagating -ENOMEM
+             * to the application. */
+            if ((fgp_flags & FGP_NOWAIT) && err == -ENOMEM)
+                err = -EAGAIN;
+            return ERR_PTR(err);
+        }
+        /* filemap_add_folio locks the page, and for mmap
+         * we expect an unlocked page. */
+        if (folio && (fgp_flags & FGP_FOR_MMAP))
+            folio_unlock(folio);
+    }
+
+    if (!folio)
+        return ERR_PTR(-ENOENT);
+    /* not an uncached lookup, clear uncached if set */
+    if (!(fgp_flags & FGP_DONTCACHE) && folio_test_clear_dropbehind(folio)) {
+        if (folio_test_dirty(folio) && mapping_can_writeback(mapping)) {
+            struct inode *inode = mapping->host;
+            struct bdi_writeback *wb;
+            struct wb_lock_cookie cookie = {};
+            long nr = folio_nr_pages(folio);
+
+            wb = unlocked_inode_to_wb_begin(inode, &cookie);
+            wb_stat_mod(wb, WB_DONTCACHE_DIRTY, -nr);
+            unlocked_inode_to_wb_end(inode, &cookie);
+        }
+    }
+    return folio;
+}
+```
+
+##### filemap_alloc_folio
+
+```c
+#define filemap_alloc_folio(...)                \
+    alloc_hooks(filemap_alloc_folio_noprof(__VA_ARGS__))
+
+static inline struct page *__page_cache_alloc(gfp_t gfp)
+{
+    return &filemap_alloc_folio(gfp, 0, NULL)->page;
+}
+
+struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order,
+        struct mempolicy *policy)
+{
+    int n;
+    struct folio *folio;
+
+    if (policy)
+        return folio_alloc_mpol_noprof(gfp, order, policy, NO_INTERLEAVE_INDEX, numa_node_id()) {
+        struct page *page = alloc_pages_mpol(gfp | __GFP_COMP, order, pol,
+                ilx, nid);
+        if (!page)
+            return NULL;
+
+        set_page_refcounted(page);
+        return page_rmappable_folio(page);
+    }
+
+    if (cpuset_do_page_mem_spread()) {
+        unsigned int cpuset_mems_cookie;
+        do {
+            cpuset_mems_cookie = read_mems_allowed_begin();
+            n = cpuset_mem_spread_node();
+            folio = __folio_alloc_node_noprof(gfp, order, n);
+        } while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
+
+        return folio;
+    }
+    return folio_alloc_noprof(gfp, order);
+}
+```
+
 #### do_cow_fault
 
 ```c
@@ -24953,7 +25342,9 @@ unsigned long kernel_physical_mapping_init(
 }
 ```
 
-# get_user_pages
+# gup
+
+## get_user_pages
 
 ```c
 long get_user_pages(unsigned long start, unsigned long nr_pages,
@@ -24992,8 +25383,12 @@ long __get_user_pages_locked(struct mm_struct *mm,
     else
         mmap_assert_locked(mm);
 
-    if (flags & FOLL_PIN)
-        mm_set_has_pinned_flag(mm);
+    if (flags & FOLL_PIN) {
+        mm_set_has_pinned_flag(mm) {
+            if (!test_bit(MMF_HAS_PINNED, mm_flags))
+                set_bit(MMF_HAS_PINNED, mm_flags);
+        }
+    }
 
     /* FOLL_PIN and FOLL_GET are mutually exclusive. Traditional behavior
      * is to set FOLL_GET if the caller wants pages[] filled in (but has
@@ -25252,239 +25647,668 @@ out:
 
 ```c
 struct page *follow_page_mask(struct vm_area_struct *vma,
-			      unsigned long address, unsigned int flags,
-			      unsigned long *page_mask)
+                  unsigned long address, unsigned int flags,
+                  unsigned long *page_mask)
 {
-	pgd_t *pgd;
-	struct mm_struct *mm = vma->vm_mm;
-	struct page *page;
+    pgd_t *pgd;
+    struct mm_struct *mm = vma->vm_mm;
+    struct page *page;
 
-	vma_pgtable_walk_begin(vma) {
+    vma_pgtable_walk_begin(vma) {
         if (is_vm_hugetlb_page(vma))
-		    hugetlb_vma_lock_read(vma);
+            hugetlb_vma_lock_read(vma);
     }
 
-	*page_mask = 0;
-	pgd = pgd_offset(mm, address);
+    *page_mask = 0;
+    pgd = pgd_offset(mm, address);
 
-	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
-		page = no_page_table(vma, flags, address);
-	else
-		page = follow_p4d_mask(vma, address, pgd, flags, page_mask);
+    if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd)))
+        page = no_page_table(vma, flags, address);
+    else
+        page = follow_p4d_mask(vma, address, pgd, flags, page_mask);
 
-	vma_pgtable_walk_end(vma);
+    vma_pgtable_walk_end(vma);
 
-	return page;
+    return page;
 }
 
 struct page *follow_p4d_mask(struct vm_area_struct *vma,
-				    unsigned long address, pgd_t *pgdp,
-				    unsigned int flags,
-				    unsigned long *page_mask)
+                    unsigned long address, pgd_t *pgdp,
+                    unsigned int flags,
+                    unsigned long *page_mask)
 {
-	p4d_t *p4dp, p4d;
+    p4d_t *p4dp, p4d;
 
-	p4dp = p4d_offset(pgdp, address);
-	p4d = p4dp_get(p4dp);
-	BUILD_BUG_ON(p4d_leaf(p4d));
+    p4dp = p4d_offset(pgdp, address);
+    p4d = p4dp_get(p4dp);
+    BUILD_BUG_ON(p4d_leaf(p4d));
 
-	if (!p4d_present(p4d) || p4d_bad(p4d))
-		return no_page_table(vma, flags, address);
+    if (!p4d_present(p4d) || p4d_bad(p4d))
+        return no_page_table(vma, flags, address);
 
-	return follow_pud_mask(vma, address, p4dp, flags, page_mask);
+    return follow_pud_mask(vma, address, p4dp, flags, page_mask);
 }
 
 struct page *follow_pud_mask(struct vm_area_struct *vma,
-				    unsigned long address, p4d_t *p4dp,
-				    unsigned int flags,
-				    unsigned long *page_mask)
+                    unsigned long address, p4d_t *p4dp,
+                    unsigned int flags,
+                    unsigned long *page_mask)
 {
-	pud_t *pudp, pud;
-	spinlock_t *ptl;
-	struct page *page;
-	struct mm_struct *mm = vma->vm_mm;
+    pud_t *pudp, pud;
+    spinlock_t *ptl;
+    struct page *page;
+    struct mm_struct *mm = vma->vm_mm;
 
-	pudp = pud_offset(p4dp, address);
-	pud = pudp_get(pudp);
-	if (!pud_present(pud))
-		return no_page_table(vma, flags, address);
-	if (pud_leaf(pud)) {
-		ptl = pud_lock(mm, pudp);
-		page = follow_huge_pud(vma, address, pudp, flags, page_mask);
-		spin_unlock(ptl);
-		if (page)
-			return page;
-		return no_page_table(vma, flags, address);
-	}
-	if (unlikely(pud_bad(pud)))
-		return no_page_table(vma, flags, address);
+    pudp = pud_offset(p4dp, address);
+    pud = pudp_get(pudp);
+    if (!pud_present(pud))
+        return no_page_table(vma, flags, address);
+    if (pud_leaf(pud)) {
+        ptl = pud_lock(mm, pudp);
+        page = follow_huge_pud(vma, address, pudp, flags, page_mask);
+        spin_unlock(ptl);
+        if (page)
+            return page;
+        return no_page_table(vma, flags, address);
+    }
+    if (unlikely(pud_bad(pud)))
+        return no_page_table(vma, flags, address);
 
-	return follow_pmd_mask(vma, address, pudp, flags, page_mask);
+    return follow_pmd_mask(vma, address, pudp, flags, page_mask);
 }
 
 struct page *follow_pmd_mask(struct vm_area_struct *vma,
-				    unsigned long address, pud_t *pudp,
-				    unsigned int flags,
-				    unsigned long *page_mask)
+                    unsigned long address, pud_t *pudp,
+                    unsigned int flags,
+                    unsigned long *page_mask)
 {
-	pmd_t *pmd, pmdval;
-	spinlock_t *ptl;
-	struct page *page;
-	struct mm_struct *mm = vma->vm_mm;
+    pmd_t *pmd, pmdval;
+    spinlock_t *ptl;
+    struct page *page;
+    struct mm_struct *mm = vma->vm_mm;
 
-	pmd = pmd_offset(pudp, address);
-	pmdval = pmdp_get_lockless(pmd);
-	if (pmd_none(pmdval))
-		return no_page_table(vma, flags, address);
-	if (!pmd_present(pmdval))
-		return no_page_table(vma, flags, address);
-	if (likely(!pmd_leaf(pmdval)))
-		return follow_page_pte(vma, address, pmd, flags);
+    pmd = pmd_offset(pudp, address);
+    pmdval = pmdp_get_lockless(pmd);
+    if (pmd_none(pmdval))
+        return no_page_table(vma, flags, address);
+    if (!pmd_present(pmdval))
+        return no_page_table(vma, flags, address);
+    if (likely(!pmd_leaf(pmdval)))
+        return follow_page_pte(vma, address, pmd, flags);
 
-	if (pmd_protnone(pmdval) && !gup_can_follow_protnone(vma, flags))
-		return no_page_table(vma, flags, address);
+    if (pmd_protnone(pmdval) && !gup_can_follow_protnone(vma, flags))
+        return no_page_table(vma, flags, address);
 
-	ptl = pmd_lock(mm, pmd);
-	pmdval = *pmd;
-	if (unlikely(!pmd_present(pmdval))) {
-		spin_unlock(ptl);
-		return no_page_table(vma, flags, address);
-	}
-	if (unlikely(!pmd_leaf(pmdval))) {
-		spin_unlock(ptl);
-		return follow_page_pte(vma, address, pmd, flags);
-	}
-	if (pmd_trans_huge(pmdval) && (flags & FOLL_SPLIT_PMD)) {
-		spin_unlock(ptl);
-		split_huge_pmd(vma, pmd, address);
-		/* If pmd was left empty, stuff a page table in there quickly */
-		return pte_alloc(mm, pmd) ? ERR_PTR(-ENOMEM) :
-			follow_page_pte(vma, address, pmd, flags);
-	}
-	page = follow_huge_pmd(vma, address, pmd, flags, page_mask);
-	spin_unlock(ptl);
-	return page;
+    ptl = pmd_lock(mm, pmd);
+    pmdval = *pmd;
+    if (unlikely(!pmd_present(pmdval))) {
+        spin_unlock(ptl);
+        return no_page_table(vma, flags, address);
+    }
+    if (unlikely(!pmd_leaf(pmdval))) {
+        spin_unlock(ptl);
+        return follow_page_pte(vma, address, pmd, flags);
+    }
+    if (pmd_trans_huge(pmdval) && (flags & FOLL_SPLIT_PMD)) {
+        spin_unlock(ptl);
+        split_huge_pmd(vma, pmd, address);
+        /* If pmd was left empty, stuff a page table in there quickly */
+        return pte_alloc(mm, pmd) ? ERR_PTR(-ENOMEM) :
+            follow_page_pte(vma, address, pmd, flags);
+    }
+    page = follow_huge_pmd(vma, address, pmd, flags, page_mask);
+    spin_unlock(ptl);
+    return page;
 }
 
 struct page *follow_page_pte(struct vm_area_struct *vma,
-		unsigned long address, pmd_t *pmd, unsigned int flags)
+        unsigned long address, pmd_t *pmd, unsigned int flags)
 {
-	struct mm_struct *mm = vma->vm_mm;
-	struct folio *folio;
-	struct page *page;
-	spinlock_t *ptl;
-	pte_t *ptep, pte;
-	int ret;
+    struct mm_struct *mm = vma->vm_mm;
+    struct folio *folio;
+    struct page *page;
+    spinlock_t *ptl;
+    pte_t *ptep, pte;
+    int ret;
 
-	ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
-	if (!ptep)
-		return no_page_table(vma, flags, address);
-	pte = ptep_get(ptep);
-	if (!pte_present(pte))
-		goto no_page;
-	if (pte_protnone(pte) && !gup_can_follow_protnone(vma, flags))
-		goto no_page;
+    ptep = pte_offset_map_lock(mm, pmd, address, &ptl);
+    if (!ptep)
+        return no_page_table(vma, flags, address);
+    pte = ptep_get(ptep);
+    if (!pte_present(pte))
+        goto no_page;
+    if (pte_protnone(pte) && !gup_can_follow_protnone(vma, flags))
+        goto no_page;
 
-	page = vm_normal_page(vma, address, pte);
+    page = vm_normal_page(vma, address, pte);
 
-	/*
-	 * We only care about anon pages in can_follow_write_pte().
-	 */
-	if ((flags & FOLL_WRITE) &&
-	    !can_follow_write_pte(pte, page, vma, flags)) {
-		page = NULL;
-		goto out;
-	}
+    /* We only care about anon pages in can_follow_write_pte(). */
+    if ((flags & FOLL_WRITE) &&
+        !can_follow_write_pte(pte, page, vma, flags)) {
+        page = NULL;
+        goto out;
+    }
 
-	if (unlikely(!page)) {
-		if (flags & FOLL_DUMP) {
-			/* Avoid special (like zero) pages in core dumps */
-			page = ERR_PTR(-EFAULT);
-			goto out;
-		}
+    if (unlikely(!page)) {
+        if (flags & FOLL_DUMP) {
+            /* Avoid special (like zero) pages in core dumps */
+            page = ERR_PTR(-EFAULT);
+            goto out;
+        }
 
-		if (is_zero_pfn(pte_pfn(pte))) {
-			page = pte_page(pte);
-		} else {
-			ret = follow_pfn_pte(vma, address, ptep, flags);
-			page = ERR_PTR(ret);
-			goto out;
-		}
-	}
-	folio = page_folio(page);
+        if (is_zero_pfn(pte_pfn(pte))) {
+            page = pte_page(pte);
+        } else {
+            ret = follow_pfn_pte(vma, address, ptep, flags);
+            page = ERR_PTR(ret);
+            goto out;
+        }
+    }
+    folio = page_folio(page);
 
-	if (!pte_write(pte) && gup_must_unshare(vma, flags, page)) {
-		page = ERR_PTR(-EMLINK);
-		goto out;
-	}
+    if (!pte_write(pte) && gup_must_unshare(vma, flags, page)) {
+        page = ERR_PTR(-EMLINK);
+        goto out;
+    }
 
-	VM_WARN_ON_ONCE_PAGE((flags & FOLL_PIN) && PageAnon(page) &&
-			     !PageAnonExclusive(page), page);
+    VM_WARN_ON_ONCE_PAGE((flags & FOLL_PIN) && PageAnon(page) &&
+                 !PageAnonExclusive(page), page);
 
-	/* try_grab_folio() does nothing unless FOLL_GET or FOLL_PIN is set. */
-	ret = try_grab_folio(folio, 1, flags);
-	if (unlikely(ret)) {
-		page = ERR_PTR(ret);
-		goto out;
-	}
+    /* try_grab_folio() does nothing unless FOLL_GET or FOLL_PIN is set. */
+    ret = try_grab_folio(folio, 1, flags);
+    if (unlikely(ret)) {
+        page = ERR_PTR(ret);
+        goto out;
+    }
 
-	/*
-	 * We need to make the page accessible if and only if we are going
-	 * to access its content (the FOLL_PIN case).  Please see
-	 * Documentation/core-api/pin_user_pages.rst for details.
-	 */
-	if (flags & FOLL_PIN) {
-		ret = arch_make_folio_accessible(folio);
-		if (ret) {
-			unpin_user_page(page);
-			page = ERR_PTR(ret);
-			goto out;
-		}
-	}
-	if (flags & FOLL_TOUCH) {
-		if ((flags & FOLL_WRITE) &&
-		    !pte_dirty(pte) && !folio_test_dirty(folio))
-			folio_mark_dirty(folio);
-		/*
-		 * pte_mkyoung() would be more correct here, but atomic care
-		 * is needed to avoid losing the dirty bit: it is easier to use
-		 * folio_mark_accessed().
-		 */
-		folio_mark_accessed(folio);
-	}
+    /* We need to make the page accessible if and only if we are going
+     * to access its content (the FOLL_PIN case).  Please see
+     * Documentation/core-api/pin_user_pages.rst for details. */
+    if (flags & FOLL_PIN) {
+        ret = arch_make_folio_accessible(folio);
+        if (ret) {
+            unpin_user_page(page);
+            page = ERR_PTR(ret);
+            goto out;
+        }
+    }
+    if (flags & FOLL_TOUCH) {
+        if ((flags & FOLL_WRITE) &&
+            !pte_dirty(pte) && !folio_test_dirty(folio))
+            folio_mark_dirty(folio);
+        /* pte_mkyoung() would be more correct here, but atomic care
+         * is needed to avoid losing the dirty bit: it is easier to use
+         * folio_mark_accessed(). */
+        folio_mark_accessed(folio);
+    }
 out:
-	pte_unmap_unlock(ptep, ptl);
-	return page;
+    pte_unmap_unlock(ptep, ptl);
+    return page;
 no_page:
-	pte_unmap_unlock(ptep, ptl);
-	if (!pte_none(pte))
-		return NULL;
-	return no_page_table(vma, flags, address);
+    pte_unmap_unlock(ptep, ptl);
+    if (!pte_none(pte))
+        return NULL;
+    return no_page_table(vma, flags, address);
 }
 
 struct page *no_page_table(struct vm_area_struct *vma,
-				  unsigned int flags, unsigned long address)
+                  unsigned int flags, unsigned long address)
 {
-	if (!(flags & FOLL_DUMP))
-		return NULL;
+    if (!(flags & FOLL_DUMP))
+        return NULL;
 
-	/*
-	 * When core dumping, we don't want to allocate unnecessary pages or
-	 * page tables.  Return error instead of NULL to skip handle_mm_fault,
-	 * then get_dump_page() will return NULL to leave a hole in the dump.
-	 * But we can only make this optimization where a hole would surely
-	 * be zero-filled if handle_mm_fault() actually did handle it.
-	 */
-	if (is_vm_hugetlb_page(vma)) {
-		struct hstate *h = hstate_vma(vma);
+    /* When core dumping, we don't want to allocate unnecessary pages or
+     * page tables.  Return error instead of NULL to skip handle_mm_fault,
+     * then get_dump_page() will return NULL to leave a hole in the dump.
+     * But we can only make this optimization where a hole would surely
+     * be zero-filled if handle_mm_fault() actually did handle it. */
+    if (is_vm_hugetlb_page(vma)) {
+        struct hstate *h = hstate_vma(vma);
 
-		if (!hugetlbfs_pagecache_present(h, vma, address))
-			return ERR_PTR(-EFAULT);
-	} else if ((vma_is_anonymous(vma) || !vma->vm_ops->fault)) {
-		return ERR_PTR(-EFAULT);
-	}
+        if (!hugetlbfs_pagecache_present(h, vma, address))
+            return ERR_PTR(-EFAULT);
+    } else if ((vma_is_anonymous(vma) || !vma->vm_ops->fault)) {
+        return ERR_PTR(-EFAULT);
+    }
 
-	return NULL;
+    return NULL;
+}
+```
+
+## get_user_page_fast
+
+```c
+int get_user_pages_fast(unsigned long start, int nr_pages,
+            unsigned int gup_flags, struct page **pages)
+{
+    /* The caller may or may not have explicitly set FOLL_GET; either way is
+     * OK. However, internally (within mm/gup.c), gup fast variants must set
+     * FOLL_GET, because gup fast is always a "pin with a +1 page refcount"
+     * request. */
+    if (!is_valid_gup_args(pages, NULL, &gup_flags, FOLL_GET))
+        return -EINVAL;
+    return gup_fast_fallback(start, nr_pages, gup_flags, pages);
+}
+
+int gup_fast_fallback(unsigned long start, unsigned long nr_pages,
+        unsigned int gup_flags, struct page **pages)
+{
+    unsigned long len, end;
+    unsigned long nr_pinned;
+    int locked = 0;
+    int ret;
+
+    if (WARN_ON_ONCE(gup_flags & ~(FOLL_WRITE | FOLL_LONGTERM |
+                       FOLL_FORCE | FOLL_PIN | FOLL_GET |
+                       FOLL_FAST_ONLY | FOLL_NOFAULT |
+                       FOLL_PCI_P2PDMA | FOLL_HONOR_NUMA_FAULT)))
+        return -EINVAL;
+
+    if (gup_flags & FOLL_PIN)
+        mm_set_has_pinned_flag(current->mm);
+
+    if (!(gup_flags & FOLL_FAST_ONLY))
+        might_lock_read(&current->mm->mmap_lock);
+
+    start = untagged_addr(start) & PAGE_MASK;
+    len = nr_pages << PAGE_SHIFT;
+    if (check_add_overflow(start, len, &end))
+        return -EOVERFLOW;
+    if (end > TASK_SIZE_MAX)
+        return -EFAULT;
+
+    nr_pinned = gup_fast(start, end, gup_flags, pages);
+    if (nr_pinned == nr_pages || gup_flags & FOLL_FAST_ONLY)
+        return nr_pinned;
+
+    /* Slow path: try to get the remaining pages with get_user_pages */
+    start += nr_pinned << PAGE_SHIFT;
+    pages += nr_pinned;
+    ret = __gup_longterm_locked(current->mm, start, nr_pages - nr_pinned,
+        pages, &locked,
+        gup_flags | FOLL_TOUCH | FOLL_UNLOCKABLE)
+    {
+        unsigned int flags;
+        long rc, nr_pinned_pages;
+
+        if (!(gup_flags & FOLL_LONGTERM))
+            return __get_user_pages_locked(mm, start, nr_pages, pages,
+                            locked, gup_flags);
+
+        flags = memalloc_pin_save();
+        do {
+            nr_pinned_pages = __get_user_pages_locked(mm, start, nr_pages,
+                                pages, locked,
+                                gup_flags);
+            if (nr_pinned_pages <= 0) {
+                rc = nr_pinned_pages;
+                break;
+            }
+
+            /* FOLL_LONGTERM implies FOLL_PIN */
+            rc = check_and_migrate_movable_pages(nr_pinned_pages, pages);
+        } while (rc == -EAGAIN);
+        memalloc_pin_restore(flags);
+        return rc ? rc : nr_pinned_pages;
+    }
+    if (ret < 0) {
+        /* The caller has to unpin the pages we already pinned so
+         * returning -errno is not an option */
+        if (nr_pinned)
+            return nr_pinned;
+        return ret;
+    }
+    return ret + nr_pinned;
+}
+
+unsigned long gup_fast(unsigned long start, unsigned long end,
+        unsigned int gup_flags, struct page **pages)
+{
+    unsigned long flags;
+    int nr_pinned = 0;
+    unsigned seq;
+
+    if (!IS_ENABLED(CONFIG_HAVE_GUP_FAST) ||
+        !gup_fast_permitted(start, end))
+        return 0;
+
+    if (gup_flags & FOLL_PIN) {
+        if (!raw_seqcount_try_begin(&current->mm->write_protect_seq, seq))
+            return 0;
+    }
+
+    /* Disable interrupts. The nested form is used, in order to allow full,
+     * general purpose use of this routine.
+     *
+     * With interrupts disabled, we block page table pages from being freed
+     * from under us. See struct mmu_table_batch comments in
+     * include/asm-generic/tlb.h for more details.
+     *
+     * We do not adopt an rcu_read_lock() here as we also want to block IPIs
+     * that come from callers of tlb_remove_table_sync_one(). */
+    local_irq_save(flags);
+    gup_fast_pgd_range(start, end, gup_flags, pages, &nr_pinned);
+    local_irq_restore(flags);
+
+    /* When pinning pages for DMA there could be a concurrent write protect
+     * from fork() via copy_page_range(), in this case always fail GUP-fast. */
+    if (gup_flags & FOLL_PIN) {
+        if (read_seqcount_retry(&current->mm->write_protect_seq, seq)) {
+            gup_fast_unpin_user_pages(pages, nr_pinned);
+            return 0;
+        } else {
+            sanity_check_pinned_pages(pages, nr_pinned);
+        }
+    }
+    return nr_pinned;
+}
+```
+
+### gup_fast_pgd_range
+
+```c
+static void gup_fast_pgd_range(unsigned long addr, unsigned long end,
+        unsigned int flags, struct page **pages, int *nr)
+{
+    unsigned long next;
+    pgd_t *pgdp;
+
+    pgdp = pgd_offset(current->mm, addr);
+    do {
+        pgd_t pgd = pgdp_get(pgdp);
+
+        next = pgd_addr_end(addr, end);
+        if (pgd_none(pgd))
+            return;
+        BUILD_BUG_ON(pgd_leaf(pgd));
+        if (!gup_fast_p4d_range(pgdp, pgd, addr, next, flags, pages, nr))
+            return;
+    } while (pgdp++, addr = next, addr != end);
+}
+
+static int gup_fast_p4d_range(pgd_t *pgdp, pgd_t pgd, unsigned long addr,
+        unsigned long end, unsigned int flags, struct page **pages,
+        int *nr)
+{
+    unsigned long next;
+    p4d_t *p4dp;
+
+    p4dp = p4d_offset_lockless(pgdp, pgd, addr);
+    do {
+        p4d_t p4d = p4dp_get(p4dp);
+
+        next = p4d_addr_end(addr, end);
+        if (!p4d_present(p4d))
+            return 0;
+        BUILD_BUG_ON(p4d_leaf(p4d));
+        if (!gup_fast_pud_range(p4dp, p4d, addr, next, flags, pages, nr))
+            return 0;
+    } while (p4dp++, addr = next, addr != end);
+
+    return 1;
+}
+
+static int gup_fast_pud_range(p4d_t *p4dp, p4d_t p4d, unsigned long addr,
+        unsigned long end, unsigned int flags, struct page **pages,
+        int *nr)
+{
+    unsigned long next;
+    pud_t *pudp;
+
+    pudp = pud_offset_lockless(p4dp, p4d, addr);
+    do {
+        pud_t pud = pudp_get(pudp);
+
+        next = pud_addr_end(addr, end);
+        if (unlikely(!pud_present(pud)))
+            return 0;
+        if (unlikely(pud_leaf(pud))) {
+            if (!gup_fast_pud_leaf(pud, pudp, addr, next, flags, pages, nr))
+                return 0;
+        } else if (!gup_fast_pmd_range(pudp, pud, addr, next, flags, pages, nr))
+            return 0;
+    } while (pudp++, addr = next, addr != end);
+
+    return 1;
+}
+
+
+static int gup_fast_pud_leaf(pud_t orig, pud_t *pudp, unsigned long addr,
+        unsigned long end, unsigned int flags, struct page **pages,
+        int *nr)
+{
+    struct page *page;
+    struct folio *folio;
+    int refs;
+
+    if (!pud_access_permitted(orig, flags & FOLL_WRITE))
+        return 0;
+
+    if (pud_special(orig))
+        return 0;
+
+    refs = (end - addr) >> PAGE_SHIFT;
+    page = pud_page(orig) + ((addr & ~PUD_MASK) >> PAGE_SHIFT);
+
+    folio = try_grab_folio_fast(page, refs, flags);
+    if (!folio)
+        return 0;
+
+    if (unlikely(pud_val(orig) != pud_val(pudp_get(pudp)))) {
+        gup_put_folio(folio, refs, flags);
+        return 0;
+    }
+
+    if (!gup_fast_folio_allowed(folio, flags)) {
+        gup_put_folio(folio, refs, flags);
+        return 0;
+    }
+
+    if (!pud_write(orig) && gup_must_unshare(NULL, flags, &folio->page)) {
+        gup_put_folio(folio, refs, flags);
+        return 0;
+    }
+
+    pages += *nr;
+    *nr += refs;
+    for (; refs; refs--)
+        *(pages++) = page++;
+    folio_set_referenced(folio);
+    return 1;
+}
+
+int gup_fast_pmd_range(pud_t *pudp, pud_t pud, unsigned long addr,
+        unsigned long end, unsigned int flags, struct page **pages,
+        int *nr)
+{
+    unsigned long next;
+    pmd_t *pmdp;
+
+    pmdp = pmd_offset_lockless(pudp, pud, addr);
+    do {
+        pmd_t pmd = pmdp_get_lockless(pmdp);
+
+        next = pmd_addr_end(addr, end);
+        if (!pmd_present(pmd))
+            return 0;
+
+        if (unlikely(pmd_leaf(pmd))) {
+            /* See gup_fast_pte_range() */
+            if (pmd_protnone(pmd))
+                return 0;
+
+            if (!gup_fast_pmd_leaf(pmd, pmdp, addr, next, flags,
+                pages, nr))
+                return 0;
+
+        } else if (!gup_fast_pte_range(pmd, pmdp, addr, next, flags, pages, nr))
+            return 0;
+    } while (pmdp++, addr = next, addr != end);
+
+    return 1;
+}
+
+int gup_fast_pte_range(pmd_t pmd, pmd_t *pmdp, unsigned long addr,
+        unsigned long end, unsigned int flags, struct page **pages,
+        int *nr)
+{
+    int ret = 0;
+    pte_t *ptep, *ptem;
+
+    ptem = ptep = pte_offset_map(&pmd, addr);
+    if (!ptep)
+        return 0;
+    do {
+        pte_t pte = ptep_get_lockless(ptep);
+        struct page *page;
+        struct folio *folio;
+
+        /* Always fallback to ordinary GUP on PROT_NONE-mapped pages:
+         * pte_access_permitted() better should reject these pages
+         * either way: otherwise, GUP-fast might succeed in
+         * cases where ordinary GUP would fail due to VMA access
+         * permissions. */
+        if (pte_protnone(pte))
+            goto pte_unmap;
+
+        if (!pte_access_permitted(pte, flags & FOLL_WRITE))
+            goto pte_unmap;
+
+        if (pte_special(pte))
+            goto pte_unmap;
+
+        /* If it's not marked as special it must have a valid memmap. */
+        VM_WARN_ON_ONCE(!pfn_valid(pte_pfn(pte)));
+        page = pte_page(pte);
+
+        folio = try_grab_folio_fast(page, 1, flags);
+        if (!folio)
+            goto pte_unmap;
+
+        if (unlikely(pmd_val(pmd) != pmd_val(pmdp_get_lockless(pmdp))) ||
+            unlikely(pte_val(pte) != pte_val(ptep_get_lockless(ptep)))) {
+            gup_put_folio(folio, 1, flags);
+            goto pte_unmap;
+        }
+
+        if (!gup_fast_folio_allowed(folio, flags)) {
+            gup_put_folio(folio, 1, flags);
+            goto pte_unmap;
+        }
+
+        if (!pte_write(pte) && gup_must_unshare(NULL, flags, page)) {
+            gup_put_folio(folio, 1, flags);
+            goto pte_unmap;
+        }
+
+        /* We need to make the page accessible if and only if we are
+         * going to access its content (the FOLL_PIN case).  Please
+         * see Documentation/core-api/pin_user_pages.rst for
+         * details. */
+        if ((flags & FOLL_PIN) && arch_make_folio_accessible(folio)) {
+            gup_put_folio(folio, 1, flags);
+            goto pte_unmap;
+        }
+        folio_set_referenced(folio);
+        pages[*nr] = page;
+        (*nr)++;
+    } while (ptep++, addr += PAGE_SIZE, addr != end);
+
+    ret = 1;
+
+pte_unmap:
+    pte_unmap(ptem);
+    return ret;
+}
+```
+
+#### try_grab_folio_fast
+
+```c
+/*    FOLL_GET: folio's refcount will be incremented by @refs.
+ *
+ *    FOLL_PIN on large folios: folio's refcount will be incremented by
+ *    @refs, and its pincount will be incremented by @refs.
+ *
+ *    FOLL_PIN on single-page folios: folio's refcount will be incremented by
+ *    @refs * GUP_PIN_COUNTING_BIAS. */
+struct folio *try_grab_folio_fast(struct page *page, int refs, unsigned int flags)
+{
+    struct folio *folio;
+
+    /* Raise warn if it is not called in fast GUP */
+    VM_WARN_ON_ONCE(!irqs_disabled());
+
+    if (WARN_ON_ONCE((flags & (FOLL_GET | FOLL_PIN)) == 0))
+        return NULL;
+
+    if (unlikely(!(flags & FOLL_PCI_P2PDMA) && is_pci_p2pdma_page(page)))
+        return NULL;
+
+    if (flags & FOLL_GET) {
+        return try_get_folio(page, refs);
+    }
+
+    /* FOLL_PIN is set */
+
+    /* Don't take a pin on the zero page - it's not going anywhere
+     * and it is used in a *lot* of places. */
+    if (is_zero_page(page))
+        return page_folio(page);
+
+    folio = try_get_folio(page, refs) {
+        struct folio *folio;
+
+    retry:
+        folio = page_folio(page);
+        if (WARN_ON_ONCE(folio_ref_count(folio) < 0))
+            return NULL;
+        if (unlikely(!folio_ref_try_add(folio, refs)))
+            return NULL;
+
+        /* At this point we have a stable reference to the folio; but it
+        * could be that between calling page_folio() and the refcount
+        * increment, the folio was split, in which case we'd end up
+        * holding a reference on a folio that has nothing to do with the page
+        * we were given anymore.
+        * So now that the folio is stable, recheck that the page still
+        * belongs to this folio. */
+        if (unlikely(page_folio(page) != folio)) {
+            folio_put_refs(folio, refs);
+            goto retry;
+        }
+
+        return folio;
+    }
+    if (!folio)
+        return NULL;
+
+    /* Can't do FOLL_LONGTERM + FOLL_PIN gup fast path if not in a
+     * right zone, so fail and let the caller fall back to the slow
+     * path. */
+    if (unlikely((flags & FOLL_LONGTERM) && !folio_is_longterm_pinnable(folio))) {
+        folio_put_refs(folio, refs);
+        return NULL;
+    }
+
+    /* When pinning a large folio, use an exact count to track it.
+     *
+     * However, be sure to *also* increment the normal folio
+     * refcount field at least once, so that the folio really
+     * is pinned.  That's why the refcount from the earlier
+     * try_get_folio() is left intact. */
+    if (folio_has_pincount(folio))
+        atomic_add(refs, &folio->_pincount);
+    else
+        folio_ref_add(folio, refs * (GUP_PIN_COUNTING_BIAS - 1));
+    /* Adjust the pincount before re-checking the PTE for changes.
+     * This is essentially a smp_mb() and is paired with a memory
+     * barrier in folio_try_share_anon_rmap_*(). */
+    smp_mb__after_atomic();
+
+    node_stat_mod_folio(folio, NR_FOLL_PIN_ACQUIRED, refs);
+
+    return folio;
 }
 ```
 
@@ -25673,8 +26497,7 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
     }
 
     if (is_cow) {
-        mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE,
-                    0, src_mm, addr, end);
+        mmu_notifier_range_init(&range, MMU_NOTIFY_PROTECTION_PAGE, 0, src_mm, addr, end);
         mmu_notifier_invalidate_range_start(&range);
         /* Disabling preemption is not needed for the write side, as
         * the read side doesn't spin, but goes to the mmap_lock.
@@ -25758,32 +26581,47 @@ int copy_page_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_v
 ```
 
 ```c
-int copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
-        pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
-        unsigned long end)
+static int
+copy_pte_range(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+           pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
+           unsigned long end)
 {
     struct mm_struct *dst_mm = dst_vma->vm_mm;
     struct mm_struct *src_mm = src_vma->vm_mm;
     pte_t *orig_src_pte, *orig_dst_pte;
     pte_t *src_pte, *dst_pte;
+    pmd_t dummy_pmdval;
     pte_t ptent;
     spinlock_t *src_ptl, *dst_ptl;
-    int progress, ret = 0;
+    int progress, max_nr, ret = 0;
     int rss[NR_MM_COUNTERS];
-    swp_entry_t entry = (swp_entry_t){0};
+    softleaf_t entry = softleaf_mk_none();
     struct folio *prealloc = NULL;
+    int nr;
 
 again:
     progress = 0;
-    init_rss_vec(rss);
+    init_rss_vec(rss) {
+        memset(rss, 0, sizeof(int) * NR_MM_COUNTERS);
+    }
 
+    /* copy_pmd_range()'s prior pmd_none_or_clear_bad(src_pmd), and the
+     * error handling here, assume that exclusive mmap_lock on dst and src
+     * protects anon from unexpected THP transitions; with shmem and file
+     * protected by mmap_lock-less collapse skipping areas with anon_vma
+     * (whereas vma_needs_copy() skips areas without anon_vma).  A rework
+     * can remove such assumptions later, but this is good enough for now. */
     dst_pte = pte_alloc_map_lock(dst_mm, dst_pmd, addr, &dst_ptl);
     if (!dst_pte) {
         ret = -ENOMEM;
         goto out;
     }
 
-    src_pte = pte_offset_map_nolock(src_mm, src_pmd, addr, &src_ptl);
+    /* We already hold the exclusive mmap_lock, the copy_pte_range() and
+     * retract_page_tables() are using vma->anon_vma to be exclusive, so
+     * the PTE page is stable, and there is no need to get pmdval and do
+     * pmd_same() check. */
+    src_pte = pte_offset_map_rw_nolock(src_mm, src_pmd, addr, &dummy_pmdval, &src_ptl);
     if (!src_pte) {
         pte_unmap_unlock(dst_pte, dst_ptl);
         /* ret == 0 */
@@ -25792,12 +26630,17 @@ again:
     spin_lock_nested(src_ptl, SINGLE_DEPTH_NESTING);
     orig_src_pte = src_pte;
     orig_dst_pte = dst_pte;
-    arch_enter_lazy_mmu_mode();
+    lazy_mmu_mode_enable();
 
     do {
+        nr = 1;
+
+        /* We are holding two locks at this point - either of them
+         * could generate latencies in another task on another CPU. */
         if (progress >= 32) {
             progress = 0;
-            if (need_resched() || spin_needbreak(src_ptl) || spin_needbreak(dst_ptl))
+            if (need_resched() ||
+                spin_needbreak(src_ptl) || spin_needbreak(dst_ptl))
                 break;
         }
         ptent = ptep_get(src_pte);
@@ -25806,62 +26649,9 @@ again:
             continue;
         }
         if (unlikely(!pte_present(ptent))) {
-            ret = copy_nonpresent_pte(dst_mm, src_mm,
-                dst_pte, src_pte, dst_vma, src_vma, addr, rss) {
-
-                swp_entry_t entry = pte_to_swp_entry(orig_pte);
-
-                if (likely(!non_swap_entry(entry))) { /* swp_type(entry) >= MAX_SWAPFILES; */
-                    /* inc swap refcnt */
-                    if (swap_duplicate(entry) < 0)
-                        return -EIO;
-
-                    /* make sure dst_mm is on swapoff's mmlist. */
-                    if (unlikely(list_empty(&dst_mm->mmlist))) {
-                        spin_lock(&mmlist_lock);
-                        if (list_empty(&dst_mm->mmlist))
-                            list_add(&dst_mm->mmlist, &src_mm->mmlist);
-                        spin_unlock(&mmlist_lock);
-                    }
-                    /* Mark the swap entry as shared. */
-                    if (pte_swp_exclusive(orig_pte)) {
-                        pte = pte_swp_clear_exclusive(orig_pte);
-                        set_pte_at(src_mm, addr, src_pte, pte);
-                    }
-                    rss[MM_SWAPENTS]++;
-                } else if (is_migration_entry(entry)) { /* swp_type(entry) == SWP_MIGRATION_* */
-                    folio = pfn_swap_entry_folio(entry);
-
-                    rss[mm_counter(folio)]++;
-
-                    if (!is_readable_migration_entry(entry) && is_cow_mapping(vm_flags)) {
-                        entry = make_readable_migration_entry( swp_offset(entry));
-                        pte = swp_entry_to_pte(entry);
-                        if (pte_swp_soft_dirty(orig_pte))
-                            pte = pte_swp_mksoft_dirty(pte);
-                        if (pte_swp_uffd_wp(orig_pte))
-                            pte = pte_swp_mkuffd_wp(pte);
-                        set_pte_at(src_mm, addr, src_pte, pte);
-                    }
-                } else if (is_device_private_entry(entry)) {
-
-                } else if (is_device_exclusive_entry(entry)) {
-
-                } else if (is_pte_marker_entry(entry)) {
-                    pte_marker marker = copy_pte_marker(entry, dst_vma);
-
-                    if (marker)
-                        set_pte_at(dst_mm, addr, dst_pte, make_pte_marker(marker));
-                    return 0;
-                }
-                if (!userfaultfd_wp(dst_vma))
-                    pte = pte_swp_clear_uffd_wp(pte);
-                set_pte_at(dst_mm, addr, dst_pte, pte);
-                return 0;
-            }
-
+            ret = copy_nonpresent_pte(dst_mm, src_mm, dst_pte, src_pte, dst_vma, src_vma, addr, rss);
             if (ret == -EIO) {
-                entry = pte_to_swp_entry(ptep_get(src_pte));
+                entry = softleaf_from_pte(ptep_get(src_pte));
                 break;
             } else if (ret == -EBUSY) {
                 break;
@@ -25869,86 +26659,36 @@ again:
                 progress += 8;
                 continue;
             }
+            ptent = ptep_get(src_pte);
+            VM_WARN_ON_ONCE(!pte_present(ptent));
 
+            /* Device exclusive entry restored, continue by copying
+             * the now present pte. */
             WARN_ON_ONCE(ret != -ENOENT);
         }
-
-        /* copy_present_pte() will clear `*prealloc' if consumed */
-        ret = copy_present_pte(dst_vma, src_vma, dst_pte, src_pte,
-            addr, rss, &prealloc) {
-
-            page = vm_normal_page(src_vma, addr, pte);
-            if (page)
-                folio = page_folio(page);
-            if (page && folio_test_anon(folio)) {
-                folio_get(folio);
-                if (unlikely(folio_try_dup_anon_rmap_pte(folio, page, src_vma))) {
-                    /* Page may be pinned, we have to copy. */
-                    folio_put(folio);
-                    return copy_present_page(dst_vma, src_vma, dst_pte, src_pte,
-                        addr, rss, prealloc, page) {
-
-                        copy_user_highpage(&new_folio->page, page, addr, src_vma);
-                        __folio_mark_uptodate(new_folio);
-                        folio_add_new_anon_rmap(new_folio, dst_vma, addr);
-                        folio_add_lru_vma(new_folio, dst_vma);
-                        rss[MM_ANONPAGES]++;
-
-                        /* All done, just insert the new page copy in the child */
-                        pte = mk_pte(&new_folio->page, dst_vma->vm_page_prot);
-                        pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
-                        if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
-                            pte = pte_mkuffd_wp(pte);
-                        set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
-                        return 0;
-                    }
-                }
-                rss[MM_ANONPAGES]++;
-            } else if (page) {
-                folio_get(folio);
-                folio_dup_file_rmap_pte(folio, page);
-                rss[mm_counter_file(page)]++;
-            }
-
-            /* If it's a COW mapping, write protect it both
-             * in the parent and the child */
-            if (is_cow_mapping(vm_flags) && pte_write(pte)) {
-                ptep_set_wrprotect(src_mm, addr, src_pte);
-                pte = pte_wrprotect(pte) {
-                    if (pte_hw_dirty(pte))
-                        pte = set_pte_bit(pte, __pgprot(PTE_DIRTY));
-
-                    pte = clear_pte_bit(pte, __pgprot(PTE_WRITE));
-                    pte = set_pte_bit(pte, __pgprot(PTE_RDONLY));
-                    return pte;
-                }
-            }
-            VM_BUG_ON(page && folio_test_anon(folio) && PageAnonExclusive(page));
-
-            /* If it's a shared mapping, mark it clean in the child */
-            if (vm_flags & VM_SHARED)
-                pte = pte_mkclean(pte);
-            pte = pte_mkold(pte);
-
-            if (!userfaultfd_wp(dst_vma))
-                pte = pte_clear_uffd_wp(pte);
-
-            set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
-            return 0;
-        }
-
+        /* copy_present_ptes() will clear `*prealloc' if consumed */
+        max_nr = (end - addr) / PAGE_SIZE;
+        ret = copy_present_ptes(dst_vma, src_vma, dst_pte, src_pte,
+                    ptent, addr, max_nr, rss, &prealloc);
         /* If we need a pre-allocated page for this pte, drop the
-         * locks, allocate, and try again. */
-        if (unlikely(ret == -EAGAIN))
+         * locks, allocate, and try again.
+         * If copy failed due to hwpoison in source page, break out. */
+        if (unlikely(ret == -EAGAIN || ret == -EHWPOISON))
             break;
         if (unlikely(prealloc)) {
+            /* pre-alloc page cannot be reused by next time so as
+             * to strictly follow mempolicy (e.g., alloc_page_vma()
+             * will allocate page according to address).  This
+             * could only happen if one pinned pte changed. */
             folio_put(prealloc);
             prealloc = NULL;
         }
-        progress += 8;
-    } while (dst_pte++, src_pte++, addr += PAGE_SIZE, addr != end);
+        nr = ret;
+        progress += 8 * nr;
+    } while (dst_pte += nr, src_pte += nr, addr += PAGE_SIZE * nr,
+         addr != end);
 
-    arch_leave_lazy_mmu_mode();
+    lazy_mmu_mode_disable();
     pte_unmap_unlock(orig_src_pte, src_ptl);
     add_mm_rss_vec(dst_mm, rss);
     pte_unmap_unlock(orig_dst_pte, dst_ptl);
@@ -25956,18 +26696,18 @@ again:
 
     if (ret == -EIO) {
         VM_WARN_ON_ONCE(!entry.val);
-        if (add_swap_count_continuation(entry, GFP_KERNEL) < 0) {
+        if (swap_retry_table_alloc(entry, GFP_KERNEL) < 0) {
             ret = -ENOMEM;
             goto out;
         }
         entry.val = 0;
-    } else if (ret == -EBUSY) {
+    } else if (ret == -EBUSY || unlikely(ret == -EHWPOISON)) {
         goto out;
     } else if (ret ==  -EAGAIN) {
         prealloc = folio_prealloc(src_mm, src_vma, addr, false);
         if (!prealloc)
             return -ENOMEM;
-    } else if (ret) {
+    } else if (ret < 0) {
         VM_WARN_ON_ONCE(1);
     }
 
@@ -25981,6 +26721,427 @@ out:
         folio_put(prealloc);
     return ret;
 }
+```
+
+### pte_alloc_map_lock
+
+```c
+#define pte_alloc(mm, pmd) (unlikely(pmd_none(*(pmd))) && __pte_alloc(mm, pmd))
+
+#define pte_alloc_map(mm, pmd, address)            \
+    (pte_alloc(mm, pmd) ? NULL : pte_offset_map(pmd, address))
+
+#define pte_alloc_map_lock(mm, pmd, address, ptlp)    \
+    (pte_alloc(mm, pmd) ?            \
+         NULL : pte_offset_map_lock(mm, pmd, address, ptlp))
+
+int __pte_alloc(struct mm_struct *mm, pmd_t *pmd)
+{
+    pgtable_t new = pte_alloc_one(mm);
+    if (!new)
+        return -ENOMEM;
+
+    pmd_install(mm, pmd, &new) {
+        spinlock_t *ptl = pmd_lock(mm, pmd);
+
+        if (likely(pmd_none(*pmd))) {    /* Has another populated it ? */
+            mm_inc_nr_ptes(mm) {
+                atomic_long_add(PTRS_PER_PTE * sizeof(pte_t), &mm->pgtables_bytes);
+            }
+            smp_wmb(); /* Could be smp_wmb__xxx(before|after)_spin_lock */
+            pmd_populate(mm, pmd, *pte);
+            *pte = NULL;
+        }
+        spin_unlock(ptl);
+    }
+    if (new)
+        pte_free(mm, new);
+    return 0;
+}
+
+#define pte_alloc_one(...)    alloc_hooks(pte_alloc_one_noprof(__VA_ARGS__))
+
+static inline pgtable_t pte_alloc_one_noprof(struct mm_struct *mm)
+{
+    return __pte_alloc_one_noprof(mm, GFP_PGTABLE_USER) {
+        struct ptdesc *ptdesc;
+
+        ptdesc = pagetable_alloc_noprof(gfp, 0) {
+            struct page *page = alloc_pages_noprof(gfp | __GFP_COMP, order);
+
+            return page_ptdesc(page);
+        }
+        if (!ptdesc)
+            return NULL;
+        if (!pagetable_pte_ctor(mm, ptdesc)) {
+            pagetable_free(ptdesc);
+            return NULL;
+        }
+
+        return ptdesc_page(ptdesc);
+    }
+}
+```
+
+### copy_present_ptes
+
+```c
+static inline int
+copy_present_ptes(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+         pte_t *dst_pte, pte_t *src_pte, pte_t pte, unsigned long addr,
+         int max_nr, int *rss, struct folio **prealloc)
+{
+    fpb_t flags = FPB_MERGE_WRITE;
+    struct page *page;
+    struct folio *folio;
+    int err, nr;
+
+    page = vm_normal_page(src_vma, addr, pte);
+    if (unlikely(!page))
+        goto copy_pte;
+
+    folio = page_folio(page);
+
+    /* If we likely have to copy, just don't bother with batching. Make
+     * sure that the common "small folio" case is as fast as possible
+     * by keeping the batching logic separate. */
+    if (unlikely(!*prealloc && folio_test_large(folio) && max_nr != 1)) {
+        if (!(src_vma->vm_flags & VM_SHARED))
+            flags |= FPB_RESPECT_DIRTY;
+        if (vma_soft_dirty_enabled(src_vma))
+            flags |= FPB_RESPECT_SOFT_DIRTY;
+
+        nr = folio_pte_batch_flags(folio, src_vma, src_pte, &pte, max_nr, flags);
+        folio_ref_add(folio, nr);
+        if (folio_test_anon(folio)) {
+            if (unlikely(folio_try_dup_anon_rmap_ptes(folio, page, nr, dst_vma, src_vma))) {
+                folio_ref_sub(folio, nr);
+                return -EAGAIN;
+            }
+            rss[MM_ANONPAGES] += nr;
+            VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
+        } else {
+            folio_dup_file_rmap_ptes(folio, page, nr, dst_vma);
+            rss[mm_counter_file(folio)] += nr;
+        }
+        __copy_present_ptes(dst_vma, src_vma, dst_pte, src_pte, pte, addr, nr);
+        return nr;
+    }
+
+    folio_get(folio);
+    if (folio_test_anon(folio)) {
+        /* If this page may have been pinned by the parent process,
+         * copy the page immediately for the child so that we'll always
+         * guarantee the pinned page won't be randomly replaced in the
+         * future. */
+        if (unlikely(folio_try_dup_anon_rmap_pte(folio, page, dst_vma, src_vma))) {
+            /* Page may be pinned, we have to copy. */
+            folio_put(folio);
+            err = copy_present_page(dst_vma, src_vma, dst_pte, src_pte, addr, rss, prealloc, page);
+            return err ? err : 1;
+        }
+        rss[MM_ANONPAGES]++;
+        VM_WARN_ON_FOLIO(PageAnonExclusive(page), folio);
+    } else {
+        folio_dup_file_rmap_pte(folio, page, dst_vma);
+        rss[mm_counter_file(folio)]++;
+    }
+
+copy_pte:
+    __copy_present_ptes(dst_vma, src_vma, dst_pte, src_pte, pte, addr, 1);
+    return 1;
+}
+
+static __always_inline void __copy_present_ptes(struct vm_area_struct *dst_vma,
+        struct vm_area_struct *src_vma, pte_t *dst_pte, pte_t *src_pte,
+        pte_t pte, unsigned long addr, int nr)
+{
+    struct mm_struct *src_mm = src_vma->vm_mm;
+
+    /* If it's a COW mapping, write protect it both processes. */
+    if (is_cow_mapping(src_vma->vm_flags) && pte_write(pte)) {
+        wrprotect_ptes(src_mm, addr, src_pte, nr);
+        pte = pte_wrprotect(pte);
+    }
+
+    /* If it's a shared mapping, mark it clean in the child. */
+    if (src_vma->vm_flags & VM_SHARED)
+        pte = pte_mkclean(pte);
+    pte = pte_mkold(pte);
+
+    if (!userfaultfd_wp(dst_vma))
+        pte = pte_clear_uffd_wp(pte);
+
+    set_ptes(dst_vma->vm_mm, addr, dst_pte, pte, nr);
+}
+```
+
+### copy_present_page
+
+```c
+static inline int
+copy_present_page(struct vm_area_struct *dst_vma, struct vm_area_struct *src_vma,
+          pte_t *dst_pte, pte_t *src_pte, unsigned long addr, int *rss,
+          struct folio **prealloc, struct page *page)
+{
+    page = vm_normal_page(src_vma, addr, pte);
+    if (page)
+        folio = page_folio(page);
+    if (page && folio_test_anon(folio)) {
+        folio_get(folio);
+        if (unlikely(folio_try_dup_anon_rmap_pte(folio, page, src_vma))) {
+            /* Page may be pinned, we have to copy. */
+            folio_put(folio);
+            return copy_present_page(dst_vma, src_vma, dst_pte, src_pte,
+                addr, rss, prealloc, page) {
+
+                copy_user_highpage(&new_folio->page, page, addr, src_vma);
+                __folio_mark_uptodate(new_folio);
+                folio_add_new_anon_rmap(new_folio, dst_vma, addr);
+                folio_add_lru_vma(new_folio, dst_vma);
+                rss[MM_ANONPAGES]++;
+
+                /* All done, just insert the new page copy in the child */
+                pte = mk_pte(&new_folio->page, dst_vma->vm_page_prot);
+                pte = maybe_mkwrite(pte_mkdirty(pte), dst_vma);
+                if (userfaultfd_pte_wp(dst_vma, ptep_get(src_pte)))
+                    pte = pte_mkuffd_wp(pte);
+                set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+                return 0;
+            }
+        }
+        rss[MM_ANONPAGES]++;
+    } else if (page) {
+        folio_get(folio);
+        folio_dup_file_rmap_pte(folio, page);
+        rss[mm_counter_file(page)]++;
+    }
+
+    /* If it's a COW mapping, write protect it both
+        * in the parent and the child */
+    if (is_cow_mapping(vm_flags) && pte_write(pte)) {
+        ptep_set_wrprotect(src_mm, addr, src_pte);
+        pte = pte_wrprotect(pte) {
+            if (pte_hw_dirty(pte))
+                pte = set_pte_bit(pte, __pgprot(PTE_DIRTY));
+
+            pte = clear_pte_bit(pte, __pgprot(PTE_WRITE));
+            pte = set_pte_bit(pte, __pgprot(PTE_RDONLY));
+            return pte;
+        }
+    }
+    VM_BUG_ON(page && folio_test_anon(folio) && PageAnonExclusive(page));
+
+    /* If it's a shared mapping, mark it clean in the child */
+    if (vm_flags & VM_SHARED)
+        pte = pte_mkclean(pte);
+    pte = pte_mkold(pte);
+
+    if (!userfaultfd_wp(dst_vma))
+        pte = pte_clear_uffd_wp(pte);
+
+    set_pte_at(dst_vma->vm_mm, addr, dst_pte, pte);
+    return 0;
+}
+```
+
+### copy_nonpresent_pte
+
+```c
+
+static unsigned long
+copy_nonpresent_pte(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+        pte_t *dst_pte, pte_t *src_pte, struct vm_area_struct *dst_vma,
+        struct vm_area_struct *src_vma, unsigned long addr, int *rss)
+{
+    vm_flags_t vm_flags = dst_vma->vm_flags;
+    pte_t orig_pte = ptep_get(src_pte);
+    softleaf_t entry = softleaf_from_pte(orig_pte);
+    pte_t pte = orig_pte;
+    struct folio *folio;
+    struct page *page;
+
+    if (likely(softleaf_is_swap(entry))) {
+        if (swap_dup_entry_direct(entry) < 0)
+            return -EIO;
+
+        /* make sure dst_mm is on swapoff's mmlist. */
+        if (unlikely(list_empty(&dst_mm->mmlist))) {
+            spin_lock(&mmlist_lock);
+            if (list_empty(&dst_mm->mmlist))
+                list_add(&dst_mm->mmlist, &src_mm->mmlist);
+            spin_unlock(&mmlist_lock);
+        }
+        /* Mark the swap entry as shared. */
+        if (pte_swp_exclusive(orig_pte)) {
+            pte = pte_swp_clear_exclusive(orig_pte);
+            set_pte_at(src_mm, addr, src_pte, pte);
+        }
+        rss[MM_SWAPENTS]++;
+    } else if (softleaf_is_migration(entry)) {
+        folio = softleaf_to_folio(entry);
+
+        rss[mm_counter(folio)]++;
+
+        if (!softleaf_is_migration_read(entry) && is_cow_mapping(vm_flags)) {
+            /* COW mappings require pages in both parent and child
+             * to be set to read. A previously exclusive entry is
+             * now shared. */
+            entry = make_readable_migration_entry(swp_offset(entry));
+            pte = softleaf_to_pte(entry);
+            if (pte_swp_soft_dirty(orig_pte))
+                pte = pte_swp_mksoft_dirty(pte);
+            if (pte_swp_uffd_wp(orig_pte))
+                pte = pte_swp_mkuffd_wp(pte);
+            set_pte_at(src_mm, addr, src_pte, pte);
+        }
+    } else if (softleaf_is_device_private(entry)) {
+        page = softleaf_to_page(entry);
+        folio = page_folio(page);
+
+        /* Update rss count even for unaddressable pages, as
+         * they should treated just like normal pages in this
+         * respect.
+         *
+         * We will likely want to have some new rss counters
+         * for unaddressable pages, at some point. But for now
+         * keep things as they are. */
+        folio_get(folio);
+        rss[mm_counter(folio)]++;
+        /* Cannot fail as these pages cannot get pinned. */
+        folio_try_dup_anon_rmap_pte(folio, page, dst_vma, src_vma);
+
+        /* We do not preserve soft-dirty information, because so
+         * far, checkpoint/restore is the only feature that
+         * requires that. And checkpoint/restore does not work
+         * when a device driver is involved (you cannot easily
+         * save and restore device driver state). */
+        if (softleaf_is_device_private_write(entry) &&
+            is_cow_mapping(vm_flags)) {
+            entry = make_readable_device_private_entry(swp_offset(entry));
+            pte = swp_entry_to_pte(entry);
+            if (pte_swp_uffd_wp(orig_pte))
+                pte = pte_swp_mkuffd_wp(pte);
+            set_pte_at(src_mm, addr, src_pte, pte);
+        }
+    } else if (softleaf_is_device_exclusive(entry)) {
+        /* Make device exclusive entries present by restoring the
+         * original entry then copying as for a present pte. Device
+         * exclusive entries currently only support private writable
+         * (ie. COW) mappings. */
+        VM_BUG_ON(!is_cow_mapping(src_vma->vm_flags));
+        if (try_restore_exclusive_pte(src_vma, addr, src_pte, orig_pte))
+            return -EBUSY;
+        return -ENOENT;
+    } else if (softleaf_is_marker(entry)) {
+        pte_marker marker = copy_pte_marker(entry, dst_vma);
+
+        if (marker)
+            set_pte_at(dst_mm, addr, dst_pte, make_pte_marker(marker));
+        return 0;
+    }
+    if (!userfaultfd_wp(dst_vma))
+        pte = pte_swp_clear_uffd_wp(pte);
+    set_pte_at(dst_mm, addr, dst_pte, pte);
+    return 0;
+}
+```
+
+### copy_hugetlb_page_range
+
+```c
+```
+
+## folio_try_dup_anon_rmap_ptes
+
+```c
+static inline int folio_try_dup_anon_rmap_ptes(struct folio *folio,
+        struct page *page, int nr_pages, struct vm_area_struct *dst_vma,
+        struct vm_area_struct *src_vma)
+{
+    return __folio_try_dup_anon_rmap(folio, page, nr_pages, dst_vma,
+                     src_vma, PGTABLE_LEVEL_PTE);
+}
+
+static __always_inline int __folio_try_dup_anon_rmap(struct folio *folio,
+        struct page *page, int nr_pages, struct vm_area_struct *dst_vma,
+        struct vm_area_struct *src_vma, enum pgtable_level level)
+{
+    const int orig_nr_pages = nr_pages;
+    bool maybe_pinned;
+    int i;
+
+    VM_WARN_ON_FOLIO(!folio_test_anon(folio), folio);
+    __folio_rmap_sanity_checks(folio, page, nr_pages, level);
+
+    /* If this folio may have been pinned by the parent process,
+     * don't allow to duplicate the mappings but instead require to e.g.,
+     * copy the subpage immediately for the child so that we'll always
+     * guarantee the pinned folio won't be randomly replaced in the
+     * future on write faults. */
+    need_cow = folio_maybe_dma_pinned(folio) {
+        VM_BUG_ON(!(raw_read_seqcount(&vma->vm_mm->write_protect_seq) & 1));
+
+        if (!mm_flags_test(MMF_HAS_PINNED, vma->vm_mm))
+            return false;
+
+        return folio_maybe_dma_pinned(folio) {
+            if (folio_has_pincount(folio))
+                return atomic_read(&folio->_pincount) > 0;
+
+            /* folio_ref_count() is signed. If that refcount overflows, then
+            * folio_ref_count() returns a negative value, and callers will avoid
+            * further incrementing the refcount.
+            *
+            * Here, for that overflow case, use the sign bit to count a little
+            * bit higher via unsigned math, and thus still get an accurate result. */
+            return ((unsigned int)folio_ref_count(folio)) >= GUP_PIN_COUNTING_BIAS;
+        }
+    }
+    maybe_pinned = likely(!folio_is_device_private(folio)) && unlikely(need_cow);
+
+    /* No need to check+clear for already shared PTEs/PMDs of the
+     * folio. But if any page is PageAnonExclusive, we must fallback to
+     * copying if the folio maybe pinned. */
+    switch (level) {
+    case PGTABLE_LEVEL_PTE:
+        if (unlikely(maybe_pinned)) {
+            for (i = 0; i < nr_pages; i++)
+                if (PageAnonExclusive(page + i))
+                    return -EBUSY;
+        }
+
+        if (!folio_test_large(folio)) {
+            if (PageAnonExclusive(page))
+                ClearPageAnonExclusive(page);
+            atomic_inc(&folio->_mapcount);
+            break;
+        }
+
+        do {
+            if (PageAnonExclusive(page))
+                ClearPageAnonExclusive(page);
+            if (IS_ENABLED(CONFIG_PAGE_MAPCOUNT))
+                atomic_inc(&page->_mapcount);
+        } while (page++, --nr_pages > 0);
+        folio_add_large_mapcount(folio, orig_nr_pages, dst_vma);
+        break;
+    case PGTABLE_LEVEL_PMD:
+    case PGTABLE_LEVEL_PUD:
+        if (PageAnonExclusive(page)) {
+            if (unlikely(maybe_pinned))
+                return -EBUSY;
+            ClearPageAnonExclusive(page);
+        }
+        atomic_inc(&folio->_entire_mapcount);
+        folio_inc_large_mapcount(folio, dst_vma);
+        break;
+    default:
+        BUILD_BUG();
+    }
+    return 0;
+}
+
 ```
 
 # out_of_memory
