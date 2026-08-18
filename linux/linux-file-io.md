@@ -3819,18 +3819,15 @@ generic_perform_write(struct kiocb *iocb, struct iov_iter *i) {
         struct page *page;
         a_ops->write_begin() {
             ext4_write_begin(struct page **pagep) {
-                page = grab_cache_page_write_begin(mapping, index) {
-                    /* Find and get a reference to a folio from i_pages cache */
-                    pagecache_get_page(mapping, index, fgp_flags, mapping_gfp_mask(mapping)) {
-                        __filemap_get_folio();
-                    }
+                page = write_begin_get_folio(mapping, index) {
+                    return __filemap_get_folio();
                 }
                 ext4_journal_start(inode, EXT4_HT_WRITE_PAGE, needed_blocks);
                 if (ext4_should_dioread_nolock(inode))  {
                     __block_write_begin(page, pos, len, ext4_get_block_unwritten);
                 } else {
                     __block_write_begin(page, pos, len, ext4_get_block) {
-                        head = folio_create_buffers(folio, inode, 0);
+                        head = folio_alloc_buffers(folio, inode, 0);
                         for (bh = head, block_start = 0; bh != head || !block_start; block++, block_start=block_end, bh = bh->b_this_page) {
                             ext4_get_block() {
                                 ret = ext4_map_blocks() {
@@ -5341,505 +5338,6 @@ ssize_t generic_file_read_iter(struct kiocb *iocb, struct iov_iter *iter)
 
     return filemap_read(iocb, iter, retval);
 }
-
-ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
-        ssize_t already_read)
-{
-    struct file *filp = iocb->ki_filp;
-    struct file_ra_state *ra = &filp->f_ra;
-    struct address_space *mapping = filp->f_mapping;
-    struct inode *inode = mapping->host;
-    struct folio_batch fbatch;
-    int i, error = 0;
-    bool writably_mapped;
-    loff_t isize, end_offset;
-    loff_t last_pos = ra->prev_pos;
-
-    if (unlikely(iocb->ki_pos < 0))
-        return -EINVAL;
-    if (unlikely(iocb->ki_pos >= inode->i_sb->s_maxbytes))
-        return 0;
-    if (unlikely(!iov_iter_count(iter)))
-        return 0;
-
-    iov_iter_truncate(iter, inode->i_sb->s_maxbytes - iocb->ki_pos) {
-        if (i->count > count)
-            i->count = count;
-    }
-    folio_batch_init(&fbatch);
-
-    do {
-        cond_resched();
-
-        /* If we've already successfully copied some data, then we
-         * can no longer safely return -EIOCBQUEUED. Hence mark
-         * an async read NOWAIT at that point. */
-        if ((iocb->ki_flags & IOCB_WAITQ) && already_read)
-            iocb->ki_flags |= IOCB_NOWAIT;
-
-        if (unlikely(iocb->ki_pos >= i_size_read(inode)))
-            break;
-
-        error = filemap_get_pages(iocb, iter->count, &fbatch, false);
-        if (error < 0)
-            break;
-
-        /* i_size must be checked after we know the pages are Uptodate.
-         *
-         * Checking i_size after the check allows us to calculate
-         * the correct value for "nr", which means the zero-filled
-         * part of the page is not copied back to userspace (unless
-         * another truncate extends the file - this is desired though). */
-        isize = i_size_read(inode);
-        if (unlikely(iocb->ki_pos >= isize))
-            goto put_folios;
-        end_offset = min_t(loff_t, isize, iocb->ki_pos + iter->count);
-
-        /* Once we start copying data, we don't want to be touching any
-         * cachelines that might be contended: */
-        writably_mapped = mapping_writably_mapped(mapping);
-
-        /* When a read accesses the same folio several times, only
-         * mark it as accessed the first time. */
-        if (!pos_same_folio(iocb->ki_pos, last_pos - 1, fbatch.folios[0]))
-            folio_mark_accessed(fbatch.folios[0]);
-
-        for (i = 0; i < folio_batch_count(&fbatch); i++) {
-            struct folio *folio = fbatch.folios[i];
-            size_t fsize = folio_size(folio);
-            size_t offset = iocb->ki_pos & (fsize - 1);
-            size_t bytes = min_t(loff_t, end_offset - iocb->ki_pos, fsize - offset);
-            size_t copied;
-
-            if (end_offset < folio_pos(folio))
-                break;
-            if (i > 0)
-                folio_mark_accessed(folio);
-            /* If users can be writing to this folio using arbitrary
-             * virtual addresses, take care of potential aliasing
-             * before reading the folio on the kernel side. */
-            if (writably_mapped)
-                flush_dcache_folio(folio);
-
-            copied = copy_folio_to_iter(folio, offset, bytes, iter);
-
-            already_read += copied;
-            iocb->ki_pos += copied;
-            last_pos = iocb->ki_pos;
-
-            if (copied < bytes) {
-                error = -EFAULT;
-                break;
-            }
-        }
-put_folios:
-        for (i = 0; i < folio_batch_count(&fbatch); i++) {
-            struct folio *folio = fbatch.folios[i];
-
-            filemap_end_dropbehind_read(folio);
-            folio_put(folio);
-        }
-        folio_batch_init(&fbatch);
-    } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
-
-    file_accessed(filp);
-    ra->prev_pos = last_pos;
-    return already_read ? already_read : error;
-}
-```
-
-#### filemap_get_pages
-
-```c
-int filemap_get_pages(struct kiocb *iocb, struct iov_iter *iter,
-    struct folio_batch *fbatch)
-{
-    struct file *filp = iocb->ki_filp;
-    struct address_space *mapping = filp->f_mapping;
-    struct file_ra_state *ra = &filp->f_ra;
-    pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
-    pgoff_t last_index;
-    struct folio *folio;
-    int err = 0;
-
-    last_index = DIV_ROUND_UP(iocb->ki_pos + iter->count, PAGE_SIZE);
-retry:
-    if (fatal_signal_pending(current))
-        return -EINTR;
-
-    filemap_get_read_batch(mapping, index, last_index, fbatch);
-    if (!folio_batch_count(fbatch)) {
-        if (iocb->ki_flags & IOCB_NOIO)
-            return -EAGAIN;
-        page_cache_sync_readahead(mapping, ra, filp, index, last_index - index);
-        filemap_get_read_batch(mapping, index, last_index, fbatch);
-    }
-    if (!folio_batch_count(fbatch)) {
-        if (iocb->ki_flags & (IOCB_NOWAIT | IOCB_WAITQ))
-            return -EAGAIN;
-        err = filemap_create_folio(filp, mapping, iocb->ki_pos >> PAGE_SHIFT, fbatch);
-        if (err == AOP_TRUNCATED_PAGE)
-            goto retry;
-        return err;
-    }
-
-    folio = fbatch->folios[folio_batch_count(fbatch) - 1];
-    if (folio_test_readahead(folio)) {
-        err = filemap_readahead(iocb, filp, mapping, folio, last_index);
-        if (err)
-        goto err;
-    }
-    if (!folio_test_uptodate(folio)) {
-        if ((iocb->ki_flags & IOCB_WAITQ) && folio_batch_count(fbatch) > 1)
-            iocb->ki_flags |= IOCB_NOWAIT;
-        err = filemap_update_page(iocb, mapping, iter, folio);
-        if (err)
-            goto err;
-    }
-
-    return 0;
-
-err:
-    if (err < 0)
-        folio_put(folio);
-    if (likely(--fbatch->nr))
-        return 0;
-    if (err == AOP_TRUNCATED_PAGE)
-        goto retry;
-    return err;
-}
-
-void filemap_get_read_batch(
-    struct address_space *mapping,
-    pgoff_t index, pgoff_t max,
-    struct folio_batch *fbatch)
-{
-    XA_STATE(xas, &mapping->i_pages, index);
-    struct folio *folio;
-
-    rcu_read_lock();
-    for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
-        if (xas_retry(&xas, folio))
-            continue;
-        if (xas.xa_index > max || xa_is_value(folio))
-            break;
-        if (xa_is_sibling(folio))
-            break;
-        if (!folio_try_get_rcu(folio))
-            goto retry;
-
-        if (unlikely(folio != xas_reload(&xas)))
-            goto put_folio;
-
-        if (!folio_batch_add(fbatch, folio))
-            break;
-        if (!folio_test_uptodate(folio))
-            break;
-        if (folio_test_readahead(folio))
-            break;
-        xas_advance(&xas, folio->index + folio_nr_pages(folio) - 1);
-        continue;
-
-put_folio:
-        folio_put(folio);
-reßtry:
-        xas_reset(&xas);
-    }
-    rcu_read_unlock();
-}
-
-int filemap_readahead(struct kiocb *iocb, struct file *file,
-    struct address_space *mapping, struct folio *folio,
-    pgoff_t last_index)
-{
-    DEFINE_READAHEAD(ractl, file, &file->f_ra, mapping, folio->index);
-
-    if (iocb->ki_flags & IOCB_NOIO)
-        return -EAGAIN;
-    page_cache_async_ra(&ractl, folio, last_index - folio->index);
-    return 0;
-}
-
-void page_cache_async_ra(struct readahead_control *ractl,
-    struct folio *folio, unsigned long req_count)
-{
-    /* no readahead */
-    if (!ractl->ra->ra_pages)
-        return;
-
-    if (folio_test_writeback(folio))
-        return;
-
-    folio_clear_readahead(folio);
-
-    if (blk_cgroup_congested())
-        return;
-
-    ondemand_readahead(ractl, folio, req_count);
-}
-
-void ondemand_readahead(struct readahead_control *ractl,
-    struct folio *folio, unsigned long req_size)
-{
-    struct backing_dev_info *bdi = inode_to_bdi(ractl->mapping->host);
-    struct file_ra_state *ra = ractl->ra;
-    unsigned long max_pages = ra->ra_pages;
-    unsigned long add_pages;
-    pgoff_t index = readahead_index(ractl);
-    pgoff_t expected, prev_index;
-    unsigned int order = folio ? folio_order(folio) : 0;
-
-    if (req_size > max_pages && bdi->io_pages > max_pages)
-        max_pages = min(req_size, bdi->io_pages);
-
-    if (!index)
-        goto initial_readahead;
-
-    expected = round_up(ra->start + ra->size - ra->async_size, 1UL << order);
-    if (index == expected || index == (ra->start + ra->size)) {
-        ra->start += ra->size;
-        ra->size = get_next_ra_size(ra, max_pages);
-        ra->async_size = ra->size;
-        goto readit;
-    }
-
-    if (folio) {
-        pgoff_t start;
-
-        rcu_read_lock();
-            /* Find the next gap in the page cache */
-        start = page_cache_next_miss(ractl->mapping, index + 1, max_pages);
-        rcu_read_unlock();
-
-        if (!start || start - index > max_pages)
-            return;
-
-        ra->start = start;
-        ra->size = start - index;  /* old async_size */
-        ra->size += req_size;
-        ra->size = get_next_ra_size(ra, max_pages);
-        ra->async_size = ra->size;
-        goto readit;
-    }
-
-    if (req_size > max_pages)
-        goto initial_readahead;
-
-    prev_index = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
-    if (index - prev_index <= 1UL)
-        goto initial_readahead;
-
-    /* Query the page cache and look for the traces(cached history pages)
-    * that a sequential stream would leave behind. */
-    if (try_context_readahead(ractl->mapping, ra, index, req_size, max_pages))
-        goto readit;
-
-  /* actually reads a chunk of disk */
-    do_page_cache_ra(ractl, req_size, 0);
-    return;
-
-initial_readahead:
-    ra->start = index;
-    ra->size = get_init_ra_size(req_size, max_pages);
-    ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
-
-readit:
-    /* Will this read hit the readahead marker made by itself?
-    * If so, trigger the readahead marker hit now, and merge
-    * the resulted next readahead window into the current one.
-    * Take care of maximum IO pages as above. */
-    if (index == ra->start && ra->size == ra->async_size) {
-        add_pages = get_next_ra_size(ra, max_pages);
-        if (ra->size + add_pages <= max_pages) {
-            ra->async_size = add_pages;
-            ra->size += add_pages;
-        } else {
-            ra->size = max_pages;
-            ra->async_size = max_pages >> 1;
-        }
-    }
-
-    ractl->_index = ra->start;
-    page_cache_ra_order(ractl, ra, order);
-}
-
-void page_cache_ra_order(struct readahead_control *ractl,
-    struct file_ra_state *ra, unsigned int new_order)
-{
-    struct address_space *mapping = ractl->mapping;
-    pgoff_t index = readahead_index(ractl);
-    pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
-    pgoff_t mark = index + ra->size - ra->async_size;
-    int err = 0;
-    gfp_t gfp = readahead_gfp_mask(mapping);
-
-    if (!mapping_large_folio_support(mapping) || ra->size < 4)
-        goto fallback;
-
-    limit = min(limit, index + ra->size - 1);
-
-    if (new_order < MAX_PAGECACHE_ORDER) {
-        new_order += 2;
-        if (new_order > MAX_PAGECACHE_ORDER)
-            new_order = MAX_PAGECACHE_ORDER;
-        while ((1 << new_order) > ra->size)
-            new_order--;
-    }
-
-    filemap_invalidate_lock_shared(mapping);
-    while (index <= limit) {
-        unsigned int order = new_order;
-
-        /* Align with smaller pages if needed */
-        if (index & ((1UL << order) - 1)) {
-            order = __ffs(index);
-        if (order == 1)
-            order = 0;
-        }
-        /* Don't allocate pages past EOF */
-        while (index + (1UL << order) - 1 > limit) {
-            if (--order == 1)
-                order = 0;
-        }
-        err = ra_alloc_folio(ractl, index, mark, order, gfp);
-        if (err)
-            break;
-        index += 1UL << order;
-    }
-
-    if (index > limit) {
-        ra->size += index - limit - 1;
-        ra->async_size += index - limit - 1;
-    }
-
-    read_pages(ractl);
-    filemap_invalidate_unlock_shared(mapping);
-
-    /* If there were already pages in the page cache, then we may have
-    * left some gaps.  Let the regular readahead code take care of this
-    * situation. */
-    if (!err)
-        return;
-fallback:
-    /* actually reads a chunk of disk */
-    do_page_cache_ra(ractl, ra->size, ra->async_size);
-}
-
-void read_pages(struct readahead_control *rac)
-{
-    const struct address_space_operations *aops = rac->mapping->a_ops;
-    struct folio *folio;
-    struct blk_plug plug;
-
-    if (!readahead_count(rac))
-        return;
-
-    blk_start_plug(&plug);
-
-    if (aops->readahead) {
-        aops->readahead(rac);
-
-        while ((folio = readahead_folio(rac)) != NULL) {
-            unsigned long nr = folio_nr_pages(folio);
-
-            folio_get(folio);
-            rac->ra->size -= nr;
-            if (rac->ra->async_size >= nr) {
-                rac->ra->async_size -= nr;
-                filemap_remove_folio(folio);
-            }
-            folio_unlock(folio);
-            folio_put(folio);
-        }
-    } else {
-        while ((folio = readahead_folio(rac)) != NULL) {
-            aops->read_folio(rac->file, folio);
-        }
-    }
-
-    blk_finish_plug(&plug);
-}
-
-/* do_page_cache_ra() actually reads a chunk of disk.  It allocates
- * the pages first, then submits them for I/O. */
-static void do_page_cache_ra(struct readahead_control *ractl,
-    unsigned long nr_to_read, unsigned long lookahead_size)
-{
-    struct inode *inode = ractl->mapping->host;
-    unsigned long index = readahead_index(ractl);
-    loff_t isize = i_size_read(inode);
-    pgoff_t end_index;  /* The last page we want to read */
-
-    if (isize == 0)
-        return;
-
-    end_index = (isize - 1) >> PAGE_SHIFT;
-    if (index > end_index)
-        return;
-    /* Don't read past the page containing the last byte of the file */
-    if (nr_to_read > end_index - index)
-        nr_to_read = end_index - index + 1;
-
-    page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
-}
-
-/* page_cache_ra_unbounded - Start unchecked readahead. */
-void page_cache_ra_unbounded(struct readahead_control *ractl,
-    unsigned long nr_to_read, unsigned long lookahead_size)
-{
-    struct address_space *mapping = ractl->mapping;
-    unsigned long index = readahead_index(ractl);
-    gfp_t gfp_mask = readahead_gfp_mask(mapping);
-    unsigned long i;
-
-    /* Partway through the readahead operation, we will have added
-    * locked pages to the page cache, but will not yet have submitted
-    * them for I/O.  Adding another page may need to allocate memory,
-    * which can trigger memory reclaim.  Telling the VM we're in
-    * the middle of a filesystem operation will cause it to not
-    * touch file-backed pages, preventing a deadlock.  Most (all?)
-    * filesystems already specify __GFP_NOFS in their mapping's
-    * gfp_mask, but let's be explicit here. */
-    unsigned int nofs = memalloc_nofs_save();
-
-    filemap_invalidate_lock_shared(mapping);
-    /* Preallocate as many pages as we will need. */
-    for (i = 0; i < nr_to_read; i++) {
-        struct folio *folio = xa_load(&mapping->i_pages, index + i);
-
-        if (folio && !xa_is_value(folio)) {
-            /* Page already present?  Kick off the current batch
-            * of contiguous pages before continuing with the
-            * next batch.  This page may be the one we would
-            * have intended to mark as Readahead, but we don't
-            * have a stable reference to this page, and it's
-            * not worth getting one just for that. */
-            read_pages(ractl);
-            ractl->_index++;
-            i = ractl->_index + ractl->_nr_pages - index - 1;
-            continue;
-        }
-
-        folio = filemap_alloc_folio(gfp_mask, 0);
-        if (!folio)
-            break;
-
-        if (filemap_add_folio(mapping, folio, index + i, gfp_mask) < 0) {
-            folio_put(folio);
-            read_pages(ractl);
-            ractl->_index++;
-            i = ractl->_index + ractl->_nr_pages - index - 1;
-            continue;
-        }
-        if (i == nr_to_read - lookahead_size)
-            folio_set_readahead(folio);
-        ractl->_nr_pages++;
-    }
-
-    read_pages(ractl);
-    filemap_invalidate_unlock_shared(mapping);
-    memalloc_nofs_restore(nofs);
-}
 ```
 
 ### buffered write
@@ -5899,32 +5397,27 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 ```
 
 ```c
-ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
-          struct iov_iter *from)
+static ssize_t ext4_buffered_write_iter(struct kiocb *iocb,
+                    struct iov_iter *from)
 {
-  ssize_t ret;
-  struct inode *inode = file_inode(iocb->ki_filp);
+    ssize_t ret;
+    struct inode *inode = file_inode(iocb->ki_filp);
 
-  if (iocb->ki_flags & IOCB_NOWAIT)
-    return -EOPNOTSUPP;
+    if (iocb->ki_flags & IOCB_NOWAIT)
+        return -EOPNOTSUPP;
 
-  inode_lock(inode);
-  ret = ext4_write_checks(iocb, from);
-  if (ret <= 0)
-    goto out;
+    inode_lock(inode);
+    ret = ext4_write_checks(iocb, from);
+    if (ret <= 0)
+        goto out;
 
-  current->backing_dev_info = inode_to_bdi(inode);
-  ret = generic_perform_write(iocb, from);
-  current->backing_dev_info = NULL;
+    ret = generic_perform_write(iocb, from);
 
 out:
-  inode_unlock(inode);
-  if (likely(ret > 0)) {
-    iocb->ki_pos += ret;
-    ret = generic_write_sync(iocb, ret);
-  }
-
-  return ret;
+    inode_unlock(inode);
+    if (unlikely(ret <= 0))
+        return ret;
+    return generic_write_sync(iocb, ret);
 }
 
 ssize_t generic_perform_write(struct kiocb *iocb, struct iov_iter *i)
@@ -6039,7 +5532,11 @@ size_t copy_folio_from_iter_atomic(struct folio *folio, size_t offset,
 
     return copied;
 }
+```
 
+#### ext4_write_begin
+
+```c
 static int ext4_write_begin(const struct kiocb *iocb,
                 struct address_space *mapping,
                 loff_t pos, unsigned len,
@@ -6060,8 +5557,7 @@ static int ext4_write_begin(const struct kiocb *iocb,
     trace_ext4_write_begin(inode, pos, len);
     /* Reserve one block more for addition to orphan list in case
      * we allocate blocks but write fails for some reason */
-    needed_blocks = ext4_chunk_trans_extent(inode,
-            ext4_journal_blocks_per_folio(inode)) + 1;
+    needed_blocks = ext4_chunk_trans_extent(inode, ext4_journal_blocks_per_folio(inode)) + 1;
     index = pos >> PAGE_SHIFT;
 
     if (ext4_test_inode_state(inode, EXT4_STATE_MAY_INLINE_DATA)) {
@@ -6078,14 +5574,25 @@ static int ext4_write_begin(const struct kiocb *iocb,
      * the transaction handle.  This also allows us to allocate
      * the folio (if needed) without using GFP_NOFS. */
 retry_grab:
-    folio = write_begin_get_folio(iocb, mapping, index, len);
+    folio = write_begin_get_folio(iocb, mapping, index, len) {
+        fgf_t fgp_flags = FGP_WRITEBEGIN;
+
+        fgp_flags |= fgf_set_order(len);
+
+        if (iocb && iocb->ki_flags & IOCB_DONTCACHE)
+                fgp_flags |= FGP_DONTCACHE;
+
+        return __filemap_get_folio(mapping, index, fgp_flags, mapping_gfp_mask(mapping));
+    }
     if (IS_ERR(folio))
         return PTR_ERR(folio);
 
     if (len > folio_next_pos(folio) - pos)
         len = folio_next_pos(folio) - pos;
 
-    from = offset_in_folio(folio, pos);
+    from = offset_in_folio(folio, pos) {
+        return ((unsigned long)(p) & (folio_size(folio) - 1));
+    }
     to = from + len;
 
     /* The same as page allocation, we prealloc buffer heads before
@@ -6110,24 +5617,24 @@ retry_journal:
         ext4_journal_stop(handle);
         goto retry_grab;
     }
+
     /* In case writeback began while the folio was unlocked */
-    folio_wait_stable(folio);
+    folio_wait_stable(folio) {
+        if (mapping_stable_writes(folio_mapping(folio)))
+            folio_wait_writeback(folio);
+    }
 
     if (ext4_should_dioread_nolock(inode))
-        ret = ext4_block_write_begin(handle, folio, pos, len,
-                         ext4_get_block_unwritten);
+        ret = ext4_block_write_begin(handle, folio, pos, len, ext4_get_block_unwritten);
     else
-        ret = ext4_block_write_begin(handle, folio, pos, len,
-                         ext4_get_block);
+        ret = ext4_block_write_begin(handle, folio, pos, len, ext4_get_block);
     if (!ret && ext4_should_journal_data(inode)) {
         ret = ext4_walk_page_buffers(handle, inode,
-                         folio_buffers(folio), from, to,
-                         NULL, do_journal_get_write_access);
+            folio_buffers(folio), from, to, NULL, do_journal_get_write_access);
     }
 
     if (ret) {
-        bool extended = (pos + len > inode->i_size) &&
-                !ext4_verity_in_progress(inode);
+        bool extended = (pos + len > inode->i_size) && !ext4_verity_in_progress(inode);
 
         folio_unlock(folio);
         /* ext4_block_write_begin may have instantiated a few blocks
@@ -6160,7 +5667,198 @@ retry_journal:
     *foliop = folio;
     return ret;
 }
+```
 
+#### ext4_journal_start
+
+```c
+#define ext4_journal_start(inode, type, nblocks)            \
+    __ext4_journal_start((inode), __LINE__, (type), (nblocks), 0,    \
+                 ext4_trans_default_revoke_credits((inode)->i_sb))
+
+static inline handle_t *__ext4_journal_start(struct inode *inode,
+                         unsigned int line, int type,
+                         int blocks, int rsv_blocks,
+                         int revoke_creds)
+{
+    return __ext4_journal_start_sb(inode, inode->i_sb, line, type, blocks,
+                       rsv_blocks, revoke_creds);
+}
+
+handle_t *__ext4_journal_start_sb(struct inode *inode,
+                  struct super_block *sb, unsigned int line,
+                  int type, int blocks, int rsv_blocks,
+                  int revoke_creds)
+{
+    journal_t *journal;
+    int err;
+    if (inode)
+        trace_ext4_journal_start_inode(inode, blocks, rsv_blocks,
+                    revoke_creds, type,
+                    _RET_IP_);
+    else
+        trace_ext4_journal_start_sb(sb, blocks, rsv_blocks,
+                    revoke_creds, type,
+                    _RET_IP_);
+    err = ext4_journal_check_start(sb);
+    if (err < 0)
+        return ERR_PTR(err);
+
+    journal = EXT4_SB(sb)->s_journal;
+    if (!journal || (EXT4_SB(sb)->s_mount_state & EXT4_FC_REPLAY))
+        return ext4_get_nojournal();
+
+    return jbd2__journal_start(journal, blocks, rsv_blocks, revoke_creds,
+                   GFP_NOFS, type, line);
+}
+```
+
+#### ext4_block_write_begin
+
+```c
+int ext4_block_write_begin(handle_t *handle, struct folio *folio,
+               loff_t pos, unsigned len,
+               get_block_t *get_block)
+{
+    unsigned int from = offset_in_folio(folio, pos);
+    unsigned to = from + len;
+    struct inode *inode = folio->mapping->host;
+    unsigned block_start, block_end;
+    sector_t block;
+    int err = 0;
+    unsigned int blocksize = i_blocksize(inode);
+    struct buffer_head *bh, *head, *wait[2];
+    int nr_wait = 0;
+    int i;
+    bool should_journal_data = ext4_should_journal_data(inode);
+
+    BUG_ON(!folio_test_locked(folio));
+    BUG_ON(to > folio_size(folio));
+    BUG_ON(from > to);
+    WARN_ON_ONCE(blocksize > folio_size(folio));
+
+    head = folio_buffers(folio);
+    if (!head)
+        head = create_empty_buffers(folio, blocksize, 0);
+    block = EXT4_PG_TO_LBLK(inode, folio->index);
+
+    for (bh = head, block_start = 0; bh != head || !block_start;
+        block++, block_start = block_end, bh = bh->b_this_page) {
+        block_end = block_start + blocksize;
+        if (block_end <= from || block_start >= to) {
+            if (folio_test_uptodate(folio)) {
+                set_buffer_uptodate(bh);
+            }
+            continue;
+        }
+        if (WARN_ON_ONCE(buffer_new(bh)))
+            clear_buffer_new(bh);
+        if (!buffer_mapped(bh)) {
+            WARN_ON(bh->b_size != blocksize);
+            err = ext4_journal_ensure_extent_credits(handle, inode);
+            if (!err)
+                err = get_block(inode, block, bh, 1);
+            if (err)
+                break;
+            if (buffer_new(bh)) {
+                /* We may be zeroing partial buffers or all new
+                 * buffers in case of failure. Prepare JBD2 for
+                 * that. */
+                if (should_journal_data)
+                    do_journal_get_write_access(handle,
+                                    inode, bh);
+                if (folio_test_uptodate(folio)) {
+                    /* Unlike __block_write_begin() we leave
+                     * dirtying of new uptodate buffers to
+                     * ->write_end() time or
+                     * folio_zero_new_buffers(). */
+                    set_buffer_uptodate(bh);
+                    continue;
+                }
+                if (block_end > to || block_start < from)
+                    folio_zero_segments(folio, to,
+                                block_end,
+                                block_start, from);
+                continue;
+            }
+        }
+        if (folio_test_uptodate(folio)) {
+            set_buffer_uptodate(bh);
+            continue;
+        }
+        if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
+            !buffer_unwritten(bh) &&
+            (block_start < from || block_end > to)) {
+            ext4_read_bh_lock(bh, 0, false);
+            wait[nr_wait++] = bh;
+        }
+    }
+    /* If we issued read requests, let them complete. */
+    for (i = 0; i < nr_wait; i++) {
+        wait_on_buffer(wait[i]);
+        if (!buffer_uptodate(wait[i]))
+            err = -EIO;
+    }
+    if (unlikely(err)) {
+        if (should_journal_data)
+            ext4_journalled_zero_new_buffers(handle, inode, folio,
+                             from, to);
+        else
+            folio_zero_new_buffers(folio, from, to);
+    } else if (fscrypt_inode_uses_fs_layer_crypto(inode)) {
+        for (i = 0; i < nr_wait; i++) {
+            int err2;
+
+            err2 = fscrypt_decrypt_pagecache_blocks(folio,
+                        blocksize, bh_offset(wait[i]));
+            if (err2) {
+                clear_buffer_uptodate(wait[i]);
+                err = err2;
+            }
+        }
+    }
+
+    return err;
+}
+```
+
+#### ext4_journal_stop
+
+```c
+#define ext4_journal_stop(handle) \
+    __ext4_journal_stop(__func__, __LINE__, (handle))
+
+int __ext4_journal_stop(const char *where, unsigned int line, handle_t *handle)
+{
+    struct super_block *sb;
+    int err;
+    int rc;
+
+    if (!ext4_handle_valid(handle)) {
+        ext4_put_nojournal(handle);
+        return 0;
+    }
+
+    err = handle->h_err;
+    if (!handle->h_transaction) {
+        rc = jbd2_journal_stop(handle);
+        return err ? err : rc;
+    }
+
+    sb = handle->h_transaction->t_journal->j_private;
+    rc = jbd2_journal_stop(handle);
+
+    if (!err)
+        err = rc;
+    if (err)
+        __ext4_std_error(sb, where, line, err);
+    return err;
+}
+```
+
+#### ext4_get_block
+
+```c
 int ext4_get_block(struct inode *inode, sector_t iblock,
            struct buffer_head *bh, int create)
 {
@@ -6200,115 +5898,7 @@ static int _ext4_get_block(struct inode *inode, sector_t iblock,
 
     return ret;
 }
-
-struct page *grab_cache_page_write_begin(struct address_space *mapping,
-          pgoff_t index)
-{
-  unsigned fgp_flags = FGP_LOCK | FGP_WRITE | FGP_CREAT | FGP_STABLE;
-
-  return pagecache_get_page(mapping, index, fgp_flags,
-      mapping_gfp_mask(mapping));
-}
-
-struct page *pagecache_get_page(struct address_space *mapping, pgoff_t index,
-    int fgp_flags, gfp_t gfp)
-{
-  struct folio *folio;
-
-  /* Find and get a reference to a folio from i_pages cache */
-  folio = __filemap_get_folio(mapping, index, fgp_flags, gfp);
-  if ((fgp_flags & FGP_HEAD) || !folio || xa_is_value(folio))
-    return &folio->page;
-  return folio_file_page(folio, index);
-}
-
-void balance_dirty_pages_ratelimited(struct address_space *mapping)
-{
-  struct inode *inode = mapping->host;
-  struct backing_dev_info *bdi = inode_to_bdi(inode);
-  struct bdi_writeback *wb = &bdi->wb;
-  int ratelimit;
-
-  if (inode_cgwb_enabled(inode))
-    wb = wb_get_create_current(bdi, GFP_KERNEL);
-  if (!wb)
-    wb = &bdi->wb;
-
-  ratelimit = current->nr_dirtied_pause;
-  if (wb->dirty_exceeded)
-    ratelimit = min(ratelimit, 32 >> (PAGE_SHIFT - 10));
-
-  if (unlikely(current->nr_dirtied >= ratelimit))
-    balance_dirty_pages(mapping, wb, current->nr_dirtied);
-}
-
-/* start background writeback, balance_dirty_pages -> */
-void wb_start_background_writeback(struct bdi_writeback *wb)
-{
-  wb_wakeup(wb);
-}
-
-static void wb_wakeup(struct bdi_writeback *wb)
-{
-  spin_lock_bh(&wb->work_lock);
-  if (test_bit(WB_registered, &wb->state))
-    mod_delayed_work(bdi_wq, &wb->dwork, 0);
-  spin_unlock_bh(&wb->work_lock);
-}
-
-/* bdi_wq serves all asynchronous writeback tasks */
-struct workqueue_struct *bdi_wq;
-
-/* mod_delayed_work - modify delay of or queue a delayed work */
-static inline bool mod_delayed_work(struct workqueue_struct *wq,
-    struct delayed_work *dwork,
-    unsigned long delay)
-{
-  return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
-}
-
-/* insert a delayed work in bdi_wq */
-bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
-       struct delayed_work *dwork, unsigned long delay)
-{
-  unsigned long flags;
-  int ret;
-
-  do {
-    ret = try_to_grab_pending(&dwork->work, true, &flags);
-  } while (unlikely(ret == -EAGAIN));
-
-  if (likely(ret >= 0)) {
-    __queue_delayed_work(cpu, wq, dwork, delay);
-    local_irq_restore(flags);
-  }
-
-  /* -ENOENT from try_to_grab_pending() becomes %true */
-  return ret;
-}
-
-static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
-  struct delayed_work *dwork, unsigned long delay)
-{
-  struct timer_list *timer = &dwork->timer;
-  struct work_struct *work = &dwork->work;
-
-  if (!delay) {
-    __queue_work(cpu, wq, &dwork->work);
-    return;
-  }
-
-  dwork->wq = wq;
-  dwork->cpu = cpu;
-  timer->expires = jiffies + delay;
-
-  if (unlikely(cpu != WORK_CPU_UNBOUND))
-    add_timer_on(timer, cpu);
-  else
-    add_timer(timer);
-}
 ```
-
 
 #### ext4_map_blocks
 
@@ -6458,6 +6048,96 @@ found:
 #### ext4_map_query_blocks
 
 #### ext4_map_create_blocks
+
+#### balance_dirty_pages_ratelimited
+
+```c
+void balance_dirty_pages_ratelimited(struct address_space *mapping)
+{
+  struct inode *inode = mapping->host;
+  struct backing_dev_info *bdi = inode_to_bdi(inode);
+  struct bdi_writeback *wb = &bdi->wb;
+  int ratelimit;
+
+  if (inode_cgwb_enabled(inode))
+    wb = wb_get_create_current(bdi, GFP_KERNEL);
+  if (!wb)
+    wb = &bdi->wb;
+
+  ratelimit = current->nr_dirtied_pause;
+  if (wb->dirty_exceeded)
+    ratelimit = min(ratelimit, 32 >> (PAGE_SHIFT - 10));
+
+  if (unlikely(current->nr_dirtied >= ratelimit))
+    balance_dirty_pages(mapping, wb, current->nr_dirtied);
+}
+
+/* start background writeback, balance_dirty_pages -> */
+void wb_start_background_writeback(struct bdi_writeback *wb)
+{
+  wb_wakeup(wb);
+}
+
+static void wb_wakeup(struct bdi_writeback *wb)
+{
+  spin_lock_bh(&wb->work_lock);
+  if (test_bit(WB_registered, &wb->state))
+    mod_delayed_work(bdi_wq, &wb->dwork, 0);
+  spin_unlock_bh(&wb->work_lock);
+}
+
+/* bdi_wq serves all asynchronous writeback tasks */
+struct workqueue_struct *bdi_wq;
+
+/* mod_delayed_work - modify delay of or queue a delayed work */
+static inline bool mod_delayed_work(struct workqueue_struct *wq,
+    struct delayed_work *dwork,
+    unsigned long delay)
+{
+  return mod_delayed_work_on(WORK_CPU_UNBOUND, wq, dwork, delay);
+}
+
+/* insert a delayed work in bdi_wq */
+bool mod_delayed_work_on(int cpu, struct workqueue_struct *wq,
+       struct delayed_work *dwork, unsigned long delay)
+{
+  unsigned long flags;
+  int ret;
+
+  do {
+    ret = try_to_grab_pending(&dwork->work, true, &flags);
+  } while (unlikely(ret == -EAGAIN));
+
+  if (likely(ret >= 0)) {
+    __queue_delayed_work(cpu, wq, dwork, delay);
+    local_irq_restore(flags);
+  }
+
+  /* -ENOENT from try_to_grab_pending() becomes %true */
+  return ret;
+}
+
+static void __queue_delayed_work(int cpu, struct workqueue_struct *wq,
+  struct delayed_work *dwork, unsigned long delay)
+{
+  struct timer_list *timer = &dwork->timer;
+  struct work_struct *work = &dwork->work;
+
+  if (!delay) {
+    __queue_work(cpu, wq, &dwork->work);
+    return;
+  }
+
+  dwork->wq = wq;
+  dwork->cpu = cpu;
+  timer->expires = jiffies + delay;
+
+  if (unlikely(cpu != WORK_CPU_UNBOUND))
+    add_timer_on(timer, cpu);
+  else
+    add_timer(timer);
+}
+```
 
 ### iomap_readahead
 
@@ -7083,13 +6763,14 @@ size_t copy_from_user_iter(void __user *iter_from, size_t progress,
 ![](../images/kernel/proc-cmwq.svg)
 
 ```sh
-/proc/sys/vm/               # Virtual memory kernel parameters for page reclaim
-├── dirty_background_bytes  # Bytes of dirty memory before background reclaim/writeout (0 = use ratio)
-├── dirty_background_ratio  # % of memory for dirty pages before background reclaim/writeout
-├── dirty_bytes             # Bytes of dirty memory before foreground reclaim/writeout (0 = use ratio)
-├── dirty_ratio             # % of memory for dirty pages before foreground reclaim/writeout
-├── dirty_expire_centisecs  # Time dirty pages can stay in memory before reclaim (centisecs)
-├── dirty_writeback_centisecs # Interval for periodic dirty page writeback (centisecs; 0 = disable)
+/proc/sys/vm/
+├── dirty_background_ratio  # Soft limit. writers continue without blocking
+├── dirty_background_bytes  # Same as above, but expressed in bytes.
+├── dirty_ratio             # Hard limit. the writing process is throttled
+├── dirty_bytes             # Same as above, but expressed in bytes.
+├── dirty_expire_centisecs      # 30s. Time: dirty pages can stay in memory before reclaim (centisecs)
+├── dirty_writeback_centisecs   # 5s. How often the flusher threads wake up to look for work (centisecs; 0 = disable)
+├── dirtytime_expire_seconds    # 12h. Controls write-back of inode timestamps when the filesystem is mounted with the lazytime option.
 ```
 
 ```c
@@ -7111,56 +6792,68 @@ size_t copy_from_user_iter(void __user *iter_from, size_t progress,
 ### backing_dev_info
 
 ```c
+static const struct ctl_table vm_fs_writeback_table[] = {
+    {
+        .procname       = "dirtytime_expire_seconds",
+        .data           = &dirtytime_expire_interval,
+        .maxlen         = sizeof(dirtytime_expire_interval),
+        .mode           = 0644,
+        .proc_handler   = dirtytime_interval_handler,
+        .extra1         = SYSCTL_ZERO,
+    },
+};
+
 static const struct ctl_table vm_page_writeback_sysctls[] = {
     {
-        .procname   = "dirty_background_ratio",
-        .data       = &dirty_background_ratio,
-        .maxlen     = sizeof(dirty_background_ratio),
-        .mode       = 0644,
+        .procname       = "dirty_background_ratio",
+        .data           = &dirty_background_ratio,
+        .maxlen         = sizeof(dirty_background_ratio),
+        .mode           = 0644,
         .proc_handler   = dirty_background_ratio_handler,
-        .extra1     = SYSCTL_ZERO,
-        .extra2     = SYSCTL_ONE_HUNDRED,
+        .extra1         = SYSCTL_ZERO,
+        .extra2         = SYSCTL_ONE_HUNDRED,
     },
     {
-        .procname   = "dirty_background_bytes",
-        .data       = &dirty_background_bytes,
-        .maxlen     = sizeof(dirty_background_bytes),
-        .mode       = 0644,
+        .procname       = "dirty_background_bytes",
+        .data           = &dirty_background_bytes,
+        .maxlen         = sizeof(dirty_background_bytes),
+        .mode           = 0644,
         .proc_handler   = dirty_background_bytes_handler,
-        .extra1     = SYSCTL_LONG_ONE,
+        .extra1         = SYSCTL_LONG_ONE,
     },
     {
-        .procname   = "dirty_ratio",
-        .data       = &vm_dirty_ratio,
-        .maxlen     = sizeof(vm_dirty_ratio),
-        .mode       = 0644,
+        .procname       = "dirty_ratio",
+        .data           = &vm_dirty_ratio,
+        .maxlen         = sizeof(vm_dirty_ratio),
+        .mode           = 0644,
         .proc_handler   = dirty_ratio_handler,
-        .extra1     = SYSCTL_ZERO,
-        .extra2     = SYSCTL_ONE_HUNDRED,
+        .extra1         = SYSCTL_ZERO,
+        .extra2         = SYSCTL_ONE_HUNDRED,
     },
     {
-        .procname   = "dirty_bytes",
-        .data       = &vm_dirty_bytes,
-        .maxlen     = sizeof(vm_dirty_bytes),
-        .mode       = 0644,
+        .procname       = "dirty_bytes",
+        .data           = &vm_dirty_bytes,
+        .maxlen         = sizeof(vm_dirty_bytes),
+        .mode           = 0644,
         .proc_handler   = dirty_bytes_handler,
-        .extra1     = (void *)&dirty_bytes_min,
+        .extra1         = (void *)&dirty_bytes_min,
     },
     {
-        .procname   = "dirty_writeback_centisecs",
-        .data       = &dirty_writeback_interval,
-        .maxlen     = sizeof(dirty_writeback_interval),
-        .mode       = 0644,
+        .procname       = "dirty_writeback_centisecs",
+        .data           = &dirty_writeback_interval,
+        .maxlen         = sizeof(dirty_writeback_interval),
+        .mode           = 0644,
         .proc_handler   = dirty_writeback_centisecs_handler,
     },
     {
-        .procname   = "dirty_expire_centisecs",
-        .data       = &dirty_expire_interval,
-        .maxlen     = sizeof(dirty_expire_interval),
-        .mode       = 0644,
+        .procname       = "dirty_expire_centisecs",
+        .data           = &dirty_expire_interval,
+        .maxlen         = sizeof(dirty_expire_interval),
+        .mode           = 0644,
         .proc_handler   = proc_dointvec_minmax,
-        .extra1     = SYSCTL_ZERO,
+        .extra1         = SYSCTL_ZERO,
     },
+}
 ```
 
 ```c
@@ -7378,8 +7071,1304 @@ Direct IO and buffered IO will eventally call `submit_bio`.
 3. What does ext4_file_open do?
 4. What happend when inserting data in a file?
 
+## filemap
 
-## coredump
+### filemap_get_folio
+
+```c
+static inline struct folio *filemap_get_folio(struct address_space *mapping, pgoff_t index)
+{
+    return __filemap_get_folio(mapping, index, 0, 0);
+}
+
+/* Look up or create a folio in the page cache */
+struct folio *filemap_grab_folio(struct address_space *mapping, pgoff_t index)
+{
+    return __filemap_get_folio(mapping, index,
+            FGP_LOCK | FGP_ACCESSED | FGP_CREAT,
+            mapping_gfp_mask(mapping))
+    {
+        return __filemap_get_folio_mpol(mapping, index, fgf_flags, gfp, NULL);
+    }
+}
+
+static inline struct folio *__filemap_get_folio(struct address_space *mapping,
+        pgoff_t index, fgf_t fgf_flags, gfp_t gfp)
+{
+    return __filemap_get_folio_mpol(mapping, index, fgf_flags, gfp, NULL);
+}
+
+struct folio *__filemap_get_folio_mpol(struct address_space *mapping,
+        pgoff_t index, fgf_t fgp_flags, gfp_t gfp, struct mempolicy *policy)
+{
+    struct folio *folio;
+
+repeat:
+    folio = filemap_get_entry(mapping, index);
+    if (xa_is_value(folio))
+        folio = NULL;
+    if (!folio)
+        goto no_page;
+
+    if (fgp_flags & FGP_LOCK) {
+        if (fgp_flags & FGP_NOWAIT) {
+            if (!folio_trylock(folio)) {
+                folio_put(folio);
+                return ERR_PTR(-EAGAIN);
+            }
+        } else {
+            folio_lock(folio);
+        }
+
+        /* Has the page been truncated? */
+        if (unlikely(folio->mapping != mapping)) {
+            folio_unlock(folio);
+            folio_put(folio);
+            goto repeat;
+        }
+        VM_BUG_ON_FOLIO(!folio_contains(folio, index), folio);
+    }
+
+    if (fgp_flags & FGP_ACCESSED)
+        folio_mark_accessed(folio);
+    else if (fgp_flags & FGP_WRITE) {
+        /* Clear idle flag for buffer write */
+        if (folio_test_idle(folio))
+            folio_clear_idle(folio);
+    }
+
+    if (fgp_flags & FGP_STABLE)
+        folio_wait_stable(folio);
+
+no_page:
+    if (!folio && (fgp_flags & FGP_CREAT)) {
+        unsigned int min_order = mapping_min_folio_order(mapping) {
+            if (!IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE))
+                return 0;
+            return (mapping->flags & AS_FOLIO_ORDER_MIN_MASK) >> AS_FOLIO_ORDER_MIN;
+        }
+        unsigned int order = max(min_order, FGF_GET_ORDER(fgp_flags));
+        int err;
+        index = mapping_align_index(mapping, index) {
+            return round_down(index, mapping_min_folio_nrpages(mapping) {
+                return 1UL << mapping_min_folio_order(mapping);
+            });
+        }
+
+        if ((fgp_flags & FGP_WRITE) && mapping_can_writeback(mapping))
+            gfp |= __GFP_WRITE;
+        if (fgp_flags & FGP_NOFS)
+            gfp &= ~__GFP_FS;
+        if (fgp_flags & FGP_NOWAIT) {
+            gfp &= ~GFP_KERNEL;
+            gfp |= GFP_NOWAIT;
+        }
+        if (WARN_ON_ONCE(!(fgp_flags & (FGP_LOCK | FGP_FOR_MMAP))))
+            fgp_flags |= FGP_LOCK;
+
+        if (order > mapping_max_folio_order(mapping))
+            order = mapping_max_folio_order(mapping);
+        /* If we're not aligned, allocate a smaller folio */
+        if (index & ((1UL << order) - 1))
+            order = __ffs(index);
+
+        do {
+            gfp_t alloc_gfp = gfp;
+
+            err = -ENOMEM;
+            if (order > min_order)
+                alloc_gfp |= __GFP_NORETRY | __GFP_NOWARN;
+            folio = filemap_alloc_folio(alloc_gfp, order, policy);
+            if (!folio)
+                continue;
+
+            /* Init accessed so avoid atomic mark_page_accessed later */
+            if (fgp_flags & FGP_ACCESSED)
+                __folio_set_referenced(folio);
+            if (fgp_flags & FGP_DONTCACHE)
+                __folio_set_dropbehind(folio);
+
+            err = filemap_add_folio(mapping, folio, index, gfp);
+            if (!err)
+                break;
+            folio_put(folio);
+            folio = NULL;
+        } while (order-- > min_order);
+
+        if (err == -EEXIST)
+            goto repeat;
+        if (err) {
+            /* When NOWAIT I/O fails to allocate folios this could
+             * be due to a nonblocking memory allocation and not
+             * because the system actually is out of memory.
+             * Return -EAGAIN so that there caller retries in a
+             * blocking fashion instead of propagating -ENOMEM
+             * to the application. */
+            if ((fgp_flags & FGP_NOWAIT) && err == -ENOMEM)
+                err = -EAGAIN;
+            return ERR_PTR(err);
+        }
+        /* filemap_add_folio locks the page, and for mmap
+         * we expect an unlocked page. */
+        if (folio && (fgp_flags & FGP_FOR_MMAP))
+            folio_unlock(folio);
+    }
+
+    if (!folio)
+        return ERR_PTR(-ENOENT);
+    /* not an uncached lookup, clear uncached if set */
+    if (!(fgp_flags & FGP_DONTCACHE) && folio_test_clear_dropbehind(folio)) {
+        if (folio_test_dirty(folio) && mapping_can_writeback(mapping)) {
+            struct inode *inode = mapping->host;
+            struct bdi_writeback *wb;
+            struct wb_lock_cookie cookie = {};
+            long nr = folio_nr_pages(folio);
+
+            wb = unlocked_inode_to_wb_begin(inode, &cookie);
+            wb_stat_mod(wb, WB_DONTCACHE_DIRTY, -nr);
+            unlocked_inode_to_wb_end(inode, &cookie);
+        }
+    }
+    return folio;
+}
+void *filemap_get_entry(struct address_space *mapping, pgoff_t index)
+{
+    XA_STATE(xas, &mapping->i_pages, index);
+    struct folio *folio;
+
+    rcu_read_lock();
+repeat:
+    xas_reset(&xas);
+    folio = xas_load(&xas);
+    if (xas_retry(&xas, folio))
+        goto repeat;
+    /* A shadow entry of a recently evicted page, or a swap entry from
+     * shmem/tmpfs.  Return it without attempting to raise page count. */
+    if (!folio || xa_is_value(folio))
+        goto out;
+
+    if (!folio_try_get(folio))
+        goto repeat;
+
+    if (unlikely(folio != xas_reload(&xas))) {
+        folio_put(folio);
+        goto repeat;
+    }
+out:
+    rcu_read_unlock();
+
+    return folio;
+}
+```
+
+### filemap_get_folios
+
+```c
+/* Look up a folio in the page cache (no read) */
+unsigned filemap_get_folios(struct address_space *mapping, pgoff_t *start,
+        pgoff_t end, struct folio_batch *fbatch)
+{
+    return filemap_get_folios_tag(mapping, start, end, XA_PRESENT, fbatch);
+}
+
+unsigned filemap_get_folios_tag(struct address_space *mapping, pgoff_t *start,
+            pgoff_t end, xa_mark_t tag, struct folio_batch *fbatch)
+{
+    XA_STATE(xas, &mapping->i_pages, *start);
+    struct folio *folio;
+
+    rcu_read_lock();
+    while ((folio = find_get_entry(&xas, end, tag)) != NULL) {
+        /* Shadow entries should never be tagged, but this iteration
+         * is lockless so there is a window for page reclaim to evict
+         * a page we saw tagged. Skip over it. */
+        if (xa_is_value(folio))
+            continue;
+        if (!folio_batch_add(fbatch, folio)) {
+            *start = folio_next_index(folio) {
+                return folio->index + folio_nr_pages(folio);
+            }
+            goto out;
+        }
+    }
+    /* We come here when there is no page beyond @end. We take care to not
+     * overflow the index @start as it confuses some of the callers. This
+     * breaks the iteration when there is a page at index -1 but that is
+     * already broke anyway. */
+    if (end == (pgoff_t)-1)
+        *start = (pgoff_t)-1;
+    else
+        *start = end + 1;
+out:
+    rcu_read_unlock();
+
+    return folio_batch_count(fbatch);
+}
+
+struct folio *find_get_entry(struct xa_state *xas, pgoff_t max,
+        xa_mark_t mark)
+{
+    struct folio *folio;
+
+retry:
+    if (mark == XA_PRESENT)
+        folio = xas_find(xas, max);
+    else
+        folio = xas_find_marked(xas, max, mark);
+
+    if (xas_retry(xas, folio))
+        goto retry;
+    /* A shadow entry of a recently evicted page, a swap
+     * entry from shmem/tmpfs or a DAX entry.  Return it
+     * without attempting to raise page count. */
+    if (!folio || xa_is_value(folio))
+        return folio;
+
+    if (!folio_try_get(folio))
+        goto reset;
+
+    if (unlikely(folio != xas_reload(xas))) {
+        folio_put(folio);
+        goto reset;
+    }
+
+    return folio;
+reset:
+    xas_reset(xas);
+    goto retry;
+}
+```
+
+### filemap_get_pages
+
+```c
+int filemap_get_pages(struct kiocb *iocb, size_t count,
+        struct folio_batch *fbatch, bool need_uptodate)
+{
+    struct file *filp = iocb->ki_filp;
+    struct address_space *mapping = filp->f_mapping;
+    pgoff_t index = iocb->ki_pos >> PAGE_SHIFT;
+    pgoff_t last_index;
+    struct folio *folio;
+    unsigned int flags;
+    int err = 0;
+
+    /* "last_index" is the index of the folio beyond the end of the read */
+    last_index = round_up(iocb->ki_pos + count,
+            mapping_min_folio_nrbytes(mapping)) >> PAGE_SHIFT;
+retry:
+    if (fatal_signal_pending(current))
+        return -EINTR;
+
+    filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+    if (!folio_batch_count(fbatch)) {
+        DEFINE_READAHEAD(ractl, filp, &filp->f_ra, mapping, index);
+
+        if (iocb->ki_flags & IOCB_NOIO)
+            return -EAGAIN;
+        if (iocb->ki_flags & IOCB_NOWAIT)
+            flags = memalloc_noio_save();
+        if (iocb->ki_flags & IOCB_DONTCACHE)
+            ractl.dropbehind = 1;
+        page_cache_sync_ra(&ractl, last_index - index);
+        if (iocb->ki_flags & IOCB_NOWAIT)
+            memalloc_noio_restore(flags);
+        filemap_get_read_batch(mapping, index, last_index - 1, fbatch);
+    }
+    if (!folio_batch_count(fbatch)) {
+        err = filemap_create_folio(iocb, fbatch);
+        if (err == AOP_TRUNCATED_PAGE)
+            goto retry;
+        return err;
+    }
+
+    folio = fbatch->folios[folio_batch_count(fbatch) - 1];
+    if (folio_test_readahead(folio)) {
+        err = filemap_readahead(iocb, filp, mapping, folio, last_index);
+        if (err)
+            goto err;
+    }
+    if (!folio_test_uptodate(folio)) {
+        if (folio_batch_count(fbatch) > 1) {
+            err = -EAGAIN;
+            goto err;
+        }
+        err = filemap_update_page(iocb, mapping, count, folio, need_uptodate);
+        if (err)
+            goto err;
+    }
+
+    trace_mm_filemap_get_pages(mapping, index, last_index - 1);
+    return 0;
+err:
+    if (err < 0)
+        folio_put(folio);
+    if (likely(--fbatch->nr))
+        return 0;
+    if (err == AOP_TRUNCATED_PAGE)
+        goto retry;
+    return err;
+}
+
+void filemap_get_read_batch(struct address_space *mapping,
+    pgoff_t index, pgoff_t max, struct folio_batch *fbatch)
+{
+    XA_STATE(xas, &mapping->i_pages, index);
+    struct folio *folio;
+
+    rcu_read_lock();
+    for (folio = xas_load(&xas); folio; folio = xas_next(&xas)) {
+        if (xas_retry(&xas, folio))
+            continue;
+        if (xas.xa_index > max || xa_is_value(folio))
+            break;
+        if (xa_is_sibling(folio))
+            break;
+        if (!folio_try_get(folio))
+            goto retry;
+
+        if (unlikely(folio != xas_reload(&xas)))
+            goto put_folio;
+
+        if (!folio_batch_add(fbatch, folio))
+            break;
+        if (!folio_test_uptodate(folio))
+            break;
+        if (folio_test_readahead(folio))
+            break;
+        xas_advance(&xas, folio_next_index(folio) - 1);
+        continue;
+put_folio:
+        folio_put(folio);
+retry:
+        xas_reset(&xas);
+    }
+    rcu_read_unlock();
+}
+```
+
+### filemap_alloc_folio
+
+```c
+#define filemap_alloc_folio(...)                \
+    alloc_hooks(filemap_alloc_folio_noprof(__VA_ARGS__))
+
+static inline struct page *__page_cache_alloc(gfp_t gfp)
+{
+    return &filemap_alloc_folio(gfp, 0, NULL)->page;
+}
+
+struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order,
+        struct mempolicy *policy)
+{
+    int n;
+    struct folio *folio;
+
+    if (policy)
+        return folio_alloc_mpol_noprof(gfp, order, policy, NO_INTERLEAVE_INDEX, numa_node_id()) {
+        struct page *page = alloc_pages_mpol(gfp | __GFP_COMP, order, pol,
+                ilx, nid);
+        if (!page)
+            return NULL;
+
+        set_page_refcounted(page);
+        return page_rmappable_folio(page);
+    }
+
+    if (cpuset_do_page_mem_spread()) {
+        unsigned int cpuset_mems_cookie;
+        do {
+            cpuset_mems_cookie = read_mems_allowed_begin();
+            n = cpuset_mem_spread_node();
+            folio = __folio_alloc_node_noprof(gfp, order, n);
+        } while (!folio && read_mems_allowed_retry(cpuset_mems_cookie));
+
+        return folio;
+    }
+    return folio_alloc_noprof(gfp, order);
+}
+```
+
+### filemap_fault
+
+```c
+vm_fault_t filemap_fault(struct vm_fault *vmf)
+{
+    int error;
+    struct file *file = vmf->vma->vm_file;
+    struct file *fpin = NULL;
+    struct address_space *mapping = file->f_mapping;
+    struct inode *inode = mapping->host;
+    pgoff_t max_idx, index = vmf->pgoff;
+    struct folio *folio;
+    vm_fault_t ret = 0;
+    bool mapping_locked = false;
+
+    max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+    if (unlikely(index >= max_idx))
+        return VM_FAULT_SIGBUS;
+
+    trace_mm_filemap_fault(mapping, index);
+
+    /* Do we have something in the page cache already? */
+    folio = filemap_get_folio(mapping, index);
+    if (likely(!IS_ERR(folio))) {
+        /* We found the page, so try async readahead before waiting for
+         * the lock. */
+        if (!(vmf->flags & FAULT_FLAG_TRIED))
+            fpin = do_async_mmap_readahead(vmf, folio);
+        if (unlikely(!folio_test_uptodate(folio))) {
+            filemap_invalidate_lock_shared(mapping);
+            mapping_locked = true;
+        }
+    } else {
+        ret = filemap_fault_recheck_pte_none(vmf);
+        if (unlikely(ret))
+            return ret;
+
+        /* No page in the page cache at all */
+        count_vm_event(PGMAJFAULT);
+        count_memcg_event_mm(vmf->vma->vm_mm, PGMAJFAULT);
+        ret = VM_FAULT_MAJOR;
+        fpin = do_sync_mmap_readahead(vmf);
+retry_find:
+        /* See comment in filemap_create_folio() why we need
+         * invalidate_lock */
+        if (!mapping_locked) {
+            filemap_invalidate_lock_shared(mapping);
+            mapping_locked = true;
+        }
+        folio = __filemap_get_folio(mapping, index, FGP_CREAT|FGP_FOR_MMAP, vmf->gfp_mask);
+        if (IS_ERR(folio)) {
+            if (fpin)
+                goto out_retry;
+            filemap_invalidate_unlock_shared(mapping);
+            return VM_FAULT_OOM;
+        }
+    }
+
+    if (!lock_folio_maybe_drop_mmap(vmf, folio, &fpin))
+        goto out_retry;
+
+    /* Did it get truncated? */
+    if (unlikely(folio->mapping != mapping)) {
+        folio_unlock(folio);
+        folio_put(folio);
+        goto retry_find;
+    }
+    VM_BUG_ON_FOLIO(!folio_contains(folio, index), folio);
+
+    /* We have a locked folio in the page cache, now we need to check
+     * that it's up-to-date. If not, it is going to be due to an error,
+     * or because readahead was otherwise unable to retrieve it. */
+    if (unlikely(!folio_test_uptodate(folio))) {
+        /* If the invalidate lock is not held, the folio was in cache
+         * and uptodate and now it is not. Strange but possible since we
+         * didn't hold the page lock all the time. Let's drop
+         * everything, get the invalidate lock and try again. */
+        if (!mapping_locked) {
+            folio_unlock(folio);
+            folio_put(folio);
+            goto retry_find;
+        }
+
+        /* OK, the folio is really not uptodate. This can be because the
+         * VMA has the VM_RAND_READ flag set, or because an error
+         * arose. Let's read it in directly. */
+        goto page_not_uptodate;
+    }
+
+    /* We've made it this far and we had to drop our mmap_lock, now is the
+     * time to return to the upper layer and have it re-find the vma and
+     * redo the fault. */
+    if (fpin) {
+        folio_unlock(folio);
+        goto out_retry;
+    }
+    if (mapping_locked)
+        filemap_invalidate_unlock_shared(mapping);
+
+    /* Found the page and have a reference on it.
+     * We must recheck i_size under page lock. */
+    max_idx = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+    if (unlikely(index >= max_idx)) {
+        folio_unlock(folio);
+        folio_put(folio);
+        return VM_FAULT_SIGBUS;
+    }
+
+    vmf->page = folio_file_page(folio, index);
+    return ret | VM_FAULT_LOCKED;
+
+page_not_uptodate:
+    /* Umm, take care of errors if the page isn't up-to-date.
+     * Try to re-read it _once_. We do this synchronously,
+     * because there really aren't any performance issues here
+     * and we need to check for errors. */
+    fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+    error = filemap_read_folio(file, mapping->a_ops->read_folio, folio);
+    if (fpin)
+        goto out_retry;
+    folio_put(folio);
+
+    if (!error || error == AOP_TRUNCATED_PAGE)
+        goto retry_find;
+    filemap_invalidate_unlock_shared(mapping);
+
+    return VM_FAULT_SIGBUS;
+
+out_retry:
+    /* We dropped the mmap_lock, we need to return to the fault handler to
+     * re-find the vma and come back and find our hopefully still populated
+     * page. */
+    if (!IS_ERR(folio))
+        folio_put(folio);
+    if (mapping_locked)
+        filemap_invalidate_unlock_shared(mapping);
+    if (fpin)
+        fput(fpin);
+    return ret | VM_FAULT_RETRY;
+}
+```
+
+#### do_async_mmap_readahead
+
+```c
+struct file *do_async_mmap_readahead(struct vm_fault *vmf,
+                        struct folio *folio)
+{
+    struct file *file = vmf->vma->vm_file;
+    struct file_ra_state *ra = &file->f_ra;
+    DEFINE_READAHEAD(ractl, file, ra, file->f_mapping, vmf->pgoff);
+    struct file *fpin = NULL;
+    unsigned short mmap_miss;
+
+    /* If we don't want any read-ahead, don't bother */
+    if (vmf->vma->vm_flags & VM_RAND_READ || !ra->ra_pages)
+        return fpin;
+
+    /* If the folio is locked, we're likely racing against another fault.
+     * Don't touch the mmap_miss counter to avoid decreasing it multiple
+     * times for a single folio and break the balance with mmap_miss
+     * increase in do_sync_mmap_readahead().
+     *
+     * VM_SEQ_READ and VM_EXEC mappings skip the mmap_miss increment in
+     * do_sync_mmap_readahead(), so skip the decrement here as well to
+     * keep the counter symmetric. */
+    if (likely(!folio_test_locked(folio)) && !(vmf->vma->vm_flags & (VM_SEQ_READ | VM_EXEC))) {
+        mmap_miss = READ_ONCE(ra->mmap_miss);
+        if (mmap_miss)
+            WRITE_ONCE(ra->mmap_miss, --mmap_miss);
+    }
+
+    if (folio_test_readahead(folio)) {
+        fpin = maybe_unlock_mmap_for_io(vmf, fpin);
+        page_cache_async_ra(&ractl, folio, ra->ra_pages);
+    }
+    return fpin;
+}
+
+void page_cache_async_ra(struct readahead_control *ractl,
+        struct folio *folio, unsigned long req_count)
+{
+    unsigned long max_pages;
+    struct file_ra_state *ra = ractl->ra;
+    pgoff_t index = readahead_index(ractl);
+    pgoff_t expected, start, end, aligned_end, align;
+
+    /* no readahead */
+    if (!ra->ra_pages)
+        return;
+
+    /* Same bit is used for PG_readahead and PG_reclaim. */
+    if (folio_test_writeback(folio))
+        return;
+
+    trace_page_cache_async_ra(ractl->mapping->host, index, ra, req_count);
+    folio_clear_readahead(folio);
+
+    if (blk_cgroup_congested())
+        return;
+
+    max_pages = ractl_max_pages(ractl, req_count);
+    /* It's the expected callback index, assume sequential access.
+     * Ramp up sizes, and push forward the readahead window. */
+    expected = round_down(ra->start + ra->size - ra->async_size,
+            folio_nr_pages(folio));
+    if (index == expected) {
+        ra->start += ra->size;
+        /* In the case of MADV_HUGEPAGE, the actual size might exceed
+         * the readahead window. */
+        ra->size = max(ra->size, get_next_ra_size(ra, max_pages));
+        goto readit;
+    }
+
+    /* Hit a marked folio without valid readahead state.
+     * E.g. interleaved reads.
+     * Query the pagecache for async_size, which normally equals to
+     * readahead size. Ramp it up and use it as the new readahead size. */
+    rcu_read_lock();
+    start = page_cache_next_miss(ractl->mapping, index + 1, max_pages);
+    rcu_read_unlock();
+
+    if (!start || start - index > max_pages)
+        return;
+
+    ra->start = start;
+    ra->size = start - index;    /* old async_size */
+    ra->size += req_count;
+    ra->size = get_next_ra_size(ra, max_pages);
+readit:
+    ra->order += 2;
+    align = 1UL << min(ra->order, ffs(max_pages) - 1);
+    end = ra->start + ra->size;
+    aligned_end = round_down(end, align);
+    if (aligned_end > ra->start)
+        ra->size -= end - aligned_end;
+    ra->async_size = ra->size;
+    ractl->_index = ra->start;
+    page_cache_ra_order(ractl, ra);
+}
+```
+
+#### do_sync_mmap_readahead
+
+### filemap_read
+
+```c
+ssize_t filemap_read(struct kiocb *iocb, struct iov_iter *iter,
+        ssize_t already_read)
+{
+    struct file *filp = iocb->ki_filp;
+    struct file_ra_state *ra = &filp->f_ra;
+    struct address_space *mapping = filp->f_mapping;
+    struct inode *inode = mapping->host;
+    struct folio_batch fbatch;
+    int i, error = 0;
+    bool writably_mapped;
+    loff_t isize, end_offset;
+    loff_t last_pos = ra->prev_pos;
+
+    if (unlikely(iocb->ki_pos < 0))
+        return -EINVAL;
+    if (unlikely(iocb->ki_pos >= inode->i_sb->s_maxbytes))
+        return 0;
+    if (unlikely(!iov_iter_count(iter)))
+        return 0;
+
+    iov_iter_truncate(iter, inode->i_sb->s_maxbytes - iocb->ki_pos);
+    folio_batch_init(&fbatch);
+
+    do {
+        cond_resched();
+
+        /* If we've already successfully copied some data, then we
+         * can no longer safely return -EIOCBQUEUED. Hence mark
+         * an async read NOWAIT at that point. */
+        if ((iocb->ki_flags & IOCB_WAITQ) && already_read)
+            iocb->ki_flags |= IOCB_NOWAIT;
+
+        if (unlikely(iocb->ki_pos >= i_size_read(inode)))
+            break;
+
+        error = filemap_get_pages(iocb, iter->count, &fbatch, false);
+        if (error < 0)
+            break;
+
+        /* i_size must be checked after we know the pages are Uptodate.
+         *
+         * Checking i_size after the check allows us to calculate
+         * the correct value for "nr", which means the zero-filled
+         * part of the page is not copied back to userspace (unless
+         * another truncate extends the file - this is desired though). */
+        isize = i_size_read(inode);
+        if (unlikely(iocb->ki_pos >= isize))
+            goto put_folios;
+        end_offset = min_t(loff_t, isize, iocb->ki_pos + iter->count);
+
+        /* Once we start copying data, we don't want to be touching any
+         * cachelines that might be contended: */
+        writably_mapped = mapping_writably_mapped(mapping);
+
+        /* When a read accesses the same folio several times, only
+         * mark it as accessed the first time. */
+        if (!pos_same_folio(iocb->ki_pos, last_pos - 1, fbatch.folios[0]))
+            folio_mark_accessed(fbatch.folios[0]);
+
+        for (i = 0; i < folio_batch_count(&fbatch); i++) {
+            struct folio *folio = fbatch.folios[i];
+            size_t fsize = folio_size(folio);
+            size_t offset = iocb->ki_pos & (fsize - 1);
+            size_t bytes = min_t(loff_t, end_offset - iocb->ki_pos, fsize - offset);
+            size_t copied;
+
+            if (end_offset < folio_pos(folio))
+                break;
+            if (i > 0)
+                folio_mark_accessed(folio);
+            /* If users can be writing to this folio using arbitrary
+             * virtual addresses, take care of potential aliasing
+             * before reading the folio on the kernel side. */
+            if (writably_mapped)
+                flush_dcache_folio(folio);
+
+            copied = copy_folio_to_iter(folio, offset, bytes, iter);
+
+            already_read += copied;
+            iocb->ki_pos += copied;
+            last_pos = iocb->ki_pos;
+
+            if (copied < bytes) {
+                error = -EFAULT;
+                break;
+            }
+        }
+put_folios:
+        for (i = 0; i < folio_batch_count(&fbatch); i++) {
+            struct folio *folio = fbatch.folios[i];
+
+            filemap_end_dropbehind_read(folio);
+            folio_put(folio);
+        }
+        folio_batch_init(&fbatch);
+    } while (iov_iter_count(iter) && iocb->ki_pos < isize && !error);
+
+    file_accessed(filp);
+    ra->prev_pos = last_pos;
+    return already_read ? already_read : error;
+}
+```
+
+### filemap_readahead
+
+```c
+int filemap_readahead(struct kiocb *iocb, struct file *file,
+    struct address_space *mapping, struct folio *folio,
+    pgoff_t last_index)
+{
+    DEFINE_READAHEAD(ractl, file, &file->f_ra, mapping, folio->index);
+
+    if (iocb->ki_flags & IOCB_NOIO)
+        return -EAGAIN;
+    page_cache_async_ra(&ractl, folio, last_index - folio->index);
+    return 0;
+}
+
+void page_cache_async_ra(struct readahead_control *ractl,
+    struct folio *folio, unsigned long req_count)
+{
+    /* no readahead */
+    if (!ractl->ra->ra_pages)
+        return;
+
+    if (folio_test_writeback(folio))
+        return;
+
+    folio_clear_readahead(folio);
+
+    if (blk_cgroup_congested())
+        return;
+
+    ondemand_readahead(ractl, folio, req_count);
+}
+
+void ondemand_readahead(struct readahead_control *ractl,
+    struct folio *folio, unsigned long req_size)
+{
+    struct backing_dev_info *bdi = inode_to_bdi(ractl->mapping->host);
+    struct file_ra_state *ra = ractl->ra;
+    unsigned long max_pages = ra->ra_pages;
+    unsigned long add_pages;
+    pgoff_t index = readahead_index(ractl);
+    pgoff_t expected, prev_index;
+    unsigned int order = folio ? folio_order(folio) : 0;
+
+    if (req_size > max_pages && bdi->io_pages > max_pages)
+        max_pages = min(req_size, bdi->io_pages);
+
+    if (!index)
+        goto initial_readahead;
+
+    expected = round_up(ra->start + ra->size - ra->async_size, 1UL << order);
+    if (index == expected || index == (ra->start + ra->size)) {
+        ra->start += ra->size;
+        ra->size = get_next_ra_size(ra, max_pages);
+        ra->async_size = ra->size;
+        goto readit;
+    }
+
+    if (folio) {
+        pgoff_t start;
+
+        rcu_read_lock();
+            /* Find the next gap in the page cache */
+        start = page_cache_next_miss(ractl->mapping, index + 1, max_pages);
+        rcu_read_unlock();
+
+        if (!start || start - index > max_pages)
+            return;
+
+        ra->start = start;
+        ra->size = start - index;  /* old async_size */
+        ra->size += req_size;
+        ra->size = get_next_ra_size(ra, max_pages);
+        ra->async_size = ra->size;
+        goto readit;
+    }
+
+    if (req_size > max_pages)
+        goto initial_readahead;
+
+    prev_index = (unsigned long long)ra->prev_pos >> PAGE_SHIFT;
+    if (index - prev_index <= 1UL)
+        goto initial_readahead;
+
+    /* Query the page cache and look for the traces(cached history pages)
+    * that a sequential stream would leave behind. */
+    if (try_context_readahead(ractl->mapping, ra, index, req_size, max_pages))
+        goto readit;
+
+  /* actually reads a chunk of disk */
+    do_page_cache_ra(ractl, req_size, 0);
+    return;
+
+initial_readahead:
+    ra->start = index;
+    ra->size = get_init_ra_size(req_size, max_pages);
+    ra->async_size = ra->size > req_size ? ra->size - req_size : ra->size;
+
+readit:
+    /* Will this read hit the readahead marker made by itself?
+    * If so, trigger the readahead marker hit now, and merge
+    * the resulted next readahead window into the current one.
+    * Take care of maximum IO pages as above. */
+    if (index == ra->start && ra->size == ra->async_size) {
+        add_pages = get_next_ra_size(ra, max_pages);
+        if (ra->size + add_pages <= max_pages) {
+            ra->async_size = add_pages;
+            ra->size += add_pages;
+        } else {
+            ra->size = max_pages;
+            ra->async_size = max_pages >> 1;
+        }
+    }
+
+    ractl->_index = ra->start;
+    page_cache_ra_order(ractl, ra, order);
+}
+
+void page_cache_ra_order(struct readahead_control *ractl,
+    struct file_ra_state *ra, unsigned int new_order)
+{
+    struct address_space *mapping = ractl->mapping;
+    pgoff_t index = readahead_index(ractl);
+    pgoff_t limit = (i_size_read(mapping->host) - 1) >> PAGE_SHIFT;
+    pgoff_t mark = index + ra->size - ra->async_size;
+    int err = 0;
+    gfp_t gfp = readahead_gfp_mask(mapping);
+
+    if (!mapping_large_folio_support(mapping) || ra->size < 4)
+        goto fallback;
+
+    limit = min(limit, index + ra->size - 1);
+
+    if (new_order < MAX_PAGECACHE_ORDER) {
+        new_order += 2;
+        if (new_order > MAX_PAGECACHE_ORDER)
+            new_order = MAX_PAGECACHE_ORDER;
+        while ((1 << new_order) > ra->size)
+            new_order--;
+    }
+
+    filemap_invalidate_lock_shared(mapping);
+    while (index <= limit) {
+        unsigned int order = new_order;
+
+        /* Align with smaller pages if needed */
+        if (index & ((1UL << order) - 1)) {
+            order = __ffs(index);
+        if (order == 1)
+            order = 0;
+        }
+        /* Don't allocate pages past EOF */
+        while (index + (1UL << order) - 1 > limit) {
+            if (--order == 1)
+                order = 0;
+        }
+        err = ra_alloc_folio(ractl, index, mark, order, gfp);
+        if (err)
+            break;
+        index += 1UL << order;
+    }
+
+    if (index > limit) {
+        ra->size += index - limit - 1;
+        ra->async_size += index - limit - 1;
+    }
+
+    read_pages(ractl);
+    filemap_invalidate_unlock_shared(mapping);
+
+    /* If there were already pages in the page cache, then we may have
+    * left some gaps.  Let the regular readahead code take care of this
+    * situation. */
+    if (!err)
+        return;
+fallback:
+    /* actually reads a chunk of disk */
+    do_page_cache_ra(ractl, ra->size, ra->async_size);
+}
+
+void read_pages(struct readahead_control *rac)
+{
+    const struct address_space_operations *aops = rac->mapping->a_ops;
+    struct folio *folio;
+    struct blk_plug plug;
+
+    if (!readahead_count(rac))
+        return;
+
+    blk_start_plug(&plug);
+
+    if (aops->readahead) {
+        aops->readahead(rac);
+
+        while ((folio = readahead_folio(rac)) != NULL) {
+            unsigned long nr = folio_nr_pages(folio);
+
+            folio_get(folio);
+            rac->ra->size -= nr;
+            if (rac->ra->async_size >= nr) {
+                rac->ra->async_size -= nr;
+                filemap_remove_folio(folio);
+            }
+            folio_unlock(folio);
+            folio_put(folio);
+        }
+    } else {
+        while ((folio = readahead_folio(rac)) != NULL) {
+            aops->read_folio(rac->file, folio);
+        }
+    }
+
+    blk_finish_plug(&plug);
+}
+
+/* do_page_cache_ra() actually reads a chunk of disk.  It allocates
+ * the pages first, then submits them for I/O. */
+static void do_page_cache_ra(struct readahead_control *ractl,
+    unsigned long nr_to_read, unsigned long lookahead_size)
+{
+    struct inode *inode = ractl->mapping->host;
+    unsigned long index = readahead_index(ractl);
+    loff_t isize = i_size_read(inode);
+    pgoff_t end_index;  /* The last page we want to read */
+
+    if (isize == 0)
+        return;
+
+    end_index = (isize - 1) >> PAGE_SHIFT;
+    if (index > end_index)
+        return;
+    /* Don't read past the page containing the last byte of the file */
+    if (nr_to_read > end_index - index)
+        nr_to_read = end_index - index + 1;
+
+    page_cache_ra_unbounded(ractl, nr_to_read, lookahead_size);
+}
+
+/* page_cache_ra_unbounded - Start unchecked readahead. */
+void page_cache_ra_unbounded(struct readahead_control *ractl,
+    unsigned long nr_to_read, unsigned long lookahead_size)
+{
+    struct address_space *mapping = ractl->mapping;
+    unsigned long index = readahead_index(ractl);
+    gfp_t gfp_mask = readahead_gfp_mask(mapping);
+    unsigned long i;
+
+    /* Partway through the readahead operation, we will have added
+    * locked pages to the page cache, but will not yet have submitted
+    * them for I/O.  Adding another page may need to allocate memory,
+    * which can trigger memory reclaim.  Telling the VM we're in
+    * the middle of a filesystem operation will cause it to not
+    * touch file-backed pages, preventing a deadlock.  Most (all?)
+    * filesystems already specify __GFP_NOFS in their mapping's
+    * gfp_mask, but let's be explicit here. */
+    unsigned int nofs = memalloc_nofs_save();
+
+    filemap_invalidate_lock_shared(mapping);
+    /* Preallocate as many pages as we will need. */
+    for (i = 0; i < nr_to_read; i++) {
+        struct folio *folio = xa_load(&mapping->i_pages, index + i);
+
+        if (folio && !xa_is_value(folio)) {
+            /* Page already present?  Kick off the current batch
+            * of contiguous pages before continuing with the
+            * next batch.  This page may be the one we would
+            * have intended to mark as Readahead, but we don't
+            * have a stable reference to this page, and it's
+            * not worth getting one just for that. */
+            read_pages(ractl);
+            ractl->_index++;
+            i = ractl->_index + ractl->_nr_pages - index - 1;
+            continue;
+        }
+
+        folio = filemap_alloc_folio(gfp_mask, 0);
+        if (!folio)
+            break;
+
+        if (filemap_add_folio(mapping, folio, index + i, gfp_mask) < 0) {
+            folio_put(folio);
+            read_pages(ractl);
+            ractl->_index++;
+            i = ractl->_index + ractl->_nr_pages - index - 1;
+            continue;
+        }
+        if (i == nr_to_read - lookahead_size)
+            folio_set_readahead(folio);
+        ractl->_nr_pages++;
+    }
+
+    read_pages(ractl);
+    filemap_invalidate_unlock_shared(mapping);
+    memalloc_nofs_restore(nofs);
+}
+```
+
+### filemap_write_and_wait_range
+
+```c
+int filemap_write_and_wait_range(struct address_space *mapping,
+                 loff_t lstart, loff_t lend)
+{
+    int err = 0, err2;
+
+    if (lend < lstart)
+        return 0;
+
+    if (mapping_needs_writeback(mapping)) {
+        err = filemap_fdatawrite_range(mapping, lstart, lend);
+        /* Even if the above returned error, the pages may be
+         * written partially (e.g. -ENOSPC), so we wait for it.
+         * But the -EIO is special case, it may indicate the worst
+         * thing (e.g. bug) happened, so we avoid waiting for it. */
+        if (err != -EIO)
+            __filemap_fdatawait_range(mapping, lstart, lend);
+    }
+    err2 = filemap_check_errors(mapping);
+    if (!err)
+        err = err2;
+    return err;
+}
+```
+
+### filemap_fdatawrite_range
+
+```c
+int filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
+        loff_t end)
+{
+    return filemap_writeback(mapping, start, end, WB_SYNC_ALL, NULL);
+}
+
+static int filemap_writeback(struct address_space *mapping, loff_t start,
+        loff_t end, enum writeback_sync_modes sync_mode,
+        long *nr_to_write)
+{
+    struct writeback_control wbc = {
+        .sync_mode      = sync_mode,
+        .nr_to_write    = nr_to_write ? *nr_to_write : LONG_MAX,
+        .range_start    = start,
+        .range_end      = end,
+    };
+    int ret;
+
+    if (!mapping_can_writeback(mapping) ||
+        !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
+        return 0;
+
+    wbc_attach_fdatawrite_inode(&wbc, mapping->host);
+    ret = do_writepages(mapping, &wbc);
+    wbc_detach_inode(&wbc);
+
+    if (!ret && nr_to_write)
+        *nr_to_write = wbc.nr_to_write;
+    return ret;
+}
+```
+
+### filemap_map_pages
+
+```c
+vm_fault_t filemap_map_pages(struct vm_fault *vmf,
+                 pgoff_t start_pgoff, pgoff_t end_pgoff)
+{
+    struct vm_area_struct *vma = vmf->vma;
+    struct file *file = vma->vm_file;
+    struct address_space *mapping = file->f_mapping;
+    pgoff_t file_end, last_pgoff = start_pgoff;
+    unsigned long addr;
+    XA_STATE(xas, &mapping->i_pages, start_pgoff);
+    struct folio *folio;
+    vm_fault_t ret = 0;
+    unsigned long rss = 0;
+    unsigned int nr_pages = 0, folio_type;
+
+    /* Recalculate end_pgoff based on file_end before calling
+     * next_uptodate_folio() to avoid races with concurrent
+     * truncation. */
+    file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;
+    end_pgoff = min(end_pgoff, file_end);
+
+    rcu_read_lock();
+    folio = next_uptodate_folio(&xas, mapping, end_pgoff);
+    if (!folio)
+        goto out;
+
+    /* Do not allow to map with PMD across i_size to preserve
+     * SIGBUS semantics.
+     *
+     * Make an exception for shmem/tmpfs that for long time
+     * intentionally mapped with PMDs across i_size. */
+    if ((file_end >= folio_next_index(folio) || shmem_mapping(mapping)) &&
+        filemap_map_pmd(vmf, folio, start_pgoff)) {
+        ret = VM_FAULT_NOPAGE;
+        goto out;
+    }
+
+    addr = vma->vm_start + ((start_pgoff - vma->vm_pgoff) << PAGE_SHIFT);
+    vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd, addr, &vmf->ptl);
+    if (!vmf->pte) {
+        folio_unlock(folio);
+        folio_put(folio);
+        goto out;
+    }
+
+    folio_type = mm_counter_file(folio);
+    do {
+        unsigned long end;
+        vm_fault_t map_ret;
+
+        addr += (xas.xa_index - last_pgoff) << PAGE_SHIFT;
+        vmf->pte += xas.xa_index - last_pgoff;
+        last_pgoff = xas.xa_index;
+        end = folio_next_index(folio) - 1;
+        nr_pages = min(end, end_pgoff) - xas.xa_index + 1;
+
+        if (!folio_test_large(folio)) {
+            map_ret = filemap_map_order0_folio(vmf, folio, addr, &rss);
+        } else {
+            unsigned long start = xas.xa_index - folio->index;
+
+            map_ret = filemap_map_folio_range(vmf, folio, start,
+                              addr, nr_pages, &rss,
+                              file_end);
+        }
+        ret |= map_ret;
+
+        /* If there are too many folios that are recently evicted
+         * in a file, they will probably continue to be evicted.
+         * In such situation, read-ahead is only a waste of IO.
+         * Don't decrease mmap_miss in this scenario to make sure
+         * we can stop read-ahead.
+         *
+         * VM_SEQ_READ and VM_EXEC mappings skip the mmap_miss
+         * increment in do_sync_mmap_readahead(), so skip the
+         * decrement here as well to keep the counter symmetric. */
+        if ((map_ret & VM_FAULT_NOPAGE) &&
+            !(vmf->flags & FAULT_FLAG_TRIED) &&
+            !folio_test_workingset(folio) &&
+            !(vma->vm_flags & (VM_SEQ_READ | VM_EXEC))) {
+            unsigned short mmap_miss;
+
+            mmap_miss = READ_ONCE(file->f_ra.mmap_miss);
+            if (mmap_miss)
+                WRITE_ONCE(file->f_ra.mmap_miss,
+                       mmap_miss - 1);
+        }
+
+        folio_unlock(folio);
+    } while ((folio = next_uptodate_folio(&xas, mapping, end_pgoff)) != NULL);
+    add_mm_counter(vma->vm_mm, folio_type, rss);
+    pte_unmap_unlock(vmf->pte, vmf->ptl);
+    trace_mm_filemap_map_pages(mapping, start_pgoff, end_pgoff);
+out:
+    rcu_read_unlock();
+
+    return ret;
+}
+```
+
+### filemap_add_folio
+
+### filemap_remove_folio
+
+```c
+void filemap_remove_folio(struct folio *folio)
+{
+    struct address_space *mapping = folio->mapping;
+
+    BUG_ON(!folio_test_locked(folio));
+    spin_lock(&mapping->host->i_lock);
+    xa_lock_irq(&mapping->i_pages);
+    __filemap_remove_folio(folio, NULL)  {
+        struct address_space *mapping = folio->mapping;
+
+        filemap_unaccount_folio(mapping, folio) {
+            nr = folio_nr_pages(folio);
+
+            __lruvec_stat_mod_folio(folio, NR_FILE_PAGES, -nr);
+            if (folio_test_swapbacked(folio)) {
+                __lruvec_stat_mod_folio(folio, NR_SHMEM, -nr);
+                if (folio_test_pmd_mappable(folio)) {
+                    __lruvec_stat_mod_folio(folio, NR_SHMEM_THPS, -nr);
+                }
+            } else if (folio_test_pmd_mappable(folio)) {
+                __lruvec_stat_mod_folio(folio, NR_FILE_THPS, -nr);
+                filemap_nr_thps_dec(mapping);
+            }
+
+            if (WARN_ON_ONCE(folio_test_dirty(folio) && mapping_can_writeback(mapping)))
+                folio_account_cleaned(folio, inode_to_wb(mapping->host));
+        }
+
+        page_cache_delete(mapping, folio, shadow) {
+            XA_STATE(xas, &mapping->i_pages, folio->index);
+            long nr = 1;
+
+            mapping_set_update(&xas, mapping);
+
+            xas_set_order(&xas, folio->index, folio_order(folio));
+            nr = folio_nr_pages(folio);
+
+            VM_BUG_ON_FOLIO(!folio_test_locked(folio), folio);
+
+            xas_store(&xas, shadow);
+            xas_init_marks(&xas);
+
+            folio->mapping = NULL;
+            /* Leave page->index set: truncation lookup relies upon it */
+            mapping->nrpages -= nr;
+        }
+    }
+    xa_unlock_irq(&mapping->i_pages);
+
+    if (mapping_shrinkable(mapping))
+        inode_lru_list_add(mapping->host);
+    spin_unlock(&mapping->host->i_lock);
+
+    filemap_free_folio(mapping, folio);
+}
+```
+
+### filemap_release_folio
+
+### filemap_flush
+
+### read_cache_page
+
+### coredump
 
 ```c
 do_coredump() {
@@ -7458,7 +8447,7 @@ do_coredump() {
 }
 ```
 
-## alloc_fd
+### alloc_fd
 
 ```c
 static int alloc_fd(unsigned start, unsigned end, unsigned flags) {
@@ -7570,7 +8559,7 @@ out:
 }
 ```
 
-## dcache
+### dcache
 
 ### d_alloc_parallel
 
@@ -14102,6 +15091,1207 @@ out:
 }
 ```
 
+## jdb2
+
+### kjournald2
+
+```c
+int kjournald2(void *arg)
+{
+    journal_t *journal = arg;
+    transaction_t *transaction;
+
+    /* Set up an interval timer which can be used to trigger a commit wakeup
+     * after the commit interval expires */
+    timer_setup(&journal->j_commit_timer, commit_timeout, 0);
+
+    set_freezable();
+
+    /* Record that the journal thread is running */
+    journal->j_task = current;
+    wake_up(&journal->j_wait_done_commit);
+
+    /* Make sure that no allocations from this kernel thread will ever
+     * recurse to the fs layer because we are responsible for the
+     * transaction commit and any fs involvement might get stuck waiting for
+     * the trasn. commit. */
+    memalloc_nofs_save();
+
+    /* And now, wait forever for commit wakeup events. */
+    write_lock(&journal->j_state_lock);
+
+loop:
+    if (journal->j_flags & JBD2_UNMOUNT)
+        goto end_loop;
+
+    jbd2_debug(1, "commit_sequence=%u, commit_request=%u\n",
+        journal->j_commit_sequence, journal->j_commit_request);
+
+    if (journal->j_commit_sequence != journal->j_commit_request) {
+        jbd2_debug(1, "OK, requests differ\n");
+        write_unlock(&journal->j_state_lock);
+        timer_delete_sync(&journal->j_commit_timer);
+        jbd2_journal_commit_transaction(journal);
+        write_lock(&journal->j_state_lock);
+        goto loop;
+    }
+
+    wake_up(&journal->j_wait_done_commit);
+    if (freezing(current)) {
+        /* The simpler the better. Flushing journal isn't a
+         * good idea, because that depends on threads that may
+         * be already stopped. */
+        jbd2_debug(1, "Now suspending kjournald2\n");
+        write_unlock(&journal->j_state_lock);
+        try_to_freeze();
+        write_lock(&journal->j_state_lock);
+    } else {
+        /* We assume on resume that commits are already there,
+         * so we don't sleep */
+        DEFINE_WAIT(wait);
+
+        prepare_to_wait(&journal->j_wait_commit, &wait, TASK_INTERRUPTIBLE);
+        transaction = journal->j_running_transaction;
+        if (transaction == NULL ||
+            time_before(jiffies, transaction->t_expires)) {
+            write_unlock(&journal->j_state_lock);
+            schedule();
+            write_lock(&journal->j_state_lock);
+        }
+        finish_wait(&journal->j_wait_commit, &wait);
+    }
+
+    jbd2_debug(1, "kjournald2 wakes\n");
+
+    /* Were we woken up by a commit wakeup event? */
+    transaction = journal->j_running_transaction;
+    if (transaction && time_after_eq(jiffies, transaction->t_expires)) {
+        journal->j_commit_request = transaction->t_tid;
+        jbd2_debug(1, "woke because of timeout\n");
+    }
+    goto loop;
+
+end_loop:
+    timer_delete_sync(&journal->j_commit_timer);
+    journal->j_task = NULL;
+    wake_up(&journal->j_wait_done_commit);
+    jbd2_debug(1, "Journal thread exiting.\n");
+    write_unlock(&journal->j_state_lock);
+    return 0;
+}
+
+void jbd2_journal_commit_transaction(journal_t *journal)
+{
+    struct transaction_stats_s stats;
+    transaction_t *commit_transaction;
+    struct journal_head *jh;
+    struct buffer_head *descriptor;
+    struct buffer_head **wbuf = journal->j_wbuf;
+    int bufs;
+    int escape;
+    int err;
+    unsigned long long blocknr;
+    ktime_t start_time;
+    u64 commit_time;
+    char *tagp = NULL;
+    journal_block_tag_t *tag = NULL;
+    int space_left = 0;
+    int first_tag = 0;
+    int tag_flag;
+    int i;
+    int tag_bytes = journal_tag_bytes(journal);
+    struct buffer_head *cbh = NULL; /* For transactional checksums */
+    __u32 crc32_sum = ~0;
+    struct blk_plug plug;
+    /* Tail of the journal */
+    unsigned long first_block;
+    tid_t first_tid;
+    int update_tail;
+    int csum_size = 0;
+    LIST_HEAD(io_bufs);
+    LIST_HEAD(log_bufs);
+
+    if (jbd2_journal_has_csum_v2or3(journal))
+        csum_size = sizeof(struct jbd2_journal_block_tail);
+
+    /* First job: lock down the current transaction and wait for
+     * all outstanding updates to complete. */
+
+    /* Do we need to erase the effects of a prior jbd2_journal_flush? */
+    if (journal->j_flags & JBD2_FLUSHED) {
+        jbd2_debug(3, "super block updated\n");
+        mutex_lock_io(&journal->j_checkpoint_mutex);
+        /* We hold j_checkpoint_mutex so tail cannot change under us.
+         * We don't need any special data guarantees for writing sb
+         * since journal is empty and it is ok for write to be
+         * flushed only with transaction commit. */
+        jbd2_journal_update_sb_log_tail(journal,
+                        journal->j_tail_sequence,
+                        journal->j_tail, 0);
+        mutex_unlock(&journal->j_checkpoint_mutex);
+    } else {
+        jbd2_debug(3, "superblock not updated\n");
+    }
+
+    J_ASSERT(journal->j_running_transaction != NULL);
+    J_ASSERT(journal->j_committing_transaction == NULL);
+
+    write_lock(&journal->j_state_lock);
+    journal->j_flags |= JBD2_FULL_COMMIT_ONGOING;
+    while (journal->j_flags & JBD2_FAST_COMMIT_ONGOING) {
+        DEFINE_WAIT(wait);
+
+        prepare_to_wait(&journal->j_fc_wait, &wait,
+                TASK_UNINTERRUPTIBLE);
+        write_unlock(&journal->j_state_lock);
+        schedule();
+        write_lock(&journal->j_state_lock);
+        finish_wait(&journal->j_fc_wait, &wait);
+        /* TODO: by blocking fast commits here, we are increasing
+         * fsync() latency slightly. Strictly speaking, we don't need
+         * to block fast commits until the transaction enters T_FLUSH
+         * state. So an optimization is possible where we block new fast
+         * commits here and wait for existing ones to complete
+         * just before we enter T_FLUSH. That way, the existing fast
+         * commits and this full commit can proceed parallely. */
+    }
+    write_unlock(&journal->j_state_lock);
+
+    commit_transaction = journal->j_running_transaction;
+
+    trace_jbd2_start_commit(journal, commit_transaction);
+    jbd2_debug(1, "JBD2: starting commit of transaction %d\n",
+            commit_transaction->t_tid);
+
+    write_lock(&journal->j_state_lock);
+    journal->j_fc_off = 0;
+    J_ASSERT(commit_transaction->t_state == T_RUNNING);
+    commit_transaction->t_state = T_LOCKED;
+
+    trace_jbd2_commit_locking(journal, commit_transaction);
+    stats.run.rs_wait = commit_transaction->t_max_wait;
+    stats.run.rs_request_delay = 0;
+    stats.run.rs_locked = jiffies;
+    if (commit_transaction->t_requested)
+        stats.run.rs_request_delay =
+            jbd2_time_diff(commit_transaction->t_requested,
+                       stats.run.rs_locked);
+    stats.run.rs_running = jbd2_time_diff(commit_transaction->t_start,
+                          stats.run.rs_locked);
+
+    // waits for any t_updates to finish
+    jbd2_journal_wait_updates(journal);
+
+    commit_transaction->t_state = T_SWITCH;
+
+    J_ASSERT (atomic_read(&commit_transaction->t_outstanding_credits) <=
+            journal->j_max_transaction_buffers);
+
+    /* First thing we are allowed to do is to discard any remaining
+     * BJ_Reserved buffers.  Note, it is _not_ permissible to assume
+     * that there are no such buffers: if a large filesystem
+     * operation like a truncate needs to split itself over multiple
+     * transactions, then it may try to do a jbd2_journal_restart() while
+     * there are still BJ_Reserved buffers outstanding.  These must
+     * be released cleanly from the current transaction.
+     *
+     * In this case, the filesystem must still reserve write access
+     * again before modifying the buffer in the new transaction, but
+     * we do not require it to remember exactly which old buffers it
+     * has reserved.  This is consistent with the existing behaviour
+     * that multiple jbd2_journal_get_write_access() calls to the same
+     * buffer are perfectly permissible.
+     * We use journal->j_state_lock here to serialize processing of
+     * t_reserved_list with eviction of buffers from journal_unmap_buffer(). */
+    while (commit_transaction->t_reserved_list) {
+        jh = commit_transaction->t_reserved_list;
+        JBUFFER_TRACE(jh, "reserved, unused: refile");
+        /* A jbd2_journal_get_undo_access()+jbd2_journal_release_buffer() may
+         * leave undo-committed data. */
+        if (jh->b_committed_data) {
+            spin_lock(&jh->b_state_lock);
+            kfree(jh->b_committed_data);
+            jh->b_committed_data = NULL;
+            spin_unlock(&jh->b_state_lock);
+        }
+        jbd2_journal_refile_buffer(journal, jh);
+    }
+
+    write_unlock(&journal->j_state_lock);
+    /* Now try to drop any written-back buffers from the journal's
+     * checkpoint lists.  We do this *before* commit because it potentially
+     * frees some memory */
+    spin_lock(&journal->j_list_lock);
+    __jbd2_journal_clean_checkpoint_list(journal, JBD2_SHRINK_BUSY_STOP);
+    spin_unlock(&journal->j_list_lock);
+
+    jbd2_debug(3, "JBD2: commit phase 1\n");
+
+    /* Clear revoked flag to reflect there is no revoked buffers
+     * in the next transaction which is going to be started. */
+    jbd2_clear_buffer_revoked_flags(journal);
+
+    /* Switch to a new revoke table. */
+    jbd2_journal_switch_revoke_table(journal);
+
+    write_lock(&journal->j_state_lock);
+    /* Reserved credits cannot be claimed anymore, free them */
+    atomic_sub(atomic_read(&journal->j_reserved_credits),
+           &commit_transaction->t_outstanding_credits);
+
+    trace_jbd2_commit_flushing(journal, commit_transaction);
+    stats.run.rs_flushing = jiffies;
+    stats.run.rs_locked = jbd2_time_diff(stats.run.rs_locked,
+                         stats.run.rs_flushing);
+
+    commit_transaction->t_state = T_FLUSH;
+    journal->j_committing_transaction = commit_transaction;
+    journal->j_running_transaction = NULL;
+    start_time = ktime_get();
+    commit_transaction->t_log_start = journal->j_head;
+    wake_up_all(&journal->j_wait_transaction_locked);
+    write_unlock(&journal->j_state_lock);
+
+    jbd2_debug(3, "JBD2: commit phase 2a\n");
+
+    /* Now start flushing things to disk, in the order they appear
+     * on the transaction lists.  Data blocks go first. */
+    err = journal_submit_data_buffers(journal, commit_transaction);
+    if (err)
+        jbd2_journal_abort(journal, err);
+
+    blk_start_plug(&plug);
+    jbd2_journal_write_revoke_records(commit_transaction, &log_bufs);
+
+    jbd2_debug(3, "JBD2: commit phase 2b\n");
+
+    /* Way to go: we have now written out all of the data for a
+     * transaction!  Now comes the tricky part: we need to write out
+     * metadata.  Loop over the transaction's entire buffer list: */
+    write_lock(&journal->j_state_lock);
+    commit_transaction->t_state = T_COMMIT;
+    write_unlock(&journal->j_state_lock);
+
+    trace_jbd2_commit_logging(journal, commit_transaction);
+    stats.run.rs_logging = jiffies;
+    stats.run.rs_flushing = jbd2_time_diff(stats.run.rs_flushing,
+                           stats.run.rs_logging);
+    stats.run.rs_blocks = commit_transaction->t_nr_buffers;
+    stats.run.rs_blocks_logged = 0;
+
+    J_ASSERT(commit_transaction->t_nr_buffers <=
+         atomic_read(&commit_transaction->t_outstanding_credits));
+
+    bufs = 0;
+    descriptor = NULL;
+    while (commit_transaction->t_buffers) {
+
+        /* Find the next buffer to be journaled... */
+
+        jh = commit_transaction->t_buffers;
+
+        /* If we're in abort mode, we just un-journal the buffer and
+           release it. */
+
+        if (is_journal_aborted(journal)) {
+            clear_buffer_jbddirty(jh2bh(jh));
+            JBUFFER_TRACE(jh, "journal is aborting: refile");
+            jbd2_buffer_abort_trigger(jh,
+                          jh->b_frozen_data ?
+                          jh->b_frozen_triggers :
+                          jh->b_triggers);
+            jbd2_journal_refile_buffer(journal, jh);
+            /* If that was the last one, we need to clean up
+             * any descriptor buffers which may have been
+             * already allocated, even if we are now
+             * aborting. */
+            if (!commit_transaction->t_buffers)
+                goto start_journal_io;
+            continue;
+        }
+
+        /* Make sure we have a descriptor block in which to
+           record the metadata buffer. */
+
+        if (!descriptor) {
+            J_ASSERT (bufs == 0);
+
+            jbd2_debug(4, "JBD2: get descriptor\n");
+
+            descriptor = jbd2_journal_get_descriptor_buffer(
+                            commit_transaction,
+                            JBD2_DESCRIPTOR_BLOCK);
+            if (!descriptor) {
+                jbd2_journal_abort(journal, -EIO);
+                continue;
+            }
+
+            jbd2_debug(4, "JBD2: got buffer %llu (%p)\n",
+                (unsigned long long)descriptor->b_blocknr,
+                descriptor->b_data);
+            tagp = &descriptor->b_data[sizeof(journal_header_t)];
+            space_left = descriptor->b_size -
+                        sizeof(journal_header_t);
+            first_tag = 1;
+            set_buffer_jwrite(descriptor);
+            set_buffer_dirty(descriptor);
+            wbuf[bufs++] = descriptor;
+
+            /* Record it so that we can wait for IO
+                           completion later */
+            BUFFER_TRACE(descriptor, "ph3: file as descriptor");
+            jbd2_file_log_bh(&log_bufs, descriptor);
+        }
+
+        /* Where is the buffer to be written? */
+
+        err = jbd2_journal_next_log_block(journal, &blocknr);
+        /* If the block mapping failed, just abandon the buffer
+           and repeat this loop: we'll fall into the
+           refile-on-abort condition above. */
+        if (err) {
+            jbd2_journal_abort(journal, err);
+            continue;
+        }
+
+        /* start_this_handle() uses t_outstanding_credits to determine
+         * the free space in the log. */
+        atomic_dec(&commit_transaction->t_outstanding_credits);
+
+        /* Bump b_count to prevent truncate from stumbling over
+                   the shadowed buffer!  @@@ This can go if we ever get
+                   rid of the shadow pairing of buffers. */
+        atomic_inc(&jh2bh(jh)->b_count);
+
+        /* Make a temporary IO buffer with which to write it out
+         * (this will requeue the metadata buffer to BJ_Shadow). */
+        set_bit(BH_JWrite, &jh2bh(jh)->b_state);
+        JBUFFER_TRACE(jh, "ph3: write metadata");
+        escape = jbd2_journal_write_metadata_buffer(commit_transaction,
+                        jh, &wbuf[bufs], blocknr);
+        jbd2_file_log_bh(&io_bufs, wbuf[bufs]);
+
+        /* Record the new block's tag in the current descriptor
+                   buffer */
+
+        tag_flag = 0;
+        if (escape)
+            tag_flag |= JBD2_FLAG_ESCAPE;
+        if (!first_tag)
+            tag_flag |= JBD2_FLAG_SAME_UUID;
+
+        tag = (journal_block_tag_t *) tagp;
+        write_tag_block(journal, tag, jh2bh(jh)->b_blocknr);
+        tag->t_flags = cpu_to_be16(tag_flag);
+        jbd2_block_tag_csum_set(journal, tag, wbuf[bufs],
+                    commit_transaction->t_tid);
+        tagp += tag_bytes;
+        space_left -= tag_bytes;
+        bufs++;
+
+        if (first_tag) {
+            memcpy (tagp, journal->j_uuid, 16);
+            tagp += 16;
+            space_left -= 16;
+            first_tag = 0;
+        }
+
+        /* If there's no more to do, or if the descriptor is full,
+           let the IO rip! */
+
+        if (bufs == journal->j_wbufsize ||
+            commit_transaction->t_buffers == NULL ||
+            space_left < tag_bytes + 16 + csum_size) {
+
+            jbd2_debug(4, "JBD2: Submit %d IOs\n", bufs);
+
+            /* Write an end-of-descriptor marker before
+                           submitting the IOs.  "tag" still points to
+                           the last tag we set up. */
+
+            tag->t_flags |= cpu_to_be16(JBD2_FLAG_LAST_TAG);
+start_journal_io:
+            if (descriptor)
+                jbd2_descriptor_block_csum_set(journal,
+                            descriptor);
+
+            for (i = 0; i < bufs; i++) {
+                struct buffer_head *bh = wbuf[i];
+
+                /* Compute checksum. */
+                if (jbd2_has_feature_checksum(journal)) {
+                    crc32_sum =
+                        jbd2_checksum_data(crc32_sum, bh);
+                }
+
+                lock_buffer(bh);
+                clear_buffer_dirty(bh);
+                set_buffer_uptodate(bh);
+                bh_submit(bh,
+                    REQ_OP_WRITE | JBD2_JOURNAL_REQ_FLAGS,
+                    journal_end_buffer_io_sync);
+            }
+            cond_resched();
+
+            /* Force a new descriptor to be generated next
+                           time round the loop. */
+            descriptor = NULL;
+            bufs = 0;
+        }
+    }
+
+    err = journal_finish_inode_data_buffers(journal, commit_transaction);
+    if (err) {
+        printk(KERN_WARNING
+            "JBD2: Detected IO errors %d while flushing file data on %s\n",
+            err, journal->j_devname);
+        err = 0;
+    }
+
+    /* Get current oldest transaction in the log before we issue flush
+     * to the filesystem device. After the flush we can be sure that
+     * blocks of all older transactions are checkpointed to persistent
+     * storage and we will be safe to update journal start in the
+     * superblock with the numbers we get here. */
+    update_tail =
+        jbd2_journal_get_log_tail(journal, &first_tid, &first_block);
+
+    write_lock(&journal->j_state_lock);
+    if (update_tail) {
+        long freed = first_block - journal->j_tail;
+
+        if (first_block < journal->j_tail)
+            freed += journal->j_last - journal->j_first;
+        /* Update tail only if we free significant amount of space */
+        if (freed < journal->j_max_transaction_buffers)
+            update_tail = 0;
+    }
+    J_ASSERT(commit_transaction->t_state == T_COMMIT);
+    commit_transaction->t_state = T_COMMIT_DFLUSH;
+    write_unlock(&journal->j_state_lock);
+
+    /* If the journal is not located on the file system device,
+     * then we must flush the file system device before we issue
+     * the commit record and update the journal tail sequence. */
+    if ((commit_transaction->t_need_data_flush || update_tail) &&
+        (journal->j_fs_dev != journal->j_dev) &&
+        (journal->j_flags & JBD2_BARRIER))
+        blkdev_issue_flush(journal->j_fs_dev);
+
+    /* Done it all: now write the commit record asynchronously. */
+    if (jbd2_has_feature_async_commit(journal)) {
+        err = journal_submit_commit_record(journal, commit_transaction,
+                         &cbh, crc32_sum);
+        if (err)
+            jbd2_journal_abort(journal, err);
+    }
+
+    blk_finish_plug(&plug);
+
+    /* Lo and behold: we have just managed to send a transaction to
+           the log.  Before we can commit it, wait for the IO so far to
+           complete.  Control buffers being written are on the
+           transaction's t_log_list queue, and metadata buffers are on
+           the io_bufs list.
+
+       Wait for the buffers in reverse order.  That way we are
+       less likely to be woken up until all IOs have completed, and
+       so we incur less scheduling load. */
+
+    jbd2_debug(3, "JBD2: commit phase 3\n");
+
+    while (!list_empty(&io_bufs)) {
+        struct buffer_head *bh = list_entry(io_bufs.prev,
+                            struct buffer_head,
+                            b_assoc_buffers);
+
+        wait_on_buffer(bh);
+        cond_resched();
+
+        if (unlikely(!buffer_uptodate(bh)))
+            err = -EIO;
+        jbd2_unfile_log_bh(bh);
+        stats.run.rs_blocks_logged++;
+
+        /* The list contains temporary buffer heads created by
+         * jbd2_journal_write_metadata_buffer(). */
+        BUFFER_TRACE(bh, "dumping temporary bh");
+        __brelse(bh);
+        J_ASSERT_BH(bh, atomic_read(&bh->b_count) == 0);
+        free_buffer_head(bh);
+
+        /* We also have to refile the corresponding shadowed buffer */
+        jh = commit_transaction->t_shadow_list->b_tprev;
+        bh = jh2bh(jh);
+        clear_buffer_jwrite(bh);
+        J_ASSERT_BH(bh, buffer_jbddirty(bh));
+        J_ASSERT_BH(bh, !buffer_shadow(bh));
+
+        /* The metadata is now released for reuse, but we need
+                   to remember it against this transaction so that when
+                   we finally commit, we can do any checkpointing
+                   required. */
+        JBUFFER_TRACE(jh, "file as BJ_Forget");
+        jbd2_journal_file_buffer(jh, commit_transaction, BJ_Forget);
+        JBUFFER_TRACE(jh, "brelse shadowed buffer");
+        __brelse(bh);
+    }
+
+    J_ASSERT (commit_transaction->t_shadow_list == NULL);
+
+    jbd2_debug(3, "JBD2: commit phase 4\n");
+
+    /* Here we wait for the revoke record and descriptor record buffers */
+    while (!list_empty(&log_bufs)) {
+        struct buffer_head *bh;
+
+        bh = list_entry(log_bufs.prev, struct buffer_head, b_assoc_buffers);
+        wait_on_buffer(bh);
+        cond_resched();
+
+        if (unlikely(!buffer_uptodate(bh)))
+            err = -EIO;
+
+        BUFFER_TRACE(bh, "ph5: control buffer writeout done: unfile");
+        clear_buffer_jwrite(bh);
+        jbd2_unfile_log_bh(bh);
+        stats.run.rs_blocks_logged++;
+        __brelse(bh);        /* One for getblk */
+        /* AKPM: bforget here */
+    }
+
+    if (err)
+        jbd2_journal_abort(journal, err);
+
+    jbd2_debug(3, "JBD2: commit phase 5\n");
+    write_lock(&journal->j_state_lock);
+    J_ASSERT(commit_transaction->t_state == T_COMMIT_DFLUSH);
+    commit_transaction->t_state = T_COMMIT_JFLUSH;
+    write_unlock(&journal->j_state_lock);
+
+    if (!jbd2_has_feature_async_commit(journal)) {
+        err = journal_submit_commit_record(journal, commit_transaction,
+                        &cbh, crc32_sum);
+        if (err)
+            jbd2_journal_abort(journal, err);
+    }
+    if (cbh)
+        err = journal_wait_on_commit_record(journal, cbh);
+    stats.run.rs_blocks_logged++;
+    if (jbd2_has_feature_async_commit(journal) &&
+        journal->j_flags & JBD2_BARRIER) {
+        blkdev_issue_flush(journal->j_dev);
+    }
+
+    if (err)
+        jbd2_journal_abort(journal, err);
+
+    WARN_ON_ONCE(
+        atomic_read(&commit_transaction->t_outstanding_credits) < 0);
+
+    /* Now disk caches for filesystem device are flushed so we are safe to
+     * erase checkpointed transactions from the log by updating journal
+     * superblock. */
+    if (update_tail)
+        jbd2_update_log_tail(journal, first_tid, first_block);
+
+    /* End of a transaction!  Finally, we can do checkpoint
+           processing: any buffers committed as a result of this
+           transaction can be removed from any checkpoint list it was on
+           before. */
+
+    jbd2_debug(3, "JBD2: commit phase 6\n");
+
+    J_ASSERT(list_empty(&commit_transaction->t_inode_list));
+    J_ASSERT(commit_transaction->t_buffers == NULL);
+    J_ASSERT(commit_transaction->t_checkpoint_list == NULL);
+    J_ASSERT(commit_transaction->t_shadow_list == NULL);
+
+restart_loop:
+    /* As there are other places (journal_unmap_buffer()) adding buffers
+     * to this list we have to be careful and hold the j_list_lock. */
+    spin_lock(&journal->j_list_lock);
+    while (commit_transaction->t_forget) {
+        transaction_t *cp_transaction;
+        struct buffer_head *bh;
+        int try_to_free = 0;
+        bool drop_ref;
+
+        jh = commit_transaction->t_forget;
+        spin_unlock(&journal->j_list_lock);
+        bh = jh2bh(jh);
+        /* Get a reference so that bh cannot be freed before we are
+         * done with it. */
+        get_bh(bh);
+        spin_lock(&jh->b_state_lock);
+        J_ASSERT_JH(jh,    jh->b_transaction == commit_transaction);
+
+        /* If there is undo-protected committed data against
+         * this buffer, then we can remove it now.  If it is a
+         * buffer needing such protection, the old frozen_data
+         * field now points to a committed version of the
+         * buffer, so rotate that field to the new committed
+         * data.
+         *
+         * Otherwise, we can just throw away the frozen data now.
+         *
+         * We also know that the frozen data has already fired
+         * its triggers if they exist, so we can clear that too. */
+        if (jh->b_committed_data) {
+            kfree(jh->b_committed_data);
+            jh->b_committed_data = NULL;
+            if (jh->b_frozen_data) {
+                jh->b_committed_data = jh->b_frozen_data;
+                jh->b_frozen_data = NULL;
+                jh->b_frozen_triggers = NULL;
+            }
+        } else if (jh->b_frozen_data) {
+            kfree(jh->b_frozen_data);
+            jh->b_frozen_data = NULL;
+            jh->b_frozen_triggers = NULL;
+        }
+
+        spin_lock(&journal->j_list_lock);
+        cp_transaction = jh->b_cp_transaction;
+        if (cp_transaction) {
+            JBUFFER_TRACE(jh, "remove from old cp transaction");
+            cp_transaction->t_chp_stats.cs_dropped++;
+            __jbd2_journal_remove_checkpoint(jh);
+        }
+
+        /* Only re-checkpoint the buffer_head if it is marked
+         * dirty.  If the buffer was added to the BJ_Forget list
+         * by jbd2_journal_forget, it may no longer be dirty and
+         * there's no point in keeping a checkpoint record for
+         * it. */
+
+        /* A buffer which has been freed while still being journaled
+         * by a previous transaction, refile the buffer to BJ_Forget of
+         * the running transaction. If the just committed transaction
+         * contains "add to orphan" operation, we can completely
+         * invalidate the buffer now. We are rather through in that
+         * since the buffer may be still accessible when blocksize <
+         * pagesize and it is attached to the last partial page. */
+        if (buffer_freed(bh) && !jh->b_next_transaction) {
+            struct address_space *mapping;
+
+            clear_buffer_freed(bh);
+            clear_buffer_jbddirty(bh);
+
+            /* Block device buffers need to stay mapped all the
+             * time, so it is enough to clear buffer_jbddirty and
+             * buffer_freed bits. For the file mapping buffers (i.e.
+             * journalled data) we need to unmap buffer and clear
+             * more bits. We also need to be careful about the check
+             * because the data page mapping can get cleared under
+             * our hands. Note that if mapping == NULL, we don't
+             * need to make buffer unmapped because the page is
+             * already detached from the mapping and buffers cannot
+             * get reused. */
+            mapping = READ_ONCE(bh->b_folio->mapping);
+            if (mapping && !sb_is_blkdev_sb(mapping->host->i_sb)) {
+                clear_buffer_mapped(bh);
+                clear_buffer_new(bh);
+                clear_buffer_req(bh);
+                bh->b_bdev = NULL;
+            }
+        }
+
+        if (buffer_jbddirty(bh)) {
+            JBUFFER_TRACE(jh, "add to new checkpointing trans");
+            __jbd2_journal_insert_checkpoint(jh, commit_transaction);
+            if (is_journal_aborted(journal))
+                clear_buffer_jbddirty(bh);
+        } else {
+            J_ASSERT_BH(bh, !buffer_dirty(bh));
+            /* The buffer on BJ_Forget list and not jbddirty means
+             * it has been freed by this transaction and hence it
+             * could not have been reallocated until this
+             * transaction has committed. *BUT* it could be
+             * reallocated once we have written all the data to
+             * disk and before we process the buffer on BJ_Forget
+             * list. */
+            if (!jh->b_next_transaction)
+                try_to_free = 1;
+        }
+        JBUFFER_TRACE(jh, "refile or unfile buffer");
+        drop_ref = __jbd2_journal_refile_buffer(jh);
+        spin_unlock(&jh->b_state_lock);
+        if (drop_ref)
+            jbd2_journal_put_journal_head(jh);
+        if (try_to_free)
+            release_buffer_page(bh);    /* Drops bh reference */
+        else
+            __brelse(bh);
+        cond_resched_lock(&journal->j_list_lock);
+    }
+    spin_unlock(&journal->j_list_lock);
+    /* This is a bit sleazy.  We use j_list_lock to protect transition
+     * of a transaction into T_FINISHED state and calling
+     * __jbd2_journal_drop_transaction(). Otherwise we could race with
+     * other checkpointing code processing the transaction... */
+    write_lock(&journal->j_state_lock);
+    spin_lock(&journal->j_list_lock);
+    /* Now recheck if some buffers did not get attached to the transaction
+     * while the lock was dropped... */
+    if (commit_transaction->t_forget) {
+        spin_unlock(&journal->j_list_lock);
+        write_unlock(&journal->j_state_lock);
+        goto restart_loop;
+    }
+
+    /* Add the transaction to the checkpoint list
+     * __journal_remove_checkpoint() can not destroy transaction
+     * under us because it is not marked as T_FINISHED yet */
+    if (journal->j_checkpoint_transactions == NULL) {
+        journal->j_checkpoint_transactions = commit_transaction;
+        commit_transaction->t_cpnext = commit_transaction;
+        commit_transaction->t_cpprev = commit_transaction;
+    } else {
+        commit_transaction->t_cpnext =
+            journal->j_checkpoint_transactions;
+        commit_transaction->t_cpprev =
+            commit_transaction->t_cpnext->t_cpprev;
+        commit_transaction->t_cpnext->t_cpprev =
+            commit_transaction;
+        commit_transaction->t_cpprev->t_cpnext =
+                commit_transaction;
+    }
+    spin_unlock(&journal->j_list_lock);
+
+    /* Done with this transaction! */
+
+    jbd2_debug(3, "JBD2: commit phase 7\n");
+
+    J_ASSERT(commit_transaction->t_state == T_COMMIT_JFLUSH);
+
+    commit_transaction->t_start = jiffies;
+    stats.run.rs_logging = jbd2_time_diff(stats.run.rs_logging,
+                          commit_transaction->t_start);
+
+    /* File the transaction statistics */
+    stats.ts_tid = commit_transaction->t_tid;
+    stats.run.rs_handle_count =
+        atomic_read(&commit_transaction->t_handle_count);
+    trace_jbd2_run_stats(journal->j_fs_dev->bd_dev,
+                 commit_transaction->t_tid, &stats.run);
+    stats.ts_requested = (commit_transaction->t_requested) ? 1 : 0;
+
+    commit_transaction->t_state = T_COMMIT_CALLBACK;
+    J_ASSERT(commit_transaction == journal->j_committing_transaction);
+    WRITE_ONCE(journal->j_commit_sequence, commit_transaction->t_tid);
+    journal->j_committing_transaction = NULL;
+    commit_time = ktime_to_ns(ktime_sub(ktime_get(), start_time));
+
+    /* weight the commit time higher than the average time so we don't
+     * react too strongly to vast changes in the commit time */
+    if (likely(journal->j_average_commit_time))
+        journal->j_average_commit_time = (commit_time +
+                journal->j_average_commit_time*3) / 4;
+    else
+        journal->j_average_commit_time = commit_time;
+
+    write_unlock(&journal->j_state_lock);
+
+    if (journal->j_commit_callback)
+        journal->j_commit_callback(journal, commit_transaction);
+    if (journal->j_fc_cleanup_callback)
+        journal->j_fc_cleanup_callback(journal, 1, commit_transaction->t_tid);
+
+    trace_jbd2_end_commit(journal, commit_transaction);
+    jbd2_debug(1, "JBD2: commit %d complete, head %d\n",
+          journal->j_commit_sequence, journal->j_tail_sequence);
+
+    write_lock(&journal->j_state_lock);
+    journal->j_flags &= ~JBD2_FULL_COMMIT_ONGOING;
+    journal->j_flags &= ~JBD2_FAST_COMMIT_ONGOING;
+    spin_lock(&journal->j_list_lock);
+    commit_transaction->t_state = T_FINISHED;
+    /* Check if the transaction can be dropped now that we are finished */
+    if (commit_transaction->t_checkpoint_list == NULL) {
+        __jbd2_journal_drop_transaction(journal, commit_transaction);
+        jbd2_journal_free_transaction(commit_transaction);
+    }
+    spin_unlock(&journal->j_list_lock);
+    write_unlock(&journal->j_state_lock);
+    wake_up(&journal->j_wait_done_commit);
+    wake_up(&journal->j_fc_wait);
+
+    /* Calculate overall stats */
+    spin_lock(&journal->j_history_lock);
+    journal->j_stats.ts_tid++;
+    journal->j_stats.ts_requested += stats.ts_requested;
+    journal->j_stats.run.rs_wait += stats.run.rs_wait;
+    journal->j_stats.run.rs_request_delay += stats.run.rs_request_delay;
+    journal->j_stats.run.rs_running += stats.run.rs_running;
+    journal->j_stats.run.rs_locked += stats.run.rs_locked;
+    journal->j_stats.run.rs_flushing += stats.run.rs_flushing;
+    journal->j_stats.run.rs_logging += stats.run.rs_logging;
+    journal->j_stats.run.rs_handle_count += stats.run.rs_handle_count;
+    journal->j_stats.run.rs_blocks += stats.run.rs_blocks;
+    journal->j_stats.run.rs_blocks_logged += stats.run.rs_blocks_logged;
+    spin_unlock(&journal->j_history_lock);
+}
+```
+
+### jbd2__journal_start
+
+```c
+handle_t *jbd2__journal_start(journal_t *journal, int nblocks, int rsv_blocks,
+                  int revoke_records, gfp_t gfp_mask,
+                  unsigned int type, unsigned int line_no)
+{
+    handle_t *handle = journal_current_handle();
+    int err;
+
+    if (!journal)
+        return ERR_PTR(-EROFS);
+
+    if (handle) {
+        if (WARN_ON_ONCE(handle->h_transaction->t_journal != journal))
+            return ERR_PTR(-EINVAL);
+        handle->h_ref++;
+        return handle;
+    }
+
+    nblocks += DIV_ROUND_UP(revoke_records, journal->j_revoke_records_per_block);
+    handle = new_handle(nblocks);
+    if (!handle)
+        return ERR_PTR(-ENOMEM);
+
+    if (rsv_blocks) {
+        handle_t *rsv_handle;
+
+        rsv_handle = new_handle(rsv_blocks);
+        if (!rsv_handle) {
+            jbd2_free_handle(handle);
+            return ERR_PTR(-ENOMEM);
+        }
+        rsv_handle->h_reserved = 1;
+        rsv_handle->h_journal = journal;
+        handle->h_rsv_handle = rsv_handle;
+    }
+    handle->h_revoke_credits = revoke_records;
+
+    err = start_this_handle(journal, handle, gfp_mask);
+    if (err < 0) {
+        if (handle->h_rsv_handle)
+            jbd2_free_handle(handle->h_rsv_handle);
+        jbd2_free_handle(handle);
+        return ERR_PTR(err);
+    }
+    handle->h_type = type;
+    handle->h_line_no = line_no;
+    trace_jbd2_handle_start(journal->j_fs_dev->bd_dev,
+                handle->h_transaction->t_tid, type,
+                line_no, nblocks);
+
+    return handle;
+}
+
+static int start_this_handle(journal_t *journal, handle_t *handle,
+                 gfp_t gfp_mask)
+{
+    transaction_t    *transaction, *new_transaction = NULL;
+    int        blocks = handle->h_total_credits;
+    int        rsv_blocks = 0;
+    unsigned long ts = jiffies;
+
+    if (handle->h_rsv_handle)
+        rsv_blocks = handle->h_rsv_handle->h_total_credits;
+
+    /* Limit the number of reserved credits to 1/2 of maximum transaction
+     * size and limit the number of total credits to not exceed maximum
+     * transaction size per operation. */
+    if (rsv_blocks > jbd2_max_user_trans_buffers(journal) / 2 ||
+        rsv_blocks + blocks > jbd2_max_user_trans_buffers(journal)) {
+        printk(KERN_ERR "JBD2: %s wants too many credits "
+               "credits:%d rsv_credits:%d max:%d\n",
+               current->comm, blocks, rsv_blocks,
+               jbd2_max_user_trans_buffers(journal));
+        WARN_ON(1);
+        return -ENOSPC;
+    }
+
+alloc_transaction:
+    /* This check is racy but it is just an optimization of allocating new
+     * transaction early if there are high chances we'll need it. If we
+     * guess wrong, we'll retry or free unused transaction. */
+    if (!data_race(journal->j_running_transaction)) {
+        /* If __GFP_FS is not present, then we may be being called from
+         * inside the fs writeback layer, so we MUST NOT fail. */
+        if ((gfp_mask & __GFP_FS) == 0)
+            gfp_mask |= __GFP_NOFAIL;
+        new_transaction = kmem_cache_zalloc(transaction_cache, gfp_mask);
+        if (!new_transaction)
+            return -ENOMEM;
+    }
+
+    jbd2_debug(3, "New handle %p going live.\n", handle);
+
+    /* We need to hold j_state_lock until t_updates has been incremented,
+     * for proper journal barrier handling */
+repeat:
+    read_lock(&journal->j_state_lock);
+    BUG_ON(journal->j_flags & JBD2_UNMOUNT);
+    if (is_journal_aborted(journal) ||
+        (journal->j_errno != 0 && !(journal->j_flags & JBD2_ACK_ERR))) {
+        read_unlock(&journal->j_state_lock);
+        jbd2_journal_free_transaction(new_transaction);
+        return -EROFS;
+    }
+
+    /* Wait on the journal's transaction barrier if necessary. Specifically
+     * we allow reserved handles to proceed because otherwise commit could
+     * deadlock on page writeback not being able to complete. */
+    if (!handle->h_reserved && journal->j_barrier_count) {
+        read_unlock(&journal->j_state_lock);
+        wait_event(journal->j_wait_transaction_locked, journal->j_barrier_count == 0);
+        goto repeat;
+    }
+
+    if (!journal->j_running_transaction) {
+        read_unlock(&journal->j_state_lock);
+        if (!new_transaction)
+            goto alloc_transaction;
+        write_lock(&journal->j_state_lock);
+        if (!journal->j_running_transaction &&
+            (handle->h_reserved || !journal->j_barrier_count)) {
+            jbd2_get_transaction(journal, new_transaction);
+            new_transaction = NULL;
+        }
+        write_unlock(&journal->j_state_lock);
+        goto repeat;
+    }
+
+    transaction = journal->j_running_transaction;
+
+    if (!handle->h_reserved) {
+        /* We may have dropped j_state_lock - restart in that case */
+        if (add_transaction_credits(journal, blocks, rsv_blocks)) {
+            /* add_transaction_credits releases
+             * j_state_lock on a non-zero return */
+            __release(&journal->j_state_lock);
+            goto repeat;
+        }
+    } else {
+        /* We have handle reserved so we are allowed to join T_LOCKED
+         * transaction and we don't have to check for transaction size
+         * and journal space. But we still have to wait while running
+         * transaction is being switched to a committing one as it
+         * won't wait for any handles anymore. */
+        if (transaction->t_state == T_SWITCH) {
+            wait_transaction_switching(journal);
+            goto repeat;
+        }
+        sub_reserved_credits(journal, blocks);
+        handle->h_reserved = 0;
+    }
+
+    /* OK, account for the buffers that this operation expects to
+     * use and add the handle to the running transaction. */
+    update_t_max_wait(transaction, ts);
+    handle->h_transaction = transaction;
+    handle->h_requested_credits = blocks;
+    handle->h_revoke_credits_requested = handle->h_revoke_credits;
+    handle->h_start_jiffies = jiffies;
+    atomic_inc(&transaction->t_updates);
+    atomic_inc(&transaction->t_handle_count);
+    jbd2_debug(4, "Handle %p given %d credits (total %d, free %lu)\n",
+          handle, blocks,
+          atomic_read(&transaction->t_outstanding_credits),
+          jbd2_log_space_left(journal));
+    read_unlock(&journal->j_state_lock);
+    current->journal_info = handle;
+
+    rwsem_acquire_read(&journal->j_trans_commit_map, 0, 1, _THIS_IP_);
+    jbd2_journal_free_transaction(new_transaction);
+    /* Ensure that no allocations done while the transaction is open are
+     * going to recurse back to the fs layer. */
+    handle->saved_alloc_context = memalloc_nofs_save();
+    return 0;
+}
+```
+
+### jbd2_journal_stop
+
+```c
+int jbd2_journal_stop(handle_t *handle)
+{
+    transaction_t *transaction = handle->h_transaction;
+    journal_t *journal;
+    int err = 0, wait_for_commit = 0;
+    tid_t tid;
+    pid_t pid;
+
+    if (--handle->h_ref > 0) {
+        jbd2_debug(4, "h_ref %d -> %d\n", handle->h_ref + 1,
+                         handle->h_ref);
+        if (is_handle_aborted(handle))
+            return -EIO;
+        return 0;
+    }
+    if (!transaction) {
+        /* Handle is already detached from the transaction so there is
+         * nothing to do other than free the handle. */
+        memalloc_nofs_restore(handle->saved_alloc_context);
+        goto free_and_exit;
+    }
+    journal = transaction->t_journal;
+    tid = transaction->t_tid;
+
+    if (is_handle_aborted(handle))
+        err = -EIO;
+
+    jbd2_debug(4, "Handle %p going down\n", handle);
+    trace_jbd2_handle_stats(journal->j_fs_dev->bd_dev,
+                tid, handle->h_type, handle->h_line_no,
+                jiffies - handle->h_start_jiffies,
+                handle->h_sync, handle->h_requested_credits,
+                (handle->h_requested_credits -
+                 handle->h_total_credits));
+
+    /* Implement synchronous transaction batching.  If the handle
+     * was synchronous, don't force a commit immediately.  Let's
+     * yield and let another thread piggyback onto this
+     * transaction.  Keep doing that while new threads continue to
+     * arrive.  It doesn't cost much - we're about to run a commit
+     * and sleep on IO anyway.  Speeds up many-threaded, many-dir
+     * operations by 30x or more...
+     *
+     * We try and optimize the sleep time against what the
+     * underlying disk can do, instead of having a static sleep
+     * time.  This is useful for the case where our storage is so
+     * fast that it is more optimal to go ahead and force a flush
+     * and wait for the transaction to be committed than it is to
+     * wait for an arbitrary amount of time for new writers to
+     * join the transaction.  We achieve this by measuring how
+     * long it takes to commit a transaction, and compare it with
+     * how long this transaction has been running, and if run time
+     * < commit time then we sleep for the delta and commit.  This
+     * greatly helps super fast disks that would see slowdowns as
+     * more threads started doing fsyncs.
+     *
+     * But don't do this if this process was the most recent one
+     * to perform a synchronous write.  We do this to detect the
+     * case where a single process is doing a stream of sync
+     * writes.  No point in waiting for joiners in that case.
+     *
+     * Setting max_batch_time to 0 disables this completely. */
+    pid = current->pid;
+    if (handle->h_sync && journal->j_last_sync_writer != pid &&
+        journal->j_max_batch_time) {
+        u64 commit_time, trans_time;
+
+        journal->j_last_sync_writer = pid;
+
+        read_lock(&journal->j_state_lock);
+        commit_time = journal->j_average_commit_time;
+        read_unlock(&journal->j_state_lock);
+
+        trans_time = ktime_to_ns(ktime_sub(ktime_get(),
+                           transaction->t_start_time));
+
+        commit_time = max_t(u64, commit_time,
+                    1000*journal->j_min_batch_time);
+        commit_time = min_t(u64, commit_time,
+                    1000*journal->j_max_batch_time);
+
+        if (trans_time < commit_time) {
+            ktime_t expires = ktime_add_ns(ktime_get(),
+                               commit_time);
+            set_current_state(TASK_UNINTERRUPTIBLE);
+            schedule_hrtimeout(&expires, HRTIMER_MODE_ABS);
+        }
+    }
+
+    if (handle->h_sync)
+        transaction->t_synchronous_commit = 1;
+
+    /* If the handle is marked SYNC, we need to set another commit
+     * going!  We also want to force a commit if the transaction is too
+     * old now. */
+    if (handle->h_sync ||
+        time_after_eq(jiffies, transaction->t_expires)) {
+        /* Do this even for aborted journals: an abort still
+         * completes the commit thread, it just doesn't write
+         * anything to disk. */
+
+        jbd2_debug(2, "transaction too old, requesting commit for "
+                    "handle %p\n", handle);
+        /* This is non-blocking */
+        jbd2_log_start_commit(journal, tid);
+
+        /* Special case: JBD2_SYNC synchronous updates require us
+         * to wait for the commit to complete. */
+        if (handle->h_sync && !(current->flags & PF_MEMALLOC))
+            wait_for_commit = 1;
+    }
+
+    /* Once stop_this_handle() drops t_updates, the transaction could start
+     * committing on us and eventually disappear.  So we must not
+     * dereference transaction pointer again after calling
+     * stop_this_handle(). */
+    stop_this_handle(handle);
+
+    if (wait_for_commit)
+        err = jbd2_log_wait_commit(journal, tid);
+
+free_and_exit:
+    if (handle->h_rsv_handle)
+        jbd2_free_handle(handle->h_rsv_handle);
+    jbd2_free_handle(handle);
+    return err;
+}
+```
+
+### jbd2_log_start_commit
+
+```c
+int jbd2_log_start_commit(journal_t *journal, tid_t tid)
+{
+    int ret;
+
+    write_lock(&journal->j_state_lock);
+    ret = __jbd2_log_start_commit(journal, tid);
+    write_unlock(&journal->j_state_lock);
+    return ret;
+}
+
+int __jbd2_log_start_commit(journal_t *journal, tid_t target)
+{
+    /* Return if the txn has already requested to be committed */
+    if (journal->j_commit_request == target)
+        return 0;
+
+    /* The only transaction we can possibly wait upon is the
+     * currently running transaction (if it exists).  Otherwise,
+     * the target tid must be an old one. */
+    if (journal->j_running_transaction &&
+        journal->j_running_transaction->t_tid == target) {
+        /* We want a new commit: OK, mark the request and wakeup the
+         * commit thread.  We do _not_ do the commit ourselves. */
+
+        journal->j_commit_request = target;
+        jbd2_debug(1, "JBD2: requesting commit %u/%u\n",
+              journal->j_commit_request,
+              journal->j_commit_sequence);
+        journal->j_running_transaction->t_requested = jiffies;
+        wake_up(&journal->j_wait_commit);
+        return 1;
+    } else if (!tid_geq(journal->j_commit_request, target))
+        /* This should never happen, but if it does, preserve
+           the evidence before kjournald goes into a loop and
+           increments j_commit_sequence beyond all recognition. */
+        WARN_ONCE(1, "JBD2: bad log_start_commit: %u %u %u %u\n",
+              journal->j_commit_request,
+              journal->j_commit_sequence,
+              target, journal->j_running_transaction ?
+              journal->j_running_transaction->t_tid : 0);
+    return 0;
+}
+```
+
 # FS
 
 ## core
@@ -18475,7 +20665,7 @@ static int proc_single_open(struct inode *inode, struct file *file)
 }
 ```
 
-### register_sysctl_sz
+### register_sysctl
 
 ```c
 #define register_sysctl_init(path, table)    \

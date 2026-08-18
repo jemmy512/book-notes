@@ -385,11 +385,11 @@ enum irqreturn {
     IRQ_WAKE_THREAD     = (1 << 1),
 };
 
-static inline int request_irq(
-  unsigned int irq, irq_handler_t handler,
-  unsigned long flags, const char *name, void *dev)
+static inline int __must_check
+request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
+	    const char *name, void *dev)
 {
-    return request_threaded_irq(irq, handler, NULL, flags, name, dev);
+	return request_threaded_irq(irq, handler, NULL, flags | IRQF_COND_ONESHOT, name, dev);
 }
 ```
 
@@ -437,7 +437,21 @@ int request_threaded_irq(unsigned int irq, irq_handler_t handler,
     action->name = devname;
     action->dev_id = dev_id;
 
-    retval = irq_chip_pm_get(&desc->irq_data);
+    retval = irq_chip_pm_get(&desc->irq_data) {
+        struct device *dev = irq_get_pm_device(data) {
+            if (data->domain)
+                return data->domain->pm_dev;
+
+            return NULL;
+        }
+        int retval = 0;
+
+        if (IS_ENABLED(CONFIG_PM) && dev) {
+            retval = pm_runtime_resume_and_get(dev);
+        }
+
+        return retval;
+    }
     if (retval < 0) {
         kfree(action);
         return retval;
@@ -501,7 +515,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
     /* Check whether the interrupt nests into another interrupt
      * thread. */
     nested = irq_settings_is_nested_thread(desc) {
-        return !(desc->status_use_accessors & _IRQ_NOTHREAD);
+        return desc->status_use_accessors & _IRQ_NESTED_THREAD;
     }
     if (nested) {
         if (!new->thread_fn) {
@@ -570,6 +584,7 @@ __setup_irq(unsigned int irq, struct irq_desc *desc, struct irqaction *new)
                     return PTR_ERR(t);
 
                 new->thread = get_task_struct(t);
+                kthread_bind_mask(t, cpu_possible_mask);
                 set_bit(IRQTF_AFFINITY, &new->thread_flags);
                 return 0;
             }
@@ -1109,93 +1124,98 @@ Enable or disable a specific IRQ line.
 ```c
 void enable_irq(unsigned int irq)
 {
-    unsigned long flags;
-    struct irq_desc *desc = irq_get_desc_buslock(irq, &flags, IRQ_GET_DESC_CHECK_GLOBAL);
+	scoped_irqdesc_get_and_buslock(irq, IRQ_GET_DESC_CHECK_GLOBAL) {
+		struct irq_desc *desc = scoped_irqdesc;
 
-    if (!desc)
-        return;
-    if (WARN(!desc->irq_data.chip))
-        goto out;
+		if (WARN(!desc->irq_data.chip, "enable_irq before setup/request_irq: irq %u\n", irq))
+			return;
+		__enable_irq(desc);
+	}
+}
 
-    __enable_irq(desc) {
-        switch (desc->depth) {
-        case 0:
-    err_out:
-            WARN(1, KERN_WARNING "Unbalanced enable for IRQ %d\n", irq_desc_get_irq(desc));
-            break;
-        case 1: {
-            if (desc->istate & IRQS_SUSPENDED)
-                goto err_out;
-            /* Prevent probing on this irq: */
-            irq_settings_set_noprobe(desc);
-            irq_startup(desc, IRQ_RESEND, IRQ_START_FORCE) {
-                struct irq_data *d = irq_desc_get_irq_data(desc);
-                const struct cpumask *aff = irq_data_get_affinity_mask(d);
-                int ret = 0;
+void __enable_irq(struct irq_desc *desc)
+{
+    switch (desc->depth) {
+    case 0:
+err_out:
+        WARN(1, KERN_WARNING "Unbalanced enable for IRQ %d\n", irq_desc_get_irq(desc));
+        break;
+    case 1: {
+        if (desc->istate & IRQS_SUSPENDED)
+            goto err_out;
+        /* Prevent probing on this irq: */
+        irq_settings_set_noprobe(desc) {
+            desc->status_use_accessors |= _IRQ_NOPROBE;
+        }
 
-                desc->depth = 0;
+        irq_startup(desc, IRQ_RESEND, IRQ_START_FORCE) {
+            struct irq_data *d = irq_desc_get_irq_data(desc);
+            const struct cpumask *aff = irq_data_get_affinity_mask(d);
+            int ret = 0;
 
-                if (irqd_is_started(d)) {
-                    irq_enable(desc) {
-                        if (!irqd_irq_disabled(&desc->irq_data)) {
-                            unmask_irq(desc);
+            desc->depth = 0;
+
+            if (irqd_is_started(d)) {
+                irq_enable(desc) {
+                    if (!irqd_irq_disabled(&desc->irq_data)) {
+                        unmask_irq(desc);
+                    } else {
+                        irq_state_clr_disabled(desc);
+                        if (desc->irq_data.chip->irq_enable) {
+                            desc->irq_data.chip->irq_enable(&desc->irq_data);
+                            irq_state_clr_masked(desc);
                         } else {
-                            irq_state_clr_disabled(desc);
-                            if (desc->irq_data.chip->irq_enable) {
-                                desc->irq_data.chip->irq_enable(&desc->irq_data);
-                                irq_state_clr_masked(desc);
-                            } else {
-                                unmask_irq(desc);
-                            }
+                            unmask_irq(desc);
                         }
-                    }
-                } else {
-                    switch (__irq_startup_managed(desc, aff, force)) {
-                    case IRQ_STARTUP_NORMAL:
-                        if (d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP)
-                            irq_setup_affinity(desc);
-                        ret = __irq_startup(desc);
-                        if (!(d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP))
-                            irq_setup_affinity(desc);
-                        break;
-                    case IRQ_STARTUP_MANAGED:
-                        irq_do_set_affinity(d, aff, false);
-                        ret = __irq_startup(desc) {
-                            struct irq_data *d = irq_desc_get_irq_data(desc);
-                            int ret = 0;
-
-                            /* Warn if this interrupt is not activated but try nevertheless */
-                            WARN_ON_ONCE(!irqd_is_activated(d));
-
-                            if (d->chip->irq_startup) {
-                                ret = d->chip->irq_startup(d);
-                                irq_state_clr_disabled(desc);
-                                irq_state_clr_masked(desc);
-                            } else {
-                                irq_enable(desc);
-                            }
-                            irq_state_set_started(desc);
-                            return ret;
-                        }
-                        break;
-                    case IRQ_STARTUP_ABORT:
-                        irqd_set_managed_shutdown(d);
-                        return 0;
                     }
                 }
-                if (resend)
-                    check_irq_resend(desc, false);
+            } else {
+                switch (__irq_startup_managed(desc, aff, force)) {
+                case IRQ_STARTUP_NORMAL:
+                    if (d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP)
+                        irq_setup_affinity(desc);
+                    ret = __irq_startup(desc);
+                    if (!(d->chip->flags & IRQCHIP_AFFINITY_PRE_STARTUP))
+                        irq_setup_affinity(desc);
+                    break;
+                case IRQ_STARTUP_MANAGED:
+                    irq_do_set_affinity(d, aff, false);
+                    ret = __irq_startup(desc) {
+                        struct irq_data *d = irq_desc_get_irq_data(desc);
+                        int ret = 0;
 
-                return ret;
+                        /* Warn if this interrupt is not activated but try nevertheless */
+                        WARN_ON_ONCE(!irqd_is_activated(d));
+
+                        if (d->chip->irq_startup) {
+                            ret = d->chip->irq_startup(d);
+                            irq_state_clr_disabled(desc);
+                            irq_state_clr_masked(desc);
+                        } else {
+                            irq_enable(desc);
+                        }
+                        irq_state_set_started(desc) {
+                            irqd_set(&desc->irq_data, IRQD_IRQ_STARTED);
+                        }
+                        return ret;
+                    }
+                    break;
+                case IRQ_STARTUP_ABORT:
+                    desc->depth = 1;
+                    irqd_set_managed_shutdown(d);
+                    return 0;
+                }
             }
-            break;
+            if (resend)
+                check_irq_resend(desc, false);
+
+            return ret;
         }
-        default:
-            desc->depth--;
-        }
+        break;
     }
-out:
-    irq_put_desc_busunlock(desc, flags);
+    default:
+        desc->depth--;
+    }
 }
 ```
 

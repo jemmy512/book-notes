@@ -3297,7 +3297,7 @@ done_restock:
 }
 ```
 
-#### consume_refill_drain_stock
+### memcg_stock
 
 ```c
 #define MEMCG_CHARGE_BATCH 64U
