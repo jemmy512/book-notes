@@ -16449,7 +16449,9 @@ ret = can_migrate_task(p, env) {
 }
 ```
 
-# wake_up
+# wait_wake_up
+
+## wake_up
 
 ![](../images/kernel/proc-wake-up.svg)
 
@@ -16510,7 +16512,7 @@ static int __wake_up_common(
 }
 ```
 
-# wait_woken
+## wait_woken
 
 ![](../images/kernel/proc-wake-up.svg)
 
@@ -16616,7 +16618,7 @@ struct wait_queue_entry {
 };
 ```
 
-# try_to_wake_up
+## try_to_wake_up
 
 ![](../images/kernel/proc-wake-up.svg)
 
@@ -16794,7 +16796,7 @@ out:
 }
 ```
 
-## ttwu_runnable
+### ttwu_runnable
 
 ```c
 int ttwu_runnable(struct task_struct *p, int wake_flags)
@@ -16822,7 +16824,7 @@ int ttwu_runnable(struct task_struct *p, int wake_flags)
 }
 ```
 
-## ttwu_queue_wakelist
+### ttwu_queue_wakelist
 
 ```c
 static bool ttwu_queue_wakelist(struct task_struct *p, int cpu, int wake_flags)
@@ -16898,7 +16900,7 @@ bool ttwu_queue_cond(struct task_struct *p, int cpu)
 }
 ```
 
-## select_task_rq
+### select_task_rq
 
 ```c
 int select_task_rq(struct task_struct *p, int cpu, int *wake_flags)
@@ -17014,7 +17016,7 @@ bool is_cpu_allowed(struct task_struct *p, int cpu)
 }
 ```
 
-## set_task_cpu
+### set_task_cpu
 
 ```c
 void set_task_cpu(struct task_struct *p, unsigned int new_cpu) {
@@ -17061,7 +17063,7 @@ void set_task_cpu(struct task_struct *p, unsigned int new_cpu) {
 }
 ```
 
-## ttwu_queue
+### ttwu_queue
 
 ```c
 static void ttwu_queue(struct task_struct *p, int cpu, int wake_flags)
@@ -22208,9 +22210,11 @@ bool freezing_slow_path(struct task_struct *p)
     if (tsk_is_oom_victim(p))
         return false;
 
+    /* kthread freezeing is active */
     if (pm_nosig_freezing || cgroup1_freezing(p))
         return true;
 
+    /* user thread freezing is active */
     if (pm_freezing && !(p->flags & PF_KTHREAD))
         return true;
 
