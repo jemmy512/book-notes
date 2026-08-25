@@ -17362,29 +17362,30 @@ out_sock_release_nosk:
 ## rtnetlink_rcv
 
 ```c
-userspace: sendmsg(fd, msg, ...)          [syscall]
+userspace: socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE)
+           sendmsg(fd, msg, ...)          [syscall]
     │
     ▼
-netlink_sendmsg(sock, msg, len)           [af_netlink.c:1818]
+netlink_sendmsg(sock, msg, len)
     │  copies user data into skb
     │  dst_portid = 0 (kernel socket)
     │
     ▼
-netlink_unicast(ssk, skb, dst_portid=0)   [af_netlink.c:1328]
+netlink_unicast(ssk, skb, dst_portid=0)
     │  netlink_is_kernel(sk) == true
     │
     ▼
-netlink_unicast_kernel(sk, skb, ssk)      [af_netlink.c:1306]
+netlink_unicast_kernel(sk, skb, ssk)
     │  nlk->netlink_rcv != NULL
     │  calls nlk->netlink_rcv(skb)
     │    └─ set at socket creation time via cfg->input = rtnetlink_rcv
     │
     ▼
-rtnetlink_rcv(skb)                        [rtnetlink.c:7093]
+rtnetlink_rcv(skb)
     │  thin wrapper
     │
     ▼
-netlink_rcv_skb(skb, &rtnetlink_rcv_msg)  [af_netlink.c:2530]
+netlink_rcv_skb(skb, &rtnetlink_rcv_msg)
     │  loops over all nlmsghdr in skb
     │  skips non-NLM_F_REQUEST messages
     │  skips control types < NLMSG_MIN_TYPE
@@ -17571,6 +17572,20 @@ err_unlock:
 ```
 
 ## rtnl_msg_handler
+
+`rtnl` handles `RTM_*` message types for:
+
+| Domain | Message types |
+|---|---|
+| Network interfaces (links) | `RTM_NEWLINK`, `RTM_DELLINK`, `RTM_GETLINK` |
+| IP addresses | `RTM_NEWADDR`, `RTM_DELADDR`, `RTM_GETADDR` |
+| Routing table entries | `RTM_NEWROUTE`, `RTM_DELROUTE`, `RTM_GETROUTE` |
+| ARP/NDP neighbors | `RTM_NEWNEIGH`, `RTM_DELNEIGH`, `RTM_GETNEIGH` |
+| Policy routing rules | `RTM_NEWRULE`, `RTM_DELRULE`, `RTM_GETRULE` |
+| Traffic control (qdiscs/classes/filters) | `RTM_NEWQDISC`, `RTM_NEWTCLASS`, `RTM_NEWTFILTER` |
+| Nexthops | `RTM_NEWNEXTHOP`, `RTM_DELNEXTHOP` |
+| Network namespaces | `RTM_NEWNSID`, `RTM_GETNSID` |
+| Address labels, FDB entries, MDB, ... | various `RTM_NEW*` / `RTM_GET*` |
 
 ```c
 struct rtnl_msg_handler {
