@@ -10675,8 +10675,12 @@ struct netdev_queue *netdev_core_pick_tx(struct net_device *dev,
         queue_index = netdev_cap_txqueue(dev, queue_index);
     }
 
-    skb_set_queue_mapping(skb, queue_index);
-    return netdev_get_tx_queue(dev, queue_index);
+    skb_set_queue_mapping(skb, queue_index) {
+        skb->queue_mapping = queue_mapping;
+    }
+    return netdev_get_tx_queue(dev, queue_index) {
+        return &dev->_tx[index];
+    }
 }
 
 u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
@@ -10694,13 +10698,92 @@ u16 netdev_pick_tx(struct net_device *dev, struct sk_buff *skb,
         if (new_index < 0)
             new_index = skb_tx_hash(dev, sb_dev, skb);
 
-        if (sk && sk_fullsock(sk) &&
-            rcu_access_pointer(sk->sk_dst_cache))
-            sk_tx_queue_set(sk, new_index);
+        if (sk && sk_fullsock(sk) && rcu_access_pointer(sk->sk_dst_cache)) {
+            sk_tx_queue_set(sk, new_index) {
+                /* sk_tx_queue_mapping accept only upto a 16-bit value */
+                if (WARN_ON_ONCE((unsigned short)tx_queue >= USHRT_MAX))
+                    return;
+                /* Paired with READ_ONCE() in sk_tx_queue_get() and
+                * other WRITE_ONCE() because socket lock might be not held.
+                */
+                if (READ_ONCE(sk->sk_tx_queue_mapping) != tx_queue) {
+                    WRITE_ONCE(sk->sk_tx_queue_mapping, tx_queue);
+                    WRITE_ONCE(sk->sk_tx_queue_mapping_jiffies, jiffies);
+                    return;
+                }
+
+                /* Refresh sk_tx_queue_mapping_jiffies if too old. */
+                if (time_is_before_jiffies(READ_ONCE(sk->sk_tx_queue_mapping_jiffies) + HZ))
+                    WRITE_ONCE(sk->sk_tx_queue_mapping_jiffies, jiffies);
+            }
+        }
 
         queue_index = new_index;
     }
 
+    return queue_index;
+}
+
+static int get_xps_queue(struct net_device *dev, struct net_device *sb_dev,
+             struct sk_buff *skb)
+{
+    struct xps_dev_maps *dev_maps;
+    struct sock *sk = skb->sk;
+    int queue_index = -1;
+
+    if (!static_key_false(&xps_needed))
+        return -1;
+
+    rcu_read_lock();
+    if (!static_key_false(&xps_rxqs_needed))
+        goto get_cpus_map;
+
+    dev_maps = rcu_dereference(sb_dev->xps_maps[XPS_RXQS]);
+    if (dev_maps) {
+        int tci = sk_rx_queue_get(sk);
+
+        if (tci >= 0)
+            queue_index = __get_xps_queue_idx(dev, skb, dev_maps, tci);
+    }
+
+get_cpus_map:
+    if (queue_index < 0) {
+        dev_maps = rcu_dereference(sb_dev->xps_maps[XPS_CPUS]);
+        if (dev_maps) {
+            unsigned int tci = skb->sender_cpu - 1;
+
+            queue_index = __get_xps_queue_idx(dev, skb, dev_maps, tci);
+        }
+    }
+    rcu_read_unlock();
+
+    return queue_index;
+}
+
+static int __get_xps_queue_idx(struct net_device *dev, struct sk_buff *skb,
+                   struct xps_dev_maps *dev_maps, unsigned int tci)
+{
+    int tc = netdev_get_prio_tc_map(dev, skb->priority) {
+        return READ_ONCE(dev->prio_tc_map[prio & TC_BITMASK]);
+    }
+    struct xps_map *map;
+    int queue_index = -1;
+
+    if (tc >= dev_maps->num_tc || tci >= dev_maps->nr_ids)
+        return queue_index;
+
+    tci *= dev_maps->num_tc;
+    tci += tc;
+
+    map = rcu_dereference(dev_maps->attr_map[tci]);
+    if (map) {
+        if (map->len == 1)
+            queue_index = map->queues[0];
+        else
+            queue_index = map->queues[reciprocal_scale( skb_get_hash(skb), map->len)];
+        if (unlikely(queue_index >= dev->real_num_tx_queues))
+            queue_index = -1;
+    }
     return queue_index;
 }
 ```
@@ -10883,7 +10966,14 @@ bool qdisc_restart(struct Qdisc *q, int *packets, int budget)
         root_lock = qdisc_lock(q);
 
     dev = qdisc_dev(q);
-    txq = skb_get_tx_queue(dev, skb);
+    txq = skb_get_tx_queue(dev, skb) {
+        idx = skb_get_queue_mapping(skb) {
+            return skb->queue_mapping;
+        }
+        return netdev_get_tx_queue(dev, idx) {
+            return &dev->_tx[index];
+        }
+    }
 
     return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
 }
@@ -10993,7 +11083,11 @@ static void __netif_reschedule(struct Qdisc *q)
     raise_softirq_irqoff(NET_TX_SOFTIRQ);
     local_irq_restore(flags);
 }
+```
 
+#### net_tx_action
+
+```c
 /* register soft irq when boot */
 open_softirq(NET_TX_SOFTIRQ, net_tx_action); /* snd */
 open_softirq(NET_RX_SOFTIRQ, net_rx_action); /* rcv */
@@ -14564,6 +14658,90 @@ ingress_verdict:
 
 ### nf_ingress
 
+```c
+static inline int nf_ingress(struct sk_buff *skb, struct packet_type **pt_prev,
+                 int *ret, struct net_device *orig_dev)
+{
+    if (nf_hook_ingress_active(skb)) {
+        int ingress_retval;
+
+        if (unlikely(*pt_prev)) {
+            *ret = deliver_skb(skb, *pt_prev, orig_dev);
+            *pt_prev = NULL;
+        }
+
+        rcu_read_lock();
+        ingress_retval = nf_hook_ingress(skb);
+        rcu_read_unlock();
+        return ingress_retval;
+    }
+    return 0;
+}
+
+#ifdef CONFIG_NETFILTER_INGRESS
+static inline bool nf_hook_ingress_active(const struct sk_buff *skb)
+{
+#ifdef CONFIG_JUMP_LABEL
+    if (!static_key_false(&nf_hooks_needed[NFPROTO_NETDEV][NF_NETDEV_INGRESS]))
+        return false;
+#endif
+    return rcu_access_pointer(skb->dev->nf_hooks_ingress);
+}
+
+static inline int nf_hook_ingress(struct sk_buff *skb)
+{
+    struct nf_hook_entries *e = rcu_dereference(skb->dev->nf_hooks_ingress);
+    struct nf_hook_state state;
+    int ret;
+
+    /* Must recheck the ingress hook head, in the event it became NULL
+     * after the check in nf_hook_ingress_active evaluated to true. */
+    if (unlikely(!e))
+        return 0;
+
+    nf_hook_state_init(&state, NF_NETDEV_INGRESS,
+               NFPROTO_NETDEV, skb->dev, NULL, NULL,
+               dev_net(skb->dev), NULL);
+    ret = nf_hook_slow(skb, &state, e, 0);
+    if (ret == 0)
+        return -1;
+
+    return ret;
+}
+
+int nf_hook_slow(struct sk_buff *skb, struct nf_hook_state *state,
+         const struct nf_hook_entries *e, unsigned int s)
+{
+    unsigned int verdict;
+    int ret;
+
+    for (; s < e->num_hook_entries; s++) {
+        verdict = nf_hook_entry_hookfn(&e->hooks[s], skb, state);
+        switch (verdict & NF_VERDICT_MASK) {
+        case NF_ACCEPT:
+            break;
+        case NF_DROP:
+            kfree_skb_reason(skb, SKB_DROP_REASON_NETFILTER_DROP);
+            ret = NF_DROP_GETERR(verdict);
+            if (ret == 0)
+                ret = -EPERM;
+            return ret;
+        case NF_QUEUE:
+            ret = nf_queue(skb, state, s, verdict);
+            if (ret == 1)
+                continue;
+            return ret;
+        case NF_STOLEN:
+            return NF_DROP_GETERR(verdict);
+        default:
+            WARN_ON_ONCE(1);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+```
 
 ### vlan_do_receive
 
@@ -17575,17 +17753,17 @@ err_unlock:
 
 `rtnl` handles `RTM_*` message types for:
 
-| Domain | Message types |
-|---|---|
-| Network interfaces (links) | `RTM_NEWLINK`, `RTM_DELLINK`, `RTM_GETLINK` |
-| IP addresses | `RTM_NEWADDR`, `RTM_DELADDR`, `RTM_GETADDR` |
-| Routing table entries | `RTM_NEWROUTE`, `RTM_DELROUTE`, `RTM_GETROUTE` |
-| ARP/NDP neighbors | `RTM_NEWNEIGH`, `RTM_DELNEIGH`, `RTM_GETNEIGH` |
-| Policy routing rules | `RTM_NEWRULE`, `RTM_DELRULE`, `RTM_GETRULE` |
-| Traffic control (qdiscs/classes/filters) | `RTM_NEWQDISC`, `RTM_NEWTCLASS`, `RTM_NEWTFILTER` |
-| Nexthops | `RTM_NEWNEXTHOP`, `RTM_DELNEXTHOP` |
-| Network namespaces | `RTM_NEWNSID`, `RTM_GETNSID` |
-| Address labels, FDB entries, MDB, ... | various `RTM_NEW*` / `RTM_GET*` |
+| Domain | Message types | `ip` command |
+|---|---|---|
+| Network namespaces | `RTM_NEWNSID`, `RTM_GETNSID` | `ip netns add/show` |
+| Network interfaces (links) | `RTM_NEWLINK`, `RTM_DELLINK`, `RTM_GETLINK` | `ip link add/del/show` |
+| Traffic control (qdiscs/classes/filters) | `RTM_NEWQDISC`, `RTM_NEWTCLASS`, `RTM_NEWTFILTER` | `tc qdisc/class/filter add/show` |
+| ARP/NDP neighbors | `RTM_NEWNEIGH`, `RTM_DELNEIGH`, `RTM_GETNEIGH` | `ip neigh add/del/show` |
+| Address labels, FDB entries, MDB, ... | various `RTM_NEW*` / `RTM_GET*` | `ip addrlabel`, `bridge fdb/mdb` |
+| IP addresses | `RTM_NEWADDR`, `RTM_DELADDR`, `RTM_GETADDR` | `ip addr add/del/show` |
+| Nexthops | `RTM_NEWNEXTHOP`, `RTM_DELNEXTHOP` | `ip nexthop add/del` |
+| Routing table entries | `RTM_NEWROUTE`, `RTM_DELROUTE`, `RTM_GETROUTE` | `ip route add/del/show` |
+| Policy routing rules | `RTM_NEWRULE`, `RTM_DELRULE`, `RTM_GETRULE` | `ip rule add/del/show` |
 
 ```c
 struct rtnl_msg_handler {
@@ -17596,6 +17774,9 @@ struct rtnl_msg_handler {
     rtnl_dumpit_func    dumpit;
     int                 flags;
 };
+
+static struct rtnl_link __rcu *__rcu *rtnl_msg_handlers[RTNL_FAMILY_MAX + 1];
+/* rtnl_msg_handlers[protocol][msgtype - RTM_BASE] */
 
 #define rtnl_register_many(handlers)                \
     __rtnl_register_many(handlers, ARRAY_SIZE(handlers))
@@ -17621,9 +17802,6 @@ int __rtnl_register_many(const struct rtnl_msg_handler *handlers, int n)
 
     return err;
 }
-
-static struct rtnl_link __rcu *__rcu *rtnl_msg_handlers[RTNL_FAMILY_MAX + 1];
-/* rtnl_msg_handlers[protocol][msgtype - RTM_BASE] */
 
 int rtnl_register_internal(struct module *owner,
                   int protocol, int msgtype,
@@ -18650,37 +18828,45 @@ static const struct rtnl_msg_handler nexthop_rtnl_msg_handlers[] __initconst = {
     {
         .msgtype    = RTM_NEWNEXTHOP,
         .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    },
     {
         .msgtype    = RTM_DELNEXTHOP,
         .doit       = rtm_del_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    },
     {
         .msgtype    = RTM_GETNEXTHOP,
         .doit       = rtm_get_nexthop,
-        .dumpit     = rtm_dump_nexthop},
+        .dumpit     = rtm_dump_nexthop
+    },
     {
         .msgtype    = RTM_GETNEXTHOPBUCKET,
         .doit       = rtm_get_nexthop_bucket,
-        .dumpit     = rtm_dump_nexthop_bucket},
+        .dumpit     = rtm_dump_nexthop_bucket
+    },
     {
         .protocol   = PF_INET,
         .msgtype    = RTM_NEWNEXTHOP,
         .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    },
     {
         .protocol   = PF_INET,
         .msgtype    = RTM_GETNEXTHOP,
-        .dumpit     = rtm_dump_nexthop},
+        .dumpit     = rtm_dump_nexthop
+    },
     {
         .protocol   = PF_INET6,
         .msgtype    = RTM_NEWNEXTHOP,
         .doit       = rtm_new_nexthop,
-        .flags      = RTNL_FLAG_DOIT_PERNET},
+        .flags      = RTNL_FLAG_DOIT_PERNET
+    },
     {
         .protocol   = PF_INET6,
         .msgtype    = RTM_GETNEXTHOP,
-        .dumpit     = rtm_dump_nexthop},
+        .dumpit     = rtm_dump_nexthop
+    },
 };
 ```
 
@@ -18868,6 +19054,7 @@ unlock:
 ```
 
 # route
+
 <img src='../images/kernel/net-filter.svg' style='max-height:850px'/>
 
 ---
@@ -18885,17 +19072,17 @@ unlock:
 ```c
 INHERITANCE / COMPOSITION SUMMARY
 
-struct dst_entry          «abstract base for all routes»
-  └── struct rtable       «IPv4 cached route, skb->dst»
+struct dst_entry          <abstract base for all routes>
+  └── struct rtable       <IPv4 cached route, skb->dst>
         └── cached per-CPU inside fib_nh_common.nhc_pcpu_rth_output
 
-struct fib_nh_common      «abstract nexthop forwarding info»
-  ├── struct fib_nh       «IPv4 embedded nexthop (old-style fib_info)»
-  └── struct fib6_nh      «IPv6 nexthop»
+struct fib_nh_common      <abstract nexthop forwarding info>
+  ├── struct fib_nh       <IPv4 embedded nexthop (old-style fib_info)>
+  └── struct fib6_nh      <IPv6 nexthop>
   └── (also accessed via nh_info inside struct nexthop, new-style)
 
-fib_rules_ops               «pluggable policy routing engine»
-    └── fib_rule[]          «individual rules, ordered by pref»
+fib_rules_ops               <pluggable policy routing engine>
+    └── fib_rule[]          <individual rules, ordered by pref>
         └── selects → fib_table (by table id)
               └── trie → key_vector (LC-trie)
                     └── leaf → fib_alias[]  (sorted by priority)
@@ -18910,16 +19097,16 @@ fib_rules_ops               «pluggable policy routing engine»
 
 ```c
 struct net {
-    struct netns_nexthop    nexthop;
-    struct netns_ipv4       ipv4;
-    struct net_device       *loopback_dev;
-    struct sock             *rtnl;
+    struct netns_nexthop        nexthop;
+    struct netns_ipv4           ipv4;
+    struct net_device           *loopback_dev;
+    struct sock                 *rtnl;
 #ifdef CONFIG_IP_MULTIPLE_TABLES
-    struct fib_rules_ops    *rules_ops;
-    struct fib_table __rcu    *fib_main;
-    struct fib_table __rcu    *fib_default;
-    unsigned int        fib_rules_require_fldissect;
-    bool            fib_has_custom_rules;
+    struct fib_rules_ops        *rules_ops;
+    struct fib_table __rcu      *fib_main;
+    struct fib_table __rcu      *fib_default;
+    unsigned int                fib_rules_require_fldissect;
+    bool                        fib_has_custom_rules;
 #endif
 };
 
@@ -20426,6 +20613,8 @@ skb arrives → ip_rcv() → ip_forward()
                               │
                       fib_lookup(net, &fl4, &res)
                               │
+                    fib_rule_lookup()
+                              │
                     fib_table_lookup()          ← LPM trie lookup
                               │
                     fi->nh?
@@ -20478,209 +20667,6 @@ out:
     rcu_read_unlock();
 
     return err;
-}
-```
-
-### fib_table_lookup
-
-```c
-int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
-             struct fib_result *res, int fib_flags)
-{
-    struct trie *t = (struct trie *) tb->tb_data;
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-    struct trie_use_stats __percpu *stats = t->stats;
-#endif
-    const t_key key = ntohl(flp->daddr);
-    struct key_vector *n, *pn;
-    struct fib_alias *fa;
-    unsigned long index;
-    t_key cindex;
-
-    pn = t->kv;
-    cindex = 0;
-
-    n = get_child_rcu(pn, cindex);
-    if (!n) {
-        trace_fib_table_lookup(tb->tb_id, flp, NULL, -EAGAIN);
-        return -EAGAIN;
-    }
-
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-    this_cpu_inc(stats->gets);
-#endif
-
-    /* Step 1: Travel to the longest prefix match in the trie */
-    for (;;) {
-        index = get_cindex(key, n) {
-            return (((key) ^ (kv)->key) >> (kv)->pos)
-        }
-
-        /* This bit of code is a bit tricky but it combines multiple
-         * checks into a single check.  The prefix consists of the
-         * prefix plus zeros for the "bits" in the prefix. The index
-         * is the difference between the key and this value.  From
-         * this we can actually derive several pieces of data.
-         *   if (index >= (1ul << bits))
-         *     we have a mismatch in skip bits and failed
-         *   else
-         *     we know the value is cindex
-         *
-         * This check is safe even if bits == KEYLENGTH due to the
-         * fact that we can only allocate a node with 32 bits if a
-         * long is greater than 32 bits. */
-        if (index >= (1ul << n->bits))
-            break;
-
-        /* we have found a leaf. Prefixes have already been compared */
-        if (IS_LEAF(n)) /* (!(n)->bits) */
-            goto found;
-
-        /* only record pn and cindex if we are going to be chopping
-         * bits later.  Otherwise we are just wasting cycles. */
-        if (n->slen > n->pos) {
-            pn = n;
-            cindex = index;
-        }
-
-        n = get_child_rcu(n, index); /* (tn)->tnode[i] */
-        if (unlikely(!n))
-            goto backtrace;
-    }
-
-    /* Step 2: Sort out leaves and begin backtracing for longest prefix */
-    for (;;) {
-        /* record the pointer where our next node pointer is stored */
-        struct key_vector __rcu **cptr = n->tnode;
-
-        /* This test verifies that none of the bits that differ
-         * between the key and the prefix exist in the region of
-         * the lsb and higher in the prefix. */
-        if (unlikely(prefix_mismatch(key, n)) || (n->slen == n->pos))
-            goto backtrace;
-
-        /* exit out and process leaf */
-        if (unlikely(IS_LEAF(n)))
-            break;
-
-        /* Don't bother recording parent info.  Since we are in
-         * prefix match mode we will have to come back to wherever
-         * we started this traversal anyway */
-
-        while ((n = rcu_dereference(*cptr)) == NULL) {
-backtrace:
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-            if (!n)
-                this_cpu_inc(stats->null_node_hit);
-#endif
-            /* If we are at cindex 0 there are no more bits for
-             * us to strip at this level so we must ascend back
-             * up one level to see if there are any more bits to
-             * be stripped there. */
-            while (!cindex) {
-                t_key pkey = pn->key;
-
-                /* If we don't have a parent then there is
-                 * nothing for us to do as we do not have any
-                 * further nodes to parse. */
-                if (IS_TRIE(pn)) { /* ((n)->pos >= KEYLENGTH)*/
-                    trace_fib_table_lookup(tb->tb_id, flp, NULL, -EAGAIN);
-                    return -EAGAIN;
-                }
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-                this_cpu_inc(stats->backtrack);
-#endif
-                /* Get Child's index */
-                pn = node_parent_rcu(pn);
-                cindex = get_index(pkey, pn);
-            }
-
-            /* strip the least significant bit from the cindex */
-            cindex &= cindex - 1;
-
-            /* grab pointer for next child node */
-            cptr = &pn->tnode[cindex];
-        }
-    }
-
-found:
-    /* this line carries forward the xor from earlier in the function */
-    index = key ^ n->key;
-
-    /* Step 3: Process the leaf, if that fails fall back to backtracing */
-    hlist_for_each_entry_rcu(fa, &n->leaf, fa_list) {
-        struct fib_info *fi = fa->fa_info;
-        struct fib_nh_common *nhc;
-        int nhsel, err;
-
-        if ((BITS_PER_LONG > KEYLENGTH) || (fa->fa_slen < KEYLENGTH)) {
-            if (index >= (1ul << fa->fa_slen))
-                continue;
-        }
-        if (fa->fa_dscp && !fib_dscp_masked_match(fa->fa_dscp, flp))
-            continue;
-        /* Paired with WRITE_ONCE() in fib_release_info() */
-        if (READ_ONCE(fi->fib_dead))
-            continue;
-        if (fa->fa_info->fib_scope < flp->flowi4_scope)
-            continue;
-        fib_alias_accessed(fa);
-        err = fib_props[fa->fa_type].error;
-        if (unlikely(err < 0)) {
-out_reject:
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-            this_cpu_inc(stats->semantic_match_passed);
-#endif
-            trace_fib_table_lookup(tb->tb_id, flp, NULL, err);
-            return err;
-        }
-        if (fi->fib_flags & RTNH_F_DEAD)
-            continue;
-
-        if (unlikely(fi->nh)) {
-            if (nexthop_is_blackhole(fi->nh)) {
-                err = fib_props[RTN_BLACKHOLE].error;
-                goto out_reject;
-            }
-
-            nhc = nexthop_get_nhc_lookup(fi->nh, fib_flags, flp, &nhsel);
-            if (nhc)
-                goto set_result;
-            goto miss;
-        }
-
-        for (nhsel = 0; nhsel < fib_info_num_path(fi); nhsel++) {
-            nhc = fib_info_nhc(fi, nhsel);
-
-            if (!fib_lookup_good_nhc(nhc, fib_flags, flp))
-                continue;
-set_result:
-            if (!(fib_flags & FIB_LOOKUP_NOREF))
-                refcount_inc(&fi->fib_clntref);
-
-            res->prefix = htonl(n->key);
-            res->prefixlen = KEYLENGTH - fa->fa_slen;
-            res->nh_sel = nhsel;
-            res->nhc = nhc;
-            res->type = fa->fa_type;
-            res->scope = fi->fib_scope;
-            res->dscp = fa->fa_dscp;
-            res->fi = fi;
-            res->table = tb;
-            res->fa_head = &n->leaf;
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-            this_cpu_inc(stats->semantic_match_passed);
-#endif
-            trace_fib_table_lookup(tb->tb_id, flp, nhc, err);
-
-            return err;
-        }
-    }
-miss:
-#ifdef CONFIG_IP_FIB_TRIE_STATS
-    this_cpu_inc(stats->semantic_match_miss);
-#endif
-    goto backtrace;
 }
 ```
 
@@ -20937,6 +20923,209 @@ suppress_route:
     if (!(arg->flags & FIB_LOOKUP_NOREF))
         fib_info_put(result->fi);
     return true;
+}
+```
+
+### fib_table_lookup
+
+```c
+int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
+             struct fib_result *res, int fib_flags)
+{
+    struct trie *t = (struct trie *) tb->tb_data;
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+    struct trie_use_stats __percpu *stats = t->stats;
+#endif
+    const t_key key = ntohl(flp->daddr);
+    struct key_vector *n, *pn;
+    struct fib_alias *fa;
+    unsigned long index;
+    t_key cindex;
+
+    pn = t->kv;
+    cindex = 0;
+
+    n = get_child_rcu(pn, cindex);
+    if (!n) {
+        trace_fib_table_lookup(tb->tb_id, flp, NULL, -EAGAIN);
+        return -EAGAIN;
+    }
+
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+    this_cpu_inc(stats->gets);
+#endif
+
+    /* Step 1: Travel to the longest prefix match in the trie */
+    for (;;) {
+        index = get_cindex(key, n) {
+            return (((key) ^ (kv)->key) >> (kv)->pos)
+        }
+
+        /* This bit of code is a bit tricky but it combines multiple
+         * checks into a single check.  The prefix consists of the
+         * prefix plus zeros for the "bits" in the prefix. The index
+         * is the difference between the key and this value.  From
+         * this we can actually derive several pieces of data.
+         *   if (index >= (1ul << bits))
+         *     we have a mismatch in skip bits and failed
+         *   else
+         *     we know the value is cindex
+         *
+         * This check is safe even if bits == KEYLENGTH due to the
+         * fact that we can only allocate a node with 32 bits if a
+         * long is greater than 32 bits. */
+        if (index >= (1ul << n->bits))
+            break;
+
+        /* we have found a leaf. Prefixes have already been compared */
+        if (IS_LEAF(n)) /* (!(n)->bits) */
+            goto found;
+
+        /* only record pn and cindex if we are going to be chopping
+         * bits later.  Otherwise we are just wasting cycles. */
+        if (n->slen > n->pos) {
+            pn = n;
+            cindex = index;
+        }
+
+        n = get_child_rcu(n, index); /* (tn)->tnode[i] */
+        if (unlikely(!n))
+            goto backtrace;
+    }
+
+    /* Step 2: Sort out leaves and begin backtracing for longest prefix */
+    for (;;) {
+        /* record the pointer where our next node pointer is stored */
+        struct key_vector __rcu **cptr = n->tnode;
+
+        /* This test verifies that none of the bits that differ
+         * between the key and the prefix exist in the region of
+         * the lsb and higher in the prefix. */
+        if (unlikely(prefix_mismatch(key, n)) || (n->slen == n->pos))
+            goto backtrace;
+
+        /* exit out and process leaf */
+        if (unlikely(IS_LEAF(n)))
+            break;
+
+        /* Don't bother recording parent info.  Since we are in
+         * prefix match mode we will have to come back to wherever
+         * we started this traversal anyway */
+
+        while ((n = rcu_dereference(*cptr)) == NULL) {
+backtrace:
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+            if (!n)
+                this_cpu_inc(stats->null_node_hit);
+#endif
+            /* If we are at cindex 0 there are no more bits for
+             * us to strip at this level so we must ascend back
+             * up one level to see if there are any more bits to
+             * be stripped there. */
+            while (!cindex) {
+                t_key pkey = pn->key;
+
+                /* If we don't have a parent then there is
+                 * nothing for us to do as we do not have any
+                 * further nodes to parse. */
+                if (IS_TRIE(pn)) { /* ((n)->pos >= KEYLENGTH)*/
+                    trace_fib_table_lookup(tb->tb_id, flp, NULL, -EAGAIN);
+                    return -EAGAIN;
+                }
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+                this_cpu_inc(stats->backtrack);
+#endif
+                /* Get Child's index */
+                pn = node_parent_rcu(pn);
+                cindex = get_index(pkey, pn);
+            }
+
+            /* strip the least significant bit from the cindex */
+            cindex &= cindex - 1;
+
+            /* grab pointer for next child node */
+            cptr = &pn->tnode[cindex];
+        }
+    }
+
+found:
+    /* this line carries forward the xor from earlier in the function */
+    index = key ^ n->key;
+
+    /* Step 3: Process the leaf, if that fails fall back to backtracing */
+    hlist_for_each_entry_rcu(fa, &n->leaf, fa_list) {
+        struct fib_info *fi = fa->fa_info;
+        struct fib_nh_common *nhc;
+        int nhsel, err;
+
+        if ((BITS_PER_LONG > KEYLENGTH) || (fa->fa_slen < KEYLENGTH)) {
+            if (index >= (1ul << fa->fa_slen))
+                continue;
+        }
+        if (fa->fa_dscp && !fib_dscp_masked_match(fa->fa_dscp, flp))
+            continue;
+        /* Paired with WRITE_ONCE() in fib_release_info() */
+        if (READ_ONCE(fi->fib_dead))
+            continue;
+        if (fa->fa_info->fib_scope < flp->flowi4_scope)
+            continue;
+        fib_alias_accessed(fa);
+        err = fib_props[fa->fa_type].error;
+        if (unlikely(err < 0)) {
+out_reject:
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+            this_cpu_inc(stats->semantic_match_passed);
+#endif
+            trace_fib_table_lookup(tb->tb_id, flp, NULL, err);
+            return err;
+        }
+        if (fi->fib_flags & RTNH_F_DEAD)
+            continue;
+
+        if (unlikely(fi->nh)) {
+            if (nexthop_is_blackhole(fi->nh)) {
+                err = fib_props[RTN_BLACKHOLE].error;
+                goto out_reject;
+            }
+
+            nhc = nexthop_get_nhc_lookup(fi->nh, fib_flags, flp, &nhsel);
+            if (nhc)
+                goto set_result;
+            goto miss;
+        }
+
+        for (nhsel = 0; nhsel < fib_info_num_path(fi); nhsel++) {
+            nhc = fib_info_nhc(fi, nhsel);
+
+            if (!fib_lookup_good_nhc(nhc, fib_flags, flp))
+                continue;
+set_result:
+            if (!(fib_flags & FIB_LOOKUP_NOREF))
+                refcount_inc(&fi->fib_clntref);
+
+            res->prefix = htonl(n->key);
+            res->prefixlen = KEYLENGTH - fa->fa_slen;
+            res->nh_sel = nhsel;
+            res->nhc = nhc;
+            res->type = fa->fa_type;
+            res->scope = fi->fib_scope;
+            res->dscp = fa->fa_dscp;
+            res->fi = fi;
+            res->table = tb;
+            res->fa_head = &n->leaf;
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+            this_cpu_inc(stats->semantic_match_passed);
+#endif
+            trace_fib_table_lookup(tb->tb_id, flp, nhc, err);
+
+            return err;
+        }
+    }
+miss:
+#ifdef CONFIG_IP_FIB_TRIE_STATS
+    this_cpu_inc(stats->semantic_match_miss);
+#endif
+    goto backtrace;
 }
 ```
 
