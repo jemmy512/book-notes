@@ -1060,6 +1060,29 @@ void do_handle_IPI(int ipinr)
 ### smp_call_function_single
 
 ```c
+struct __call_single_data {
+    struct __call_single_node   node;
+    smp_call_func_t             func;
+    void                        *info;
+};
+
+struct __call_single_node {
+    struct llist_node           llist;
+    union {
+        unsigned int            u_flags;
+        atomic_t                a_flags;
+    };
+    u16                         src, dst;
+};
+
+#define CSD_INIT(_func, _info) \
+    (struct __call_single_data){ .func = (_func), .info = (_info), }
+
+/* Use __aligned() to avoid to use 2 cache lines for 1 csd */
+typedef struct __call_single_data call_single_data_t
+    __aligned(sizeof(struct __call_single_data));
+
+
 int smp_call_function_single(int cpu, smp_call_func_t func, void *info,
                  int wait)
 {
