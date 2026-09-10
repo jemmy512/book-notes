@@ -7744,6 +7744,7 @@ struct task_struct {
 ```
 
 ### rt_mutex_lock
+
 ```c
 __rt_mutex_lock() {
     if (likely(rt_mutex_cmpxchg_acquire(lock, NULL, current)))
@@ -7802,158 +7803,7 @@ __rt_mutex_lock() {
         set_current_state(state); /* TASK_UNINTERRUPTIBLE */
 
         /* Prepare waiter and propagate pi chain */
-        ret = task_blocks_on_rt_mutex(lock, waiter, current) {
-            waiter->task = task;
-            waiter->lock = lock;
-            waiter_update_prio(waiter, task) {
-                waiter->tree.prio = __waiter_prio(task);
-                waiter->tree.deadline = task->dl.deadline;
-            }
-            waiter_clone_prio(waiter, task) {
-                waiter->pi_tree.prio = waiter->tree.prio;
-                waiter->pi_tree.deadline = waiter->tree.deadline;
-            }
-
-            if (rt_mutex_has_waiters(lock)) {
-                top_waiter = rt_mutex_top_waiter(lock);
-            }
-
-            rt_mutex_enqueue(lock, waiter) {
-                rb_add_cached(&waiter->tree.entry, &lock->waiters, __waiter_less);
-            }
-            task->pi_blocked_on = waiter;
-
-            if (!owner)
-                return 0;
-
-            /* lock‘s top waiter is changed to the waiter */
-            if (waiter == rt_mutex_top_waiter(lock)) {
-                rt_mutex_dequeue_pi(owner, top_waiter) {
-                    rb_erase_cached(&waiter->pi_tree.entry, &task->pi_waiters);
-                    RB_CLEAR_NODE(&waiter->pi_tree.entry);
-                }
-                rt_mutex_enqueue_pi(owner, waiter) {
-                    rb_add_cached(&waiter->pi_tree.entry, &task->pi_waiters, __pi_waiter_less);
-                }
-
-                /* update (boost/deboost) the prio of owner to
-                 * the prio of its top pi_waiters */
-                rt_mutex_adjust_prio(owner/*p*/) {
-                    if (task_has_pi_waiters(p)) {
-                        pi_task = task_top_pi_waiter(p)->task;
-                    }
-
-                    rt_mutex_setprio(p, pi_task) {
-                        int prio, oldprio, queue_flag =
-                            DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
-                        const struct sched_class *prev_class, *next_class;
-                        struct rq_flags rf;
-                        struct rq *rq;
-
-                        /* XXX used to be waiter->prio, not waiter->task->prio */
-                        prio = __rt_effective_prio(pi_task, p->normal_prio);
-
-                        /* If nothing changed; bail early. */
-                        if (p->pi_top_task == pi_task && prio == p->prio && !dl_prio(prio))
-                            return;
-
-                        rq = __task_rq_lock(p, &rf);
-                        update_rq_clock(rq);
-                        /* Set under pi_lock && rq->lock, such that the value can be used under
-                        * either lock.
-                        *
-                        * Note that there is loads of tricky to make this pointer cache work
-                        * right. rt_mutex_slowunlock()+rt_mutex_postunlock() work together to
-                        * ensure a task is de-boosted (pi_task is set to NULL) before the
-                        * task is allowed to run again (and can exit). This ensures the pointer
-                        * points to a blocked task -- which guarantees the task is present. */
-                        p->pi_top_task = pi_task;
-
-                        /* For FIFO/RR we only need to set prio, if that matches we're done. */
-                        if (prio == p->prio && !dl_prio(prio))
-                            goto out_unlock;
-
-                        /* Idle task boosting is a no-no in general. There is one
-                        * exception, when PREEMPT_RT and NOHZ is active:
-                        *
-                        * The idle task calls get_next_timer_interrupt() and holds
-                        * the timer wheel base->lock on the CPU and another CPU wants
-                        * to access the timer (probably to cancel it). We can safely
-                        * ignore the boosting request, as the idle CPU runs this code
-                        * with interrupts disabled and will complete the lock
-                        * protected section without being interrupted. So there is no
-                        * real need to boost. */
-                        if (unlikely(p == rq->idle)) {
-                            WARN_ON(p != rq->curr);
-                            WARN_ON(p->pi_blocked_on);
-                            goto out_unlock;
-                        }
-
-                        trace_sched_pi_setprio(p, pi_task);
-                        oldprio = p->prio;
-
-                        if (oldprio == prio && !dl_prio(prio))
-                            queue_flag &= ~DEQUEUE_MOVE;
-
-                        prev_class = p->sched_class;
-                        next_class = __setscheduler_class(p->policy, prio);
-
-                        if (prev_class != next_class)
-                            queue_flag |= DEQUEUE_CLASS;
-
-                        scoped_guard (sched_change, p, queue_flag) {
-                            /* Boosting condition are:
-                            * 1. -rt task is running and holds mutex A
-                            *      --> -dl task blocks on mutex A
-                            *
-                            * 2. -dl task is running and holds mutex A
-                            *      --> -dl task blocks on mutex A and could preempt the
-                            *          running task */
-                            if (dl_prio(prio)) {
-                                if (!dl_prio(p->normal_prio) ||
-                                    (pi_task && dl_prio(pi_task->prio) &&
-                                    dl_entity_preempt(&pi_task->dl, &p->dl))) {
-                                    p->dl.pi_se = pi_task->dl.pi_se;
-                                    scope->flags |= ENQUEUE_REPLENISH;
-                                } else {
-                                    p->dl.pi_se = &p->dl;
-                                }
-                            } else if (rt_prio(prio)) {
-                                if (dl_prio(oldprio))
-                                    p->dl.pi_se = &p->dl;
-                                if (oldprio < prio)
-                                    scope->flags |= ENQUEUE_HEAD;
-                            } else {
-                                if (dl_prio(oldprio))
-                                    p->dl.pi_se = &p->dl;
-                                if (rt_prio(oldprio))
-                                    p->rt.timeout = 0;
-                            }
-
-                            p->sched_class = next_class;
-                            p->prio = prio;
-                        }
-                    out_unlock:
-                        /* Caller holds task_struct::pi_lock, IRQs are still disabled */
-
-                        __balance_callbacks(rq, &rf);
-                        __task_rq_unlock(rq, p, &rf);
-                    }
-                }
-                if (owner->pi_blocked_on) {
-                    chain_walk = 1;
-                }
-            } else if (rt_mutex_cond_detect_deadlock(waiter, chwalk)) {
-                chain_walk = 1;
-            }
-
-            next_lock = task_blocked_on_lock(owner);
-            if (!chain_walk || !next_lock) {
-                return 0;
-            }
-
-            rt_mutex_adjust_prio_chain(owner, chwalk, orig_lock, next_lock, orig_waiter, top_task);
-        }
+        ret = task_blocks_on_rt_mutex(lock, waiter, current);
 
         if (likely(!ret)) {
             /* perform the wait-wake-try-to-take loop */
@@ -8039,6 +7889,199 @@ __rt_mutex_lock() {
             }
         }
     }
+}
+```
+
+#### rt_mutex_setprio
+
+```c
+void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
+{
+    int prio, oldprio, queue_flag =
+        DEQUEUE_SAVE | DEQUEUE_MOVE | DEQUEUE_NOCLOCK;
+    const struct sched_class *prev_class, *next_class;
+    struct rq_flags rf;
+    struct rq *rq;
+
+    /* XXX used to be waiter->prio, not waiter->task->prio */
+    prio = __rt_effective_prio(pi_task, p->normal_prio);
+
+    /* If nothing changed; bail early. */
+    if (p->pi_top_task == pi_task && prio == p->prio && !dl_prio(prio))
+        return;
+
+    rq = __task_rq_lock(p, &rf);
+    update_rq_clock(rq);
+    /* Set under pi_lock && rq->lock, such that the value can be used under
+    * either lock.
+    *
+    * Note that there is loads of tricky to make this pointer cache work
+    * right. rt_mutex_slowunlock()+rt_mutex_postunlock() work together to
+    * ensure a task is de-boosted (pi_task is set to NULL) before the
+    * task is allowed to run again (and can exit). This ensures the pointer
+    * points to a blocked task -- which guarantees the task is present. */
+    p->pi_top_task = pi_task;
+
+    /* For FIFO/RR we only need to set prio, if that matches we're done. */
+    if (prio == p->prio && !dl_prio(prio))
+        goto out_unlock;
+
+    /* Idle task boosting is a no-no in general. There is one
+    * exception, when PREEMPT_RT and NOHZ is active:
+    *
+    * The idle task calls get_next_timer_interrupt() and holds
+    * the timer wheel base->lock on the CPU and another CPU wants
+    * to access the timer (probably to cancel it). We can safely
+    * ignore the boosting request, as the idle CPU runs this code
+    * with interrupts disabled and will complete the lock
+    * protected section without being interrupted. So there is no
+    * real need to boost. */
+    if (unlikely(p == rq->idle)) {
+        WARN_ON(p != rq->curr);
+        WARN_ON(p->pi_blocked_on);
+        goto out_unlock;
+    }
+
+    trace_sched_pi_setprio(p, pi_task);
+    oldprio = p->prio;
+
+    if (oldprio == prio && !dl_prio(prio))
+        queue_flag &= ~DEQUEUE_MOVE;
+
+    prev_class = p->sched_class;
+    next_class = __setscheduler_class(p->policy, prio);
+
+    if (prev_class != next_class)
+        queue_flag |= DEQUEUE_CLASS;
+
+    scoped_guard (sched_change, p, queue_flag) {
+        /* Boosting condition are:
+        * 1. -rt task is running and holds mutex A
+        *      --> -dl task blocks on mutex A
+        *
+        * 2. -dl task is running and holds mutex A
+        *      --> -dl task blocks on mutex A and could preempt the
+        *          running task */
+        if (dl_prio(prio)) {
+            if (!dl_prio(p->normal_prio) ||
+                (pi_task && dl_prio(pi_task->prio) &&
+                dl_entity_preempt(&pi_task->dl, &p->dl))) {
+                p->dl.pi_se = pi_task->dl.pi_se;
+                scope->flags |= ENQUEUE_REPLENISH;
+            } else {
+                p->dl.pi_se = &p->dl;
+            }
+        } else if (rt_prio(prio)) {
+            if (dl_prio(oldprio))
+                p->dl.pi_se = &p->dl;
+            if (oldprio < prio)
+                scope->flags |= ENQUEUE_HEAD;
+        } else {
+            if (dl_prio(oldprio))
+                p->dl.pi_se = &p->dl;
+            if (rt_prio(oldprio))
+                p->rt.timeout = 0;
+        }
+
+        p->sched_class = next_class;
+        p->prio = prio;
+    }
+out_unlock:
+    /* Caller holds task_struct::pi_lock, IRQs are still disabled */
+
+    __balance_callbacks(rq, &rf);
+    __task_rq_unlock(rq, p, &rf);
+}
+```
+
+#### task_blocks_on_rt_mutex
+
+```c
+static int __sched task_blocks_on_rt_mutex(struct rt_mutex_base *lock,
+					   struct rt_mutex_waiter *waiter,
+					   struct task_struct *task,
+					   struct ww_acquire_ctx *ww_ctx,
+					   enum rtmutex_chainwalk chwalk,
+					   struct wake_q_head *wake_q)
+	__must_hold(&lock->wait_lock)
+{
+    struct task_struct *owner = rt_mutex_owner(lock);
+	struct rt_mutex_waiter *top_waiter = waiter;
+	struct rt_mutex_base *next_lock;
+	int chain_walk = 0, res;
+
+	lockdep_assert_held(&lock->wait_lock);
+
+    /*
+	 * Early deadlock detection. We really don't want the task to
+	 * enqueue on itself just to untangle the mess later. It's not
+	 * only an optimization. We drop the locks, so another waiter
+	 * can come in before the chain walk detects the deadlock. So
+	 * the other will detect the deadlock and return -EDEADLOCK,
+	 * which is wrong, as the other waiter is not in a deadlock
+	 * situation.
+	 *
+	 * Except for ww_mutex, in that case the chain walk must already deal
+	 * with spurious cycles, see the comments at [3] and [6].
+	 */
+	if (owner == task && !(build_ww_mutex() && ww_ctx))
+		return -EDEADLK;
+
+    waiter->task = task;
+    waiter->lock = lock;
+    waiter_update_prio(waiter, task) {
+        waiter->tree.prio = __waiter_prio(task);
+        waiter->tree.deadline = task->dl.deadline;
+    }
+    waiter_clone_prio(waiter, task) {
+        waiter->pi_tree.prio = waiter->tree.prio;
+        waiter->pi_tree.deadline = waiter->tree.deadline;
+    }
+
+    if (rt_mutex_has_waiters(lock)) {
+        top_waiter = rt_mutex_top_waiter(lock);
+    }
+
+    rt_mutex_enqueue(lock, waiter) {
+        rb_add_cached(&waiter->tree.entry, &lock->waiters, __waiter_less);
+    }
+    task->pi_blocked_on = waiter;
+
+    if (!owner)
+        return 0;
+
+    /* lock‘s top waiter is changed to the waiter */
+    if (waiter == rt_mutex_top_waiter(lock)) {
+        rt_mutex_dequeue_pi(owner, top_waiter) {
+            rb_erase_cached(&waiter->pi_tree.entry, &task->pi_waiters);
+            RB_CLEAR_NODE(&waiter->pi_tree.entry);
+        }
+        rt_mutex_enqueue_pi(owner, waiter) {
+            rb_add_cached(&waiter->pi_tree.entry, &task->pi_waiters, __pi_waiter_less);
+        }
+
+        /* update (boost/deboost) the prio of owner to
+            * the prio of its top pi_waiters */
+        rt_mutex_adjust_prio(owner/*p*/) {
+            if (task_has_pi_waiters(p)) {
+                pi_task = task_top_pi_waiter(p)->task;
+            }
+
+            rt_mutex_setprio(p, pi_task);
+        }
+        if (owner->pi_blocked_on) {
+            chain_walk = 1;
+        }
+    } else if (rt_mutex_cond_detect_deadlock(waiter, chwalk)) {
+        chain_walk = 1;
+    }
+
+    next_lock = task_blocked_on_lock(owner);
+    if (!chain_walk || !next_lock) {
+        return 0;
+    }
+
+    rt_mutex_adjust_prio_chain(owner, chwalk, orig_lock, next_lock, orig_waiter, top_task);
 }
 ```
 
