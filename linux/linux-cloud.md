@@ -4952,32 +4952,6 @@ int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 }
 ```
 
-#### account_cfs_rq_runtime
-
-```c
-/* 1. <enque, deque, task_fair> -> update_curr
- * 2. enqueue_entity -> check_enqueue_throttle
- * 3. set_next_task_fair */
-void account_cfs_rq_runtime(struct cfs_rq *cfs_rq, u64 delta_exec)
-{
-    if (!cfs_bandwidth_used() || !cfs_rq->runtime_enabled)
-        return;
-
-    __account_cfs_rq_runtime(cfs_rq, delta_exec) {
-        /* dock delta_exec before expiring quota (as it could span periods) */
-        cfs_rq->runtime_remaining -= delta_exec;
-
-        if (likely(cfs_rq->runtime_remaining > 0))
-            return;
-
-        if (cfs_rq->throttled)
-            return;
-
-        return throttle_cfs_rq(cfs_rq);
-    }
-}
-```
-
 #### throttle_cfs_rq
 
 ![](../images/kernel/proc-sched-cfs-throttle_cfs_rq.svg)
