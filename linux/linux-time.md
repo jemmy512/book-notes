@@ -295,15 +295,29 @@ static irqreturn_t arch_timer_handler_virt(int irq, void *dev_id)
 ## tick_handle_periodic
 
 ```c
-tick_handle_periodic() {
-    tick_periodic() {
-        do_timer(1);
-            --->
+void tick_handle_periodic(struct clock_event_device *dev)
+{
+    int cpu = smp_processor_id();
+    ktime_t next = dev->next_event;
 
-        update_wall_time();
-            timekeeping_advance();
+    dev->next_event_forced = 0;
 
-        update_process_times();
+    tick_periodic(cpu) {
+        if (READ_ONCE(tick_do_timer_cpu) == cpu) {
+            raw_spin_lock(&jiffies_lock);
+            write_seqcount_begin(&jiffies_seq);
+
+            /* Keep track of the next tick event */
+            tick_next_period = ktime_add_ns(tick_next_period, TICK_NSEC);
+
+            do_timer(1);
+            write_seqcount_end(&jiffies_seq);
+            raw_spin_unlock(&jiffies_lock);
+            update_wall_time();
+        }
+
+        update_process_times(user_mode(get_irq_regs()));
+        profile_tick(CPU_PROFILING);
     }
 
     if (IS_ENABLED(CONFIG_TICK_ONESHOT) && dev->event_handler != tick_handle_periodic)
@@ -484,98 +498,342 @@ do_timer() {
 ### update_process_times
 
 ```c
-update_process_times() {
+void update_process_times(int user_tick)
+{
+    struct task_struct *p = current;
+
+    /* Note: this timer irq context must be accounted for as well. */
     account_process_tick(p, user_tick);
-
-    run_local_timers() {
-        hrtimer_run_queues();
-
-        raise_softirq(TIMER_SOFTIRQ) {
-            run_timer_softirq() {
-                __run_timers() {
-                    if (!time_after_eq(jiffies, base->clk))
-                        return;
-                    while (time_after_eq(jiffies, base->clk)) {
-                        levels = collect_expired_timers(base, heads);
-                        base->clk++;
-
-                        while (levels--) {
-                            expire_timers(base, heads + levels) {
-                                base->running_timer = timer;
-                                detach_timer(timer, true);
-
-                                fn = timer->function;
-
-                                if (timer->flags & TIMER_IRQSAFE) {
-                                    raw_spin_unlock(&base->lock);
-                                    call_timer_fn(timer, fn) {
-                                        fn(timer);
-                                    }
-                                    raw_spin_lock(&base->lock);
-                                } else {
-                                    raw_spin_unlock_irq(&base->lock);
-                                    call_timer_fn(timer, fn);
-                                    raw_spin_lock_irq(&base->lock);
-                                }
-                            }
-                        }
-                    }
-                    base->running_timer = NULL;
-                    raw_spin_unlock_irq(&base->lock);
-                }
-            }
-        }
-    }
-
+    run_local_timers();
     rcu_sched_clock_irq(user_tick);
-        --->
-
 #ifdef CONFIG_IRQ_WORK
     if (in_hardirq())
         irq_work_tick();
 #endif
+    sched_tick();
+    if (IS_ENABLED(CONFIG_POSIX_TIMERS))
+        run_posix_cpu_timers();
+}
+```
 
-    sched_tick() {
-        curr->sched_class->task_tick(rq, curr, 0);
+#### run_local_timers
+
+```c
+void run_local_timers(void)
+{
+    struct timer_base *base = this_cpu_ptr(&timer_bases[BASE_LOCAL]);
+
+    hrtimer_run_queues();
+
+    for (int i = 0; i < NR_BASES; i++, base++) {
+        /* Raise the softirq only if required.
+         *
+         * timer_base::next_expiry can be written by a remote CPU while
+         * holding the lock. If this write happens at the same time than
+         * the lockless local read, sanity checker could complain about
+         * data corruption.
+         *
+         * There are two possible situations where
+         * timer_base::next_expiry is written by a remote CPU:
+         *
+         * 1. Remote CPU expires global timers of this CPU and updates
+         * timer_base::next_expiry of BASE_GLOBAL afterwards in
+         * next_timer_interrupt() or timer_recalc_next_expiry(). The
+         * worst outcome is a superfluous raise of the timer softirq
+         * when the not yet updated value is read.
+         *
+         * 2. A new first pinned timer is enqueued by a remote CPU
+         * and therefore timer_base::next_expiry of BASE_LOCAL is
+         * updated. When this update is missed, this isn't a
+         * problem, as an IPI is executed nevertheless when the CPU
+         * was idle before. When the CPU wasn't idle but the update
+         * is missed, then the timer would expire one jiffy late -
+         * bad luck.
+         *
+         * Those unlikely corner cases where the worst outcome is only a
+         * one jiffy delay or a superfluous raise of the softirq are
+         * not that expensive as doing the check always while holding
+         * the lock.
+         *
+         * Possible remote writers are using WRITE_ONCE(). Local reader
+         * uses therefore READ_ONCE(). */
+        if (time_after_eq(jiffies, READ_ONCE(base->next_expiry)) ||
+            (i == BASE_DEF && tmigr_requires_handle_remote())) {
+            /* open_softirq(TIMER_SOFTIRQ, run_timer_softirq); */
+            raise_timer_softirq(TIMER_SOFTIRQ);
+            return;
+        }
+    }
+}
+
+void raise_timer_softirq(unsigned int nr)
+{
+    lockdep_assert_in_irq();
+    if (force_irqthreads())
+        raise_ktimers_thread(nr);
+    else
+        __raise_softirq_irqoff(nr);
+}
+
+void run_timer_softirq(void)
+{
+    run_timer_base(BASE_LOCAL);
+    if (IS_ENABLED(CONFIG_NO_HZ_COMMON)) {
+        run_timer_base(BASE_GLOBAL);
+        run_timer_base(BASE_DEF);
+
+        if (is_timers_nohz_active())
+            tmigr_handle_remote();
+    }
+}
+
+void run_timer_base(int index)
+{
+    struct timer_base *base = this_cpu_ptr(&timer_bases[index]);
+
+    __run_timer_base(base);
+}
+
+void __run_timer_base(struct timer_base *base)
+{
+    /* Can race against a remote CPU updating next_expiry under the lock */
+    if (time_before(jiffies, READ_ONCE(base->next_expiry)))
+        return;
+
+    timer_base_lock_expiry(base);
+    raw_spin_lock_irq(&base->lock);
+    __run_timers(base);
+    raw_spin_unlock_irq(&base->lock);
+    timer_base_unlock_expiry(base);
+}
+
+void __run_timers(struct timer_base *base)
+{
+    struct hlist_head heads[LVL_DEPTH];
+    int levels;
+
+    lockdep_assert_held(&base->lock);
+
+    if (base->running_timer)
+        return;
+
+    while (time_after_eq(jiffies, base->clk) && time_after_eq(jiffies, base->next_expiry)) {
+        levels = collect_expired_timers(base, heads) {
+            unsigned long clk = base->clk = base->next_expiry;
+            struct hlist_head *vec;
+            int i, levels = 0;
+            unsigned int idx;
+
+            for (i = 0; i < LVL_DEPTH; i++) {
+                idx = (clk & LVL_MASK) + i * LVL_SIZE;
+
+                if (__test_and_clear_bit(idx, base->pending_map)) {
+                    vec = base->vectors + idx;
+                    hlist_move_list(vec, heads++);
+                    levels++;
+                }
+                /* Is it time to look at the next level? */
+                if (clk & LVL_CLK_MASK)
+                    break;
+                /* Shift clock for the next level granularity */
+                clk >>= LVL_CLK_SHIFT;
+            }
+            return levels;
+        }
+        /* The two possible reasons for not finding any expired
+         * timer at this clk are that all matching timers have been
+         * dequeued or no timer has been queued since
+         * base::next_expiry was set to base::clk +
+         * TIMER_NEXT_MAX_DELTA. */
+        WARN_ON_ONCE(!levels && !base->next_expiry_recalc
+                 && base->timers_pending);
+        /* While executing timers, base->clk is set 1 offset ahead of
+         * jiffies to avoid endless requeuing to current jiffies. */
+        base->clk++;
+        timer_recalc_next_expiry(base);
+
+        while (levels--)
+            expire_timers(base, heads + levels);
+    }
+}
+
+void expire_timers(struct timer_base *base, struct hlist_head *head)
+{
+    /* This value is required only for tracing. base->clk was
+     * incremented directly before expire_timers was called. But expiry
+     * is related to the old base->clk value. */
+    unsigned long baseclk = base->clk - 1;
+
+    while (!hlist_empty(head)) {
+        struct timer_list *timer;
+        void (*fn)(struct timer_list *);
+
+        timer = hlist_entry(head->first, struct timer_list, entry);
+
+        base->running_timer = timer;
+        detach_timer(timer, true);
+
+        fn = timer->function;
+
+        if (WARN_ON_ONCE(!fn)) {
+            /* Should never happen. Emphasis on should! */
+            base->running_timer = NULL;
+            continue;
+        }
+
+        if (timer->flags & TIMER_IRQSAFE) {
+            raw_spin_unlock(&base->lock);
+            call_timer_fn(timer, fn, baseclk);
+            raw_spin_lock(&base->lock);
+            base->running_timer = NULL;
+        } else {
+            raw_spin_unlock_irq(&base->lock);
+            call_timer_fn(timer, fn, baseclk);
+            raw_spin_lock_irq(&base->lock);
+            base->running_timer = NULL;
+            timer_sync_wait_running(base);
+        }
+    }
+}
+```
+
+##### hrtimer_run_queues
+
+```c
+void hrtimer_run_queues(void)
+{
+    struct hrtimer_cpu_base *cpu_base = this_cpu_ptr(&hrtimer_bases);
+    unsigned long flags;
+    ktime_t now;
+
+    if (hrtimer_hres_active(cpu_base))
+        return;
+
+    /* This _is_ ugly: We have to check periodically, whether we
+     * can switch to highres and / or nohz mode. The clocksource
+     * switch happens with xtime_lock held. Notification from
+     * there only sets the check bit in the tick_oneshot code,
+     * otherwise we might deadlock vs. xtime_lock. */
+    if (tick_check_oneshot_change(!hrtimer_is_hres_enabled())) {
+        hrtimer_switch_to_hres();
+        return;
     }
 
-    run_posix_cpu_timers() {
-        ret = posix_cpu_timers_work_scheduled(tsk) {
+    raw_spin_lock_irqsave(&cpu_base->lock, flags);
+    now = hrtimer_update_base(cpu_base);
 
-        }
-        if (ret)
-            return;
-        ret = fastpath_timer_check(tsk) {
+    if (!ktime_before(now, cpu_base->softirq_expires_next)) {
+        cpu_base->softirq_expires_next = KTIME_MAX;
+        cpu_base->softirq_activated = true;
+        raise_timer_softirq(HRTIMER_SOFTIRQ);
+    }
 
-        }
-        if (!ret)
-            return;
+    __hrtimer_run_queues(cpu_base, now, flags, HRTIMER_ACTIVE_HARD);
+    raw_spin_unlock_irqrestore(&cpu_base->lock, flags);
+}
+```
 
-        __run_posix_cpu_timers(tsk) {
-            handle_posix_cpu_timers(tsk) {
-                check_thread_timers(tsk, &firing) {
-                    ret = check_rlimit(rttime, hard, SIGKILL, true, true) {
-                        if (time < limit)
-                            return false;
-                        send_signal_locked(signo, SEND_SIG_PRIV, current, PIDTYPE_TGID);
-                    }
-                    if (hard != RLIM_INFINITY && ret) {
-                        return;
-                    }
+#### run_posix_cpu_timers
 
-                    if (check_rlimit(rttime, soft, SIGXCPU, true, false)) {
-                        soft += USEC_PER_SEC;
-                        tsk->signal->rlim[RLIMIT_RTTIME].rlim_cur = soft;
-                    }
+```c
+run_posix_cpu_timers() {
+    ret = posix_cpu_timers_work_scheduled(tsk) {
+
+    }
+    if (ret)
+        return;
+    ret = fastpath_timer_check(tsk) {
+
+    }
+    if (!ret)
+        return;
+
+    __run_posix_cpu_timers(tsk) {
+        handle_posix_cpu_timers(tsk) {
+            check_thread_timers(tsk, &firing) {
+                ret = check_rlimit(rttime, hard, SIGKILL, true, true) {
+                    if (time < limit)
+                        return false;
+                    send_signal_locked(signo, SEND_SIG_PRIV, current, PIDTYPE_TGID);
                 }
-                check_process_timers(tsk, &firing) {
-
+                if (hard != RLIM_INFINITY && ret) {
+                    return;
                 }
+
+                if (check_rlimit(rttime, soft, SIGXCPU, true, false)) {
+                    soft += USEC_PER_SEC;
+                    tsk->signal->rlim[RLIMIT_RTTIME].rlim_cur = soft;
+                }
+            }
+            check_process_timers(tsk, &firing) {
+
             }
         }
     }
 }
 ```
+
+### sched_tick
+
+```c
+void sched_tick(void)
+{
+    int cpu = smp_processor_id();
+    struct rq *rq = cpu_rq(cpu);
+    /* accounting goes to the donor task */
+    struct task_struct *donor;
+    struct rq_flags rf;
+    unsigned long hw_pressure;
+    u64 resched_latency;
+
+    if (housekeeping_cpu(cpu, HK_TYPE_KERNEL_NOISE))
+        arch_scale_freq_tick();
+
+    sched_clock_tick();
+
+    rq_lock(rq, &rf);
+    donor = rq->donor;
+
+    psi_account_irqtime(rq, donor, NULL);
+
+    update_rq_clock(rq);
+    hw_pressure = arch_scale_hw_pressure(cpu_of(rq));
+    update_hw_load_avg(rq_clock_task(rq), rq, hw_pressure);
+
+    if (dynamic_preempt_lazy() && tif_test_bit(TIF_NEED_RESCHED_LAZY))
+        resched_curr(rq);
+
+    donor->sched_class->task_tick(rq, donor, 0);
+    if (sched_feat(LATENCY_WARN))
+        resched_latency = cpu_resched_latency(rq);
+    calc_global_load_tick(rq);
+    sched_core_tick(rq);
+    scx_tick(rq);
+
+    rq_unlock(rq, &rf);
+
+    if (sched_feat(LATENCY_WARN) && resched_latency)
+        resched_latency_warn(cpu, resched_latency);
+
+    perf_event_task_tick();
+
+    if (donor->flags & PF_WQ_WORKER)
+        wq_worker_tick(donor);
+
+    if (!scx_switched_all()) {
+        rq->idle_balance = idle_cpu(cpu);
+        sched_balance_trigger(rq);
+    }
+}
+```
+
+#### arch_scale_freq_tick
+
+#### sched_clock_tick
+
+#### calc_global_load_tick
+
+#### wq_worker_tick
 
 # hrtimer_run_queues
 
