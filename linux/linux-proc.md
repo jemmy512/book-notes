@@ -3623,6 +3623,9 @@ void update_curr_dl_se(struct rq *rq, struct sched_dl_entity *dl_se, s64 delta_e
             }
         }
 
+        if (idle)
+			dl_se->dl_defer_idle = 1;
+
         /* Not being able to start the timer seems problematic. If it could not
          * be started for whatever reason, we need to "unthrottle" the DL server
          * and queue right away. Otherwise nothing might queue it. That's similar
@@ -3651,11 +3654,15 @@ throttle:
             /* The failure of `start_dl_timer` is caused by attempting to register a
              * timer with an expiration time that is already in the past. */
             if (dl_server(dl_se)) {
-                replenish_dl_new_period(dl_se, rq);
-                start_dl_timer(dl_se);
-            } else {
-                enqueue_task_dl(rq, dl_task_of(dl_se), ENQUEUE_REPLENISH);
-            }
+				if (dl_se->dl_defer) {
+					replenish_dl_new_period(dl_se, rq);
+					start_dl_timer(dl_se);
+				} else {
+					enqueue_dl_entity(dl_se, ENQUEUE_REPLENISH);
+				}
+			} else {
+				enqueue_task_dl(rq, dl_task_of(dl_se), ENQUEUE_REPLENISH);
+			}
         }
 
         if (!is_leftmost(dl_se, &rq->dl))
@@ -8377,9 +8384,9 @@ DEFINE_SCHED_CLASS(fair) = {
 
 ## task_tick_fair
 
-![](../images/kernel/proc-sched-cfs-task_tick.png)
-
 ![](../images/kernel/proc-sched-se-info.svg)
+
+![](../images/kernel/proc-sched-cfs-task_tick.svg)
 
 ```c
 sched_tick()
@@ -8407,10 +8414,12 @@ void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
                 update_load_avg(cfs_rq, curr, UPDATE_TG);
                 update_cfs_group(curr);
 
+            #ifdef CONFIG_SCHED_HRTICK
                 if (queued) {
                     resched_curr(rq_of(cfs_rq));
                     return;
                 }
+            #endif
             }
 
             weight = __calc_prop_weight(cfs_rq, se, weight);
@@ -8420,6 +8429,8 @@ void task_tick_fair(struct rq *rq, struct task_struct *curr, int queued)
         reweight_eevdf(cfs_rq, se, weight, se->on_rq);
     }
 
+    /* queued means this tick came from the hrtick which was already aimed at the slice,
+     * not the periodic HZ sched_tick. */
     if (queued)
         return;
 
@@ -14604,8 +14615,8 @@ done:
 
 ```c
 struct rq {
-    u64             clock;  /* real clock of rq */
-    u64             clock_task; /* task running clock */
+    u64             clock;  /* Wall-time monotonic ns — pure elapsed time on this CPU */
+    u64             clock_task; /* Task-time: clock minus IRQ time and hypervisor steal time */
     /* based on clock_task, align to the largest core with highest frequency
      * only updated when task running exclude intr and idle time */
     u64             clock_pelt;
@@ -15634,110 +15645,8 @@ void sched_balance_softirq(struct softirq_action *h)
         return;
     }
 
-    sched_balance_update_blocked_averages(this_rq->cpu) {
-        struct rq *rq = cpu_rq(cpu);
-
-        guard(rq_lock_irqsave)(rq);
-        update_rq_clock(rq);
-        __sched_balance_update_blocked_averages(rq);
-    }
-
+    sched_balance_update_blocked_averages(this_rq->cpu);
     sched_balance_domains(this_rq, idle);
-}
-
-static void __sched_balance_update_blocked_averages(struct rq *rq)
-{
-    bool decayed = false, done = true;
-
-    update_blocked_load_tick(rq) {
-        WRITE_ONCE(rq->last_blocked_load_update_tick, jiffies);
-    }
-
-    decayed |= __update_blocked_others(rq, &done);
-    decayed |= __update_blocked_fair(rq, &done);
-
-    update_has_blocked_load_status(rq, !done);
-    if (decayed)
-        cpufreq_update_util(rq, 0);
-}
-
-static bool __update_blocked_others(struct rq *rq, bool *done)
-{
-    bool updated;
-
-    /* update_load_avg() can call cpufreq_update_util(). Make sure that RT,
-     * DL and IRQ signals have been updated before updating CFS. */
-    updated = update_other_load_avgs(rq) {
-        u64 now = rq_clock_pelt(rq);
-        const struct sched_class *curr_class = rq->donor->sched_class;
-        unsigned long hw_pressure = arch_scale_hw_pressure(cpu_of(rq));
-
-        lockdep_assert_rq_held(rq);
-
-        /* hw_pressure doesn't care about invariance */
-        return update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) |
-            update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class) |
-            update_hw_load_avg(rq_clock_task(rq), rq, hw_pressure) |
-            update_irq_load_avg(rq, 0);
-    }
-
-    ret = others_have_blocked(rq) {
-        if (cpu_util_rt(rq))
-            return true;
-
-        if (cpu_util_dl(rq))
-            return true;
-
-        if (hw_load_avg(rq))
-            return true;
-
-        if (cpu_util_irq(rq))
-            return true;
-
-        return false;
-    }
-    if (ret)
-        *done = false;
-
-    return updated;
-}
-
-bool __update_blocked_fair(struct rq *rq, bool *done)
-{
-    struct cfs_rq *cfs_rq, *pos;
-    bool decayed = false;
-
-    /* Iterates the task_group tree in a bottom up fashion, see
-     * list_add_leaf_cfs_rq() for details. */
-    for_each_leaf_cfs_rq_safe(rq, cfs_rq, pos) {
-        struct sched_entity *se;
-
-        if (update_cfs_rq_load_avg(cfs_rq_clock_pelt(cfs_rq), cfs_rq)) {
-            update_tg_load_avg(cfs_rq);
-
-            if (cfs_rq->nr_queued == 0)
-                update_idle_cfs_rq_clock_pelt(cfs_rq);
-
-            if (cfs_rq == &rq->cfs)
-                decayed = true;
-        }
-
-        /* Propagate pending load changes to the parent, if any: */
-        se = cfs_rq_se(cfs_rq);
-        if (se && !skip_blocked_update(se))
-            update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
-
-        /* There can be a lot of idle CPU cgroups.  Don't let fully
-         * decayed cfs_rqs linger on the list. */
-        if (cfs_rq_is_decayed(cfs_rq))
-            list_del_leaf_cfs_rq(cfs_rq);
-
-        /* Don't need periodic decay once load/util_avg are null */
-        if (cfs_rq_has_blocked_load(cfs_rq))
-            *done = false;
-    }
-
-    return decayed;
 }
 ```
 
@@ -15955,7 +15864,9 @@ void nohz_run_idle_balance(int cpu)
         _nohz_idle_balance(cpu_rq(cpu), NOHZ_STATS_KICK);
 }
 
-nohz_idle_balance(this_rq, idle) {
+static bool nohz_idle_balance(struct rq *this_rq, enum cpu_idle_type idle)
+{
+
     unsigned int flags = this_rq->nohz_idle_balance;
 
     if (!flags)
@@ -15966,89 +15877,237 @@ nohz_idle_balance(this_rq, idle) {
     if (idle != CPU_IDLE)
         return false;
 
-    /* do_idle -> nohz_run_idle_balance -> */
-    _nohz_idle_balance(this_rq, flags) {
-        /* Earliest time when we have to do rebalance again */
-        unsigned long now = jiffies;
-        unsigned long next_balance = now + 60*HZ;
-        bool has_blocked_load = false;
-        int update_next_balance = 0;
-        int this_cpu = this_rq->cpu;
-        int balance_cpu;
-        struct rq *rq;
+    _nohz_idle_balance(this_rq, flags);
 
-        SCHED_WARN_ON((flags & NOHZ_KICK_MASK) == NOHZ_BALANCE_KICK);
+    return true;
+}
+
+void _nohz_idle_balance(struct rq *this_rq, unsigned int flags)
+{
+    /* Earliest time when we have to do rebalance again */
+    unsigned long now = jiffies;
+    unsigned long next_balance = now + 60*HZ;
+    bool has_blocked_load = false;
+    int update_next_balance = 0;
+    int this_cpu = this_rq->cpu;
+    int balance_cpu;
+    struct rq *rq;
+
+    SCHED_WARN_ON((flags & NOHZ_KICK_MASK) == NOHZ_BALANCE_KICK);
+
+    if (flags & NOHZ_STATS_KICK)
+        WRITE_ONCE(nohz.has_blocked_load, 0);
+    if (flags & NOHZ_NEXT_KICK)
+        WRITE_ONCE(nohz.needs_update, 0);
+
+    smp_mb();
+
+    for_each_cpu_wrap(balance_cpu,  nohz.idle_cpus_mask, this_cpu+1) {
+        if (!idle_cpu(balance_cpu))
+            continue;
+
+        if (need_resched()) {
+            if (flags & NOHZ_STATS_KICK)
+                has_blocked_load = true;
+            if (flags & NOHZ_NEXT_KICK)
+                WRITE_ONCE(nohz.needs_update, 1);
+            goto abort;
+        }
+
+        rq = cpu_rq(balance_cpu);
 
         if (flags & NOHZ_STATS_KICK)
-            WRITE_ONCE(nohz.has_blocked_load, 0);
-        if (flags & NOHZ_NEXT_KICK)
-            WRITE_ONCE(nohz.needs_update, 0);
+            has_blocked_load |= update_nohz_stats(rq);
 
-        smp_mb();
+        if (time_after_eq(jiffies, rq->next_balance)) {
+            struct rq_flags rf;
 
-        for_each_cpu_wrap(balance_cpu,  nohz.idle_cpus_mask, this_cpu+1) {
-            if (!idle_cpu(balance_cpu))
-                continue;
+            rq_lock_irqsave(rq, &rf);
+            update_rq_clock(rq);
+            rq_unlock_irqrestore(rq, &rf);
 
-            if (need_resched()) {
-                if (flags & NOHZ_STATS_KICK)
-                    has_blocked_load = true;
-                if (flags & NOHZ_NEXT_KICK)
-                    WRITE_ONCE(nohz.needs_update, 1);
-                goto abort;
-            }
-
-            rq = cpu_rq(balance_cpu);
-
-            if (flags & NOHZ_STATS_KICK) {
-                has_blocked_load |= update_nohz_stats(rq) {
-                    unsigned int cpu = rq->cpu;
-
-                    if (!rq->has_blocked_load)
-                        return false;
-
-                    if (!cpumask_test_cpu(cpu, nohz.idle_cpus_mask))
-                        return false;
-
-                    if (!time_after(jiffies, READ_ONCE(rq->last_blocked_load_update_tick)))
-                        return true;
-
-                    sched_balance_update_blocked_averages(cpu);
-
-                    return rq->has_blocked_load;
-                }
-            }
-
-            if (time_after_eq(jiffies, rq->next_balance)) {
-                struct rq_flags rf;
-
-                rq_lock_irqsave(rq, &rf);
-                update_rq_clock(rq);
-                rq_unlock_irqrestore(rq, &rf);
-
-                if (flags & NOHZ_BALANCE_KICK) {
-                    sched_balance_domains(rq, CPU_IDLE);
-                        --->
-                }
-            }
-
-            if (time_after(next_balance, rq->next_balance)) {
-                next_balance = rq->next_balance;
-                update_next_balance = 1;
+            if (flags & NOHZ_BALANCE_KICK) {
+                sched_balance_domains(rq, CPU_IDLE);
+                    --->
             }
         }
 
-        if (likely(update_next_balance))
-            nohz.next_balance = next_balance;
-
-        if (flags & NOHZ_STATS_KICK)
-            WRITE_ONCE(nohz.next_blocked, now + msecs_to_jiffies(LOAD_AVG_PERIOD));
-
-    abort:
-        /* There is still blocked load, enable periodic update */
-        if (has_blocked_load)
-            WRITE_ONCE(nohz.has_blocked_load, 1);
+        if (time_after(next_balance, rq->next_balance)) {
+            next_balance = rq->next_balance;
+            update_next_balance = 1;
+        }
     }
+
+    if (likely(update_next_balance))
+        nohz.next_balance = next_balance;
+
+    if (flags & NOHZ_STATS_KICK)
+        WRITE_ONCE(nohz.next_blocked, now + msecs_to_jiffies(LOAD_AVG_PERIOD));
+
+abort:
+    /* There is still blocked load, enable periodic update */
+    if (has_blocked_load)
+        WRITE_ONCE(nohz.has_blocked_load, 1);
+}
+```
+
+## sched_balance_update_blocked_averages
+
+```txt
+CPU goes idle
+└─► nohz_balance_enter_idle()
+    ├─► rq->has_blocked_load = 1        (per-CPU flag)
+    └─► nohz.has_blocked_load = 1       (global flag, wake up balancer)
+
+Busy CPU's tick
+└─► nohz_balancer_kick()
+        └─► if (nohz.has_blocked_load) → schedule NOHZ_STATS_KICK
+
+Idle balance (on busy CPU)
+└─► _nohz_idle_balance()
+    ├─► nohz.has_blocked_load = 0       (optimistic clear)
+    └─► for each idle CPU:
+        └─► update_nohz_stats(rq)
+            ├─► if (!rq->has_blocked_load) → skip  ✓
+            └─► sched_balance_update_blocked_averages()
+                └─► decay CFS/RT/DL/IRQ load_avg
+                └─► if all zero: rq->has_blocked_load = 0
+    └─► if any still had load: nohz.has_blocked_load = 1  (reschedule)
+```
+
+```c
+bool update_nohz_stats(struct rq *rq)
+{
+	unsigned int cpu = rq->cpu;
+
+	if (!rq->has_blocked_load)
+		return false;
+
+	if (!cpumask_test_cpu(cpu, nohz.idle_cpus_mask))
+		return false;
+
+	if (!time_after(jiffies, READ_ONCE(rq->last_blocked_load_update_tick)))
+		return true;
+
+	sched_balance_update_blocked_averages(cpu);
+
+	return rq->has_blocked_load;
+}
+
+void sched_balance_update_blocked_averages(int cpu)
+{
+	struct rq *rq = cpu_rq(cpu);
+
+	guard(rq_lock_irqsave)(rq);
+	update_rq_clock(rq);
+	__sched_balance_update_blocked_averages(rq);
+}
+
+static void __sched_balance_update_blocked_averages(struct rq *rq)
+{
+    bool decayed = false, done = true;
+
+    update_blocked_load_tick(rq) {
+        WRITE_ONCE(rq->last_blocked_load_update_tick, jiffies);
+    }
+
+    decayed |= __update_blocked_others(rq, &done);
+    decayed |= __update_blocked_fair(rq, &done);
+
+    update_has_blocked_load_status(rq, !done) {
+        if (!has_blocked_load)
+		    rq->has_blocked_load = 0;
+    }
+    if (decayed)
+        cpufreq_update_util(rq, 0);
+}
+
+static bool __update_blocked_others(struct rq *rq, bool *done)
+{
+    bool updated;
+
+    /* update_load_avg() can call cpufreq_update_util(). Make sure that RT,
+     * DL and IRQ signals have been updated before updating CFS. */
+    updated = update_other_load_avgs(rq) {
+        u64 now = rq_clock_pelt(rq);
+        const struct sched_class *curr_class = rq->donor->sched_class;
+        unsigned long hw_pressure = arch_scale_hw_pressure(cpu_of(rq));
+
+        lockdep_assert_rq_held(rq);
+
+        /* hw_pressure doesn't care about invariance */
+        return update_rt_rq_load_avg(now, rq, curr_class == &rt_sched_class) |
+            update_dl_rq_load_avg(now, rq, curr_class == &dl_sched_class) |
+            update_hw_load_avg(rq_clock_task(rq), rq, hw_pressure) |
+            update_irq_load_avg(rq, 0);
+    }
+
+    ret = others_have_blocked(rq) {
+        if (cpu_util_rt(rq))
+            return true;
+
+        if (cpu_util_dl(rq))
+            return true;
+
+        if (hw_load_avg(rq))
+            return true;
+
+        if (cpu_util_irq(rq))
+            return true;
+
+        return false;
+    }
+    if (ret)
+        *done = false;
+
+    return updated;
+}
+
+bool __update_blocked_fair(struct rq *rq, bool *done)
+{
+    struct cfs_rq *cfs_rq, *pos;
+    bool decayed = false;
+
+    /* Iterates the task_group tree in a bottom up fashion, see
+     * list_add_leaf_cfs_rq() for details. */
+    for_each_leaf_cfs_rq_safe(rq, cfs_rq, pos) {
+        struct sched_entity *se;
+
+        if (update_cfs_rq_load_avg(cfs_rq_clock_pelt(cfs_rq), cfs_rq)) {
+            update_tg_load_avg(cfs_rq);
+
+            if (cfs_rq->nr_queued == 0)
+                update_idle_cfs_rq_clock_pelt(cfs_rq);
+
+            if (cfs_rq == &rq->cfs)
+                decayed = true;
+        }
+
+        /* Propagate pending load changes to the parent, if any: */
+        se = cfs_rq_se(cfs_rq);
+        if (se && !skip_blocked_update(se))
+            update_load_avg(cfs_rq_of(se), se, UPDATE_TG);
+
+        /* There can be a lot of idle CPU cgroups.  Don't let fully
+         * decayed cfs_rqs linger on the list. */
+        if (cfs_rq_is_decayed(cfs_rq))
+            list_del_leaf_cfs_rq(cfs_rq);
+
+        /* Don't need periodic decay once load/util_avg are null */
+        ret = cfs_rq_has_blocked_load(cfs_rq) {
+            if (cfs_rq->avg.load_avg)
+                return true;
+
+            if (cfs_rq->avg.util_avg)
+                return true;
+
+            return false;
+        }
+        if (ret)
+            *done = false;
+    }
+
+    return decayed;
 }
 ```
 
