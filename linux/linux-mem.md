@@ -1807,277 +1807,6 @@ static inline void flush_tlb_page(struct vm_area_struct *vma,
 }
 ```
 
-### page_ext
-
-```c
-struct page_ext_operations {
-    size_t  offset;
-    size_t  size;
-    bool    (*need)(void);
-    void    (*init)(void);
-    bool    need_shared_flags;
-};
-
-static struct page_ext_operations *page_ext_ops[] __initdata = {
-#ifdef CONFIG_PAGE_OWNER
-    &page_owner_ops,
-#endif
-#if defined(CONFIG_PAGE_IDLE_FLAG) && !defined(CONFIG_64BIT)
-    &page_idle_ops,
-#endif
-#ifdef CONFIG_MEM_ALLOC_PROFILING
-    &page_alloc_tagging_ops,
-#endif
-#ifdef CONFIG_PAGE_TABLE_CHECK
-    &page_table_check_ops,
-#endif
-#ifdef CONFIG_IOMMU_DEBUG_PAGEALLOC
-    &page_iommu_debug_ops,
-#endif
-};
-```
-
-#### page_ext_init
-
-```c
-void __init page_ext_init(void)
-{
-    unsigned long pfn;
-    int nid;
-
-    if (!invoke_need_callbacks())
-        return;
-
-    for_each_node_state(nid, N_MEMORY) {
-        unsigned long start_pfn, end_pfn;
-
-        start_pfn = node_start_pfn(nid);
-        end_pfn = node_end_pfn(nid);
-        /* start_pfn and end_pfn may not be aligned to SECTION and the
-         * page->flags of out of node pages are not initialized.  So we
-         * scan [start_pfn, the biggest section's pfn < end_pfn) here. */
-        for (pfn = start_pfn; pfn < end_pfn;
-            pfn = ALIGN(pfn + 1, PAGES_PER_SECTION)) {
-
-            if (!pfn_valid(pfn))
-                continue;
-            /* Nodes's pfns can be overlapping.
-             * We know some arch can have a nodes layout such as
-             * -------------pfn-------------->
-             * N0 | N1 | N2 | N0 | N1 | N2|.... */
-            if (pfn_to_nid(pfn) != nid)
-                continue;
-            if (init_section_page_ext(pfn, nid))
-                goto oom;
-            cond_resched();
-        }
-    }
-    hotplug_memory_notifier(page_ext_callback, DEFAULT_CALLBACK_PRI);
-    pr_info("allocated %ld bytes of page_ext\n", total_usage);
-    invoke_init_callbacks();
-    return;
-
-oom:
-    panic("Out of memory");
-}
-
-static bool __init invoke_need_callbacks(void)
-{
-    int i;
-    int entries = ARRAY_SIZE(page_ext_ops);
-    bool need = false;
-
-    for (i = 0; i < entries; i++) {
-        if (page_ext_ops[i]->need()) {
-            if (page_ext_ops[i]->need_shared_flags) {
-                page_ext_size = sizeof(struct page_ext);
-                break;
-            }
-        }
-    }
-
-    for (i = 0; i < entries; i++) {
-        if (page_ext_ops[i]->need()) {
-            page_ext_ops[i]->offset = page_ext_size;
-            page_ext_size += page_ext_ops[i]->size;
-            need = true;
-        }
-    }
-
-    return need;
-}
-
-static int __meminit init_section_page_ext(unsigned long pfn, int nid)
-{
-    struct mem_section *section;
-    struct page_ext *base;
-    unsigned long table_size;
-
-    section = __pfn_to_section(pfn);
-
-    if (section->page_ext)
-        return 0;
-
-    table_size = page_ext_size * PAGES_PER_SECTION;
-    base = alloc_page_ext(table_size, nid) {
-        gfp_t flags = GFP_KERNEL | __GFP_ZERO | __GFP_NOWARN;
-        void *addr = NULL;
-
-        addr = alloc_pages_exact_nid(nid, size, flags);
-        if (addr)
-            kmemleak_alloc(addr, size, 1, flags);
-        else
-            addr = vzalloc_node(size, nid);
-
-        if (addr) {
-            memmap_pages_add(DIV_ROUND_UP(size, PAGE_SIZE)) {
-                atomic_long_add(delta, &nr_memmap_pages);
-            }
-        }
-
-        return addr;
-    }
-
-    /* The value stored in section->page_ext is (base - pfn)
-     * and it does not point to the memory block allocated above,
-     * causing kmemleak false positives. */
-    kmemleak_not_leak(base);
-
-    if (!base) {
-        pr_err("page ext allocation failure\n");
-        return -ENOMEM;
-    }
-
-    /* The passed "pfn" may not be aligned to SECTION.  For the calculation
-     * we need to apply a mask. */
-    pfn &= PAGE_SECTION_MASK;
-    /* biased backwards by page_ext_size * section_start_pfn */
-    section->page_ext = (void *)base - page_ext_size * pfn;
-    total_usage += table_size;
-    return 0;
-}
-
-```
-
-#### page_ext_get
-
-```c
-struct page_ext *page_ext_get(const struct page *page)
-{
-    struct page_ext *page_ext;
-
-    rcu_read_lock();
-    page_ext = lookup_page_ext(page);
-    if (!page_ext) {
-        rcu_read_unlock();
-        return NULL;
-    }
-
-    return page_ext;
-}
-
-static struct page_ext *lookup_page_ext(const struct page *page)
-{
-    unsigned long pfn = page_to_pfn(page);
-    struct mem_section *section = __pfn_to_section(pfn);
-    struct page_ext *page_ext = READ_ONCE(section->page_ext);
-
-    WARN_ON_ONCE(!rcu_read_lock_held());
-    /* The sanity checks the page allocator does upon freeing a
-     * page can reach here before the page_ext arrays are
-     * allocated when feeding a range of pages to the allocator
-     * for the first time during bootup or memory hotplug. */
-    if (page_ext_invalid(page_ext))
-        return NULL;
-    return get_entry(page_ext, pfn) {
-        /* page_ext = section_base - page_ext_size * pfn
-         * = (section_base - page_ext_size * section_start_pfn) + page_ext_size * pfn
-         * = section_base + page_ext_size * (pfn - section_start_pfn) */
-        return base + page_ext_size * index;
-        /* instead of computing that subtraction at lookup time,
-         * the subtraction is baked into the stored pointer at setup time.
-         * Lookup becomes a single multiply-and-add with no branches */
-    }
-}
-```
-
-#### pgalloc_tag_add
-
-```c
-static inline void pgalloc_tag_add(struct page *page, struct task_struct *task,
-                   unsigned int nr, gfp_t gfp_flags)
-{
-    if (mem_alloc_profiling_enabled())
-        __pgalloc_tag_add(page, task, nr, gfp_flags);
-}
-
-void __pgalloc_tag_add(struct page *page, struct task_struct *task,
-               unsigned int nr, gfp_t gfp_flags)
-{
-    union pgtag_ref_handle handle;
-    union codetag_ref ref;
-
-    if (likely(get_page_tag_ref(page, &ref, &handle))) {
-        alloc_tag_add(&ref, task->alloc_tag, PAGE_SIZE * nr) {
-            ret = alloc_tag_ref_set(ref, tag) {
-                if (unlikely(!__alloc_tag_ref_set(ref, tag) {
-                    alloc_tag_add_check(ref, tag);
-                    if (!ref || !tag)
-                        return false;
-
-                    ref->ct = &tag->ct;
-                    return true;
-                })) {
-                    return false;
-                }
-                this_cpu_inc(tag->counters->calls);
-                return true;
-            }
-            if (likely(ret))
-                this_cpu_add(tag->counters->bytes, bytes);
-        }
-        update_page_tag_ref(handle, &ref);
-        put_page_tag_ref(handle);
-    } else {
-        /* page_ext is not available yet, record the pfn so we can
-         * clear the tag ref later when page_ext is initialized. */
-        alloc_tag_add_early_pfn(page_to_pfn(page), gfp_flags);
-        if (task->alloc_tag)
-            alloc_tag_set_inaccurate(task->alloc_tag);
-    }
-}
-
-bool get_page_tag_ref(struct page *page, union codetag_ref *ref,
-                    union pgtag_ref_handle *handle)
-{
-    if (!page)
-        return false;
-
-    if (static_key_enabled(&mem_profiling_compressed)) {
-        pgalloc_tag_idx idx;
-
-        idx = (page->flags.f >> alloc_tag_ref_offs) & alloc_tag_ref_mask;
-        idx_to_ref(idx, ref);
-        handle->page = page;
-    } else {
-        struct page_ext *page_ext;
-        union codetag_ref *tmp;
-
-        page_ext = page_ext_get(page);
-        if (!page_ext)
-            return false;
-
-        tmp = (union codetag_ref *)page_ext_data(page_ext, &page_alloc_tagging_ops) {
-            return (void *)(page_ext) + ops->offset;
-        }
-        ref->ct = tmp->ct;
-        handle->ref = tmp;
-    }
-
-    return true;
-}
-```
-
 # sparsemem
 
 * [Physical Memory Model: FLATE - SPARSE](https://docs.kernel.org/mm/memory-model.html)
@@ -2599,6 +2328,721 @@ void sparse_remove_section(unsigned long pfn, unsigned long nr_pages,
         if (empty)
             ms->section_mem_map = (unsigned long)NULL;
     }
+}
+```
+
+# page_table
+
+## create_pgd_mapping
+
+```c
+static int __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
+                unsigned long virt, phys_addr_t size,
+                pgprot_t prot,
+                phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                int flags)
+{
+    int ret;
+
+    mutex_lock(&fixmap_lock);
+    ret = __create_pgd_mapping_locked(pgdir, phys, virt, size, prot, pgtable_alloc, flags) {
+        int ret;
+        unsigned long addr, end, next;
+        pgd_t *pgdp = pgd_offset_pgd(pgdir, virt);
+
+        /* If the virtual and physical address don't have the same offset
+        * within a page, we cannot map the region as the caller expects. */
+        if (WARN_ON((phys ^ virt) & ~PAGE_MASK))
+            return -EINVAL;
+
+        phys &= PAGE_MASK;
+        addr = virt & PAGE_MASK;
+        end = PAGE_ALIGN(virt + size);
+
+        do {
+            next = pgd_addr_end(addr, end);
+            ret = alloc_init_p4d(pgdp, addr, next, phys, prot, pgtable_alloc, flags);
+            if (ret)
+                return ret;
+            phys += next - addr;
+        } while (pgdp++, addr = next, addr != end);
+
+        return 0;
+    }
+    mutex_unlock(&fixmap_lock);
+
+    return ret;
+}
+
+int alloc_init_p4d(pgd_t *pgdp, unsigned long addr, unsigned long end,
+              phys_addr_t phys, pgprot_t prot,
+              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+              int flags)
+{
+    int ret;
+    unsigned long next;
+    pgd_t pgd = READ_ONCE(*pgdp);
+    p4d_t *p4dp;
+
+    if (pgd_none(pgd)) {
+        pgdval_t pgdval = PGD_TYPE_TABLE | PGD_TABLE_UXN | PGD_TABLE_AF;
+        phys_addr_t p4d_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pgdval |= PGD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        p4d_phys = pgtable_alloc(TABLE_P4D);
+        if (p4d_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        p4dp = p4d_set_fixmap(p4d_phys);
+        init_clear_pgtable(p4dp);
+        p4dp += p4d_index(addr);
+        __pgd_populate(pgdp, p4d_phys, pgdval);
+    } else {
+        BUG_ON(pgd_bad(pgd));
+        p4dp = p4d_set_fixmap_offset(pgdp, addr);
+    }
+
+    do {
+        p4d_t old_p4d = READ_ONCE(*p4dp);
+
+        next = p4d_addr_end(addr, end);
+
+        ret = alloc_init_pud(p4dp, addr, next, phys, prot, pgtable_alloc, flags);
+        if (ret)
+            goto out;
+
+        BUG_ON(p4d_val(old_p4d) != 0 &&
+               p4d_val(old_p4d) != READ_ONCE(p4d_val(*p4dp)));
+
+        phys += next - addr;
+    } while (p4dp++, addr = next, addr != end);
+
+out:
+    p4d_clear_fixmap();
+
+    return ret;
+}
+
+int alloc_init_pud(p4d_t *p4dp, unsigned long addr, unsigned long end,
+              phys_addr_t phys, pgprot_t prot,
+              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+              int flags)
+{
+    int ret = 0;
+    unsigned long next;
+    p4d_t p4d = READ_ONCE(*p4dp);
+    pud_t *pudp;
+
+    if (p4d_none(p4d)) {
+        p4dval_t p4dval = P4D_TYPE_TABLE | P4D_TABLE_UXN | P4D_TABLE_AF;
+        phys_addr_t pud_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            p4dval |= P4D_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pud_phys = pgtable_alloc(TABLE_PUD);
+        if (pud_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        pudp = pud_set_fixmap(pud_phys);
+        init_clear_pgtable(pudp);
+        pudp += pud_index(addr);
+        __p4d_populate(p4dp, pud_phys, p4dval);
+    } else {
+        BUG_ON(p4d_bad(p4d));
+        pudp = pud_set_fixmap_offset(p4dp, addr);
+    }
+
+    do {
+        pud_t old_pud = READ_ONCE(*pudp);
+
+        next = pud_addr_end(addr, end);
+
+        /* For 4K granule only, attempt to put down a 1GB block */
+        if (pud_sect_supported() &&
+           ((addr | next | phys) & ~PUD_MASK) == 0 &&
+            (flags & NO_BLOCK_MAPPINGS) == 0) {
+            pud_set_huge(pudp, phys, prot);
+
+            /* After the PUD entry has been populated once, we
+             * only allow updates to the permission attributes. */
+            BUG_ON(!pgattr_change_is_safe(pud_val(old_pud),
+                              READ_ONCE(pud_val(*pudp))));
+        } else {
+            ret = alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags);
+            if (ret)
+                goto out;
+
+            BUG_ON(pud_val(old_pud) != 0 &&
+                   pud_val(old_pud) != READ_ONCE(pud_val(*pudp)));
+        }
+        phys += next - addr;
+    } while (pudp++, addr = next, addr != end);
+
+out:
+    pud_clear_fixmap();
+
+    return ret;
+}
+
+int alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
+                   unsigned long end, phys_addr_t phys,
+                   pgprot_t prot,
+                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                   int flags)
+{
+    int ret;
+    unsigned long next;
+    pud_t pud = READ_ONCE(*pudp);
+    pmd_t *pmdp;
+
+    /* Check for initial section mappings in the pgd/pud. */
+    BUG_ON(pud_sect(pud));
+    if (pud_none(pud)) {
+        pudval_t pudval = PUD_TYPE_TABLE | PUD_TABLE_UXN | PUD_TABLE_AF;
+        phys_addr_t pmd_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pudval |= PUD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pmd_phys = pgtable_alloc(TABLE_PMD);
+        if (pmd_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        pmdp = pmd_set_fixmap(pmd_phys);
+        init_clear_pgtable(pmdp);
+        pmdp += pmd_index(addr);
+        __pud_populate(pudp, pmd_phys, pudval);
+    } else {
+        BUG_ON(pud_bad(pud));
+        pmdp = pmd_set_fixmap_offset(pudp, addr);
+    }
+
+    do {
+        pgprot_t __prot = prot;
+
+        next = pmd_cont_addr_end(addr, end);
+
+        /* use a contiguous mapping if the range is suitably aligned */
+        if ((((addr | next | phys) & ~CONT_PMD_MASK) == 0) &&
+            (flags & NO_CONT_MAPPINGS) == 0)
+            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
+
+        ret = init_pmd(pmdp, addr, next, phys, __prot, pgtable_alloc, flags);
+        if (ret)
+            goto out;
+
+        pmdp += pmd_index(next) - pmd_index(addr);
+        phys += next - addr;
+    } while (addr = next, addr != end);
+
+out:
+    pmd_clear_fixmap();
+
+    return ret;
+}
+
+int init_pmd(pmd_t *pmdp, unsigned long addr, unsigned long end,
+            phys_addr_t phys, pgprot_t prot,
+            phys_addr_t (*pgtable_alloc)(enum pgtable_type), int flags)
+{
+    unsigned long next;
+
+    do {
+        pmd_t old_pmd = READ_ONCE(*pmdp);
+
+        next = pmd_addr_end(addr, end);
+
+        /* try section mapping first */
+        if (((addr | next | phys) & ~PMD_MASK) == 0 &&
+            (flags & NO_BLOCK_MAPPINGS) == 0) {
+            pmd_set_huge(pmdp, phys, prot);
+
+            /* After the PMD entry has been populated once, we
+             * only allow updates to the permission attributes. */
+            BUG_ON(!pgattr_change_is_safe(pmd_val(old_pmd),
+                              READ_ONCE(pmd_val(*pmdp))));
+        } else {
+            int ret;
+
+            ret = alloc_init_cont_pte(pmdp, addr, next, phys, prot,
+                          pgtable_alloc, flags);
+            if (ret)
+                return ret;
+
+            BUG_ON(pmd_val(old_pmd) != 0 &&
+                   pmd_val(old_pmd) != READ_ONCE(pmd_val(*pmdp)));
+        }
+        phys += next - addr;
+    } while (pmdp++, addr = next, addr != end);
+
+    return 0;
+}
+
+int alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
+                   unsigned long end, phys_addr_t phys,
+                   pgprot_t prot,
+                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
+                   int flags)
+{
+    unsigned long next;
+    pmd_t pmd = READ_ONCE(*pmdp);
+    pte_t *ptep;
+
+    BUG_ON(pmd_sect(pmd));
+    if (pmd_none(pmd)) {
+        pmdval_t pmdval = PMD_TYPE_TABLE | PMD_TABLE_UXN | PMD_TABLE_AF;
+        phys_addr_t pte_phys;
+
+        if (flags & NO_EXEC_MAPPINGS)
+            pmdval |= PMD_TABLE_PXN;
+        BUG_ON(!pgtable_alloc);
+        pte_phys = pgtable_alloc(TABLE_PTE);
+        if (pte_phys == INVALID_PHYS_ADDR)
+            return -ENOMEM;
+        ptep = pte_set_fixmap(pte_phys);
+        init_clear_pgtable(ptep);
+        ptep += pte_index(addr);
+        __pmd_populate(pmdp, pte_phys, pmdval);
+    } else {
+        BUG_ON(pmd_bad(pmd));
+        ptep = pte_set_fixmap_offset(pmdp, addr);
+    }
+
+    do {
+        pgprot_t __prot = prot;
+
+        next = pte_cont_addr_end(addr, end);
+
+        /* use a contiguous mapping if the range is suitably aligned */
+        if ((((addr | next | phys) & ~CONT_PTE_MASK) == 0) &&
+            (flags & NO_CONT_MAPPINGS) == 0)
+            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
+
+        init_pte(ptep, addr, next, phys, __prot) {
+            do {
+                pte_t old_pte = __ptep_get(ptep);
+
+                /* Required barriers to make this visible to the table walker
+                * are deferred to the end of alloc_init_cont_pte(). */
+                __set_pte_nosync(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
+                    WRITE_ONCE(*ptep, pte);
+                }
+
+                /* After the PTE entry has been populated once, we
+                * only allow updates to the permission attributes. */
+                BUG_ON(!pgattr_change_is_safe(pte_val(old_pte), pte_val(__ptep_get(ptep))));
+
+                phys += PAGE_SIZE;
+            } while (ptep++, addr += PAGE_SIZE, addr != end);
+        }
+
+        ptep += pte_index(next) - pte_index(addr);
+        phys += next - addr;
+    } while (addr = next, addr != end);
+
+    /* Note: barriers and maintenance necessary to clear the fixmap slot
+     * ensure that all previous pgtable writes are visible to the table
+     * walker. */
+    pte_clear_fixmap();
+
+    return 0;
+}
+```
+
+## remove_pgd_mapping
+
+```c
+__remove_pgd_mapping()
+    /* free phys mem which virt addr is [start, end] */
+    unmap_hotplug_range(asid, pgdir, start, end, 0, tlb) {
+        do {
+            if (pgd_none(pgd))
+                continue;
+        /* 1. pgd */
+            unmap_hotplug_p4d_range(asid, pgdp, addr, next, free_mapped, tlb) {
+                do {
+                    if (p4d_none(p4d))
+                        continue;
+        /* 2. pud */
+                    unmap_hotplug_pud_range(asid, p4dp, addr, next, free_mapped, tlb) {
+                        do {
+                            if (pud_none(pud))
+                                continue;
+                            if (pud_sect(pud)) {
+                                pud_clear(pudp);
+                                // tlb_batach_tlb_gather(tlb, addr | ARM64_TLB_FLUSH_PUD);
+
+                                flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                    --->
+                                if (free_mapped) {
+                                    free_hotplug_page_range(pud_page(pud), PUD_SIZE, tlb)
+                                        free_pages()
+                                }
+                                continue;
+                            }
+        /* 2. pmd */
+                            unmap_hotplug_pmd_range(asid, pudp, addr, next, free_mapped, tlb) {
+                                do {
+                                    if (pmd_none(pmd))
+                                        continue;
+
+                                    flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                        --->
+                                    if (pmd_sect(pmd)) {
+                                        pmd_clear(pmdp);
+                                        if (free_mapped)
+                                            free_hotplug_page_range(pmd_page(pmd), PMD_SIZE, tlb)
+                                               free_pages()
+                                        continue;
+                                    }
+        /* 3. pte */
+                                    unmap_hotplug_pte_range(asid, pmdp, addr, next, free_mapped, tlb);
+                                        do {
+                                            if (pte_none(pte))
+                                                continue;
+                                            pte_clear(NULL, addr, ptep);
+
+                                            flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
+                                                --->
+                                            if (free_mapped) {
+                                                free_hotplug_page_range(pte_page(pte), PAGE_SIZE, tlb)
+                                                   free_pages()
+                                            }
+                                        } while (addr += PAGE_SIZE, addr < end);
+                                    }
+                                } while (addr = next, addr < end);
+                            }
+                        } while (addr = next, addr < end);
+                    }
+                } while (addr = next, addr < end);
+            }
+        } while (addr = next, addr < end)
+
+    /* free phsy mem of pgtable which is used to map virt addr [start, end] */
+    free_empty_tables()
+        do {
+            pgd = READ_ONCE(*pgdp);
+            if (pgd_none(pgd))
+                continue;
+            free_empty_p4d_table(asid, pgdp, addr, next, floor, ceiling, tlb) {
+                do {
+                    if (p4d_none(p4d))
+                        continue;
+                    free_empty_pud_table(asid, p4dp, addr, next, floor, ceiling, tlb) {
+                        do {
+                            pud = READ_ONCE(*pudp);
+                            free_empty_pmd_table(asid, pudp, addr, next, floor, ceiling, tlb) {
+                                do {
+                                    pmd = READ_ONCE(*pmdp);
+                                    if (pmd_none(pmd))
+                                        continue;
+                                    free_empty_pte_table(asid, pmdp, addr, next, floor, ceiling, tlb) {
+                                        do {
+                                            WARN_ON(!pte_none(pte));
+                                        } while ();
+
+                                        pmd_clear(pmdp);
+                                        __flush_tlb_kernel_pgtable(start);
+                                        free_hotplug_pgtable_page(virt_to_page(ptep), tlb);
+                                            free_pages()
+                                    }
+                                } while (addr = next, addr < end);
+
+                                pud_clear(pudp);
+                                __flush_tlb_kernel_pgtable(start);
+                                free_hotplug_pgtable_page(virt_to_page(pmdp), tlb);
+                                    free_pages()
+                            }
+                        } while (addr = next, addr < end);
+
+                        p4d_clear(p4dp);
+                        __flush_tlb_kernel_pgtable(start);
+                        free_hotplug_pgtable_page(virt_to_page(pudp), tlb);
+                            free_pages()
+                    }
+                } while (addr = next, addr < end);
+            }
+        } while (addr = next, addr < end);
+```
+
+## walk_pgd_range
+
+```c
+int walk_pgd_range(unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pgd_t *pgd;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->p4d_entry || ops->pud_entry || ops->pmd_entry ||
+        ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+
+    if (walk->pgd)
+        pgd = walk->pgd + pgd_index(addr);
+    else
+        pgd = pgd_offset(walk->mm, addr);
+
+    do {
+        next = pgd_addr_end(addr, end);
+        if (pgd_none_or_clear_bad(pgd)) {
+            if (has_install)
+                err = __p4d_alloc(walk->mm, pgd, addr);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, 0, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+        if (ops->pgd_entry) {
+            err = ops->pgd_entry(pgd, addr, next, walk);
+            if (err)
+                break;
+        }
+        if (has_handler || has_install)
+            err = walk_p4d_range(pgd, addr, next, walk);
+        if (err)
+            break;
+    } while (pgd++, addr = next, addr != end);
+
+    return err;
+}
+
+static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    p4d_t *p4d;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pud_entry || ops->pmd_entry || ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(1);
+
+    p4d = p4d_offset(pgd, addr);
+    do {
+        next = p4d_addr_end(addr, end);
+        if (p4d_none_or_clear_bad(p4d)) {
+            if (has_install)
+                err = __pud_alloc(walk->mm, p4d, addr);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+        if (ops->p4d_entry) {
+            err = ops->p4d_entry(p4d, addr, next, walk);
+            if (err)
+                break;
+        }
+        if (has_handler || has_install)
+            err = walk_pud_range(p4d, addr, next, walk);
+        if (err)
+            break;
+    } while (p4d++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pud_t *pud;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pmd_entry || ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(2);
+
+    pud = pud_offset(p4d, addr);
+    do {
+ again:
+        next = pud_addr_end(addr, end);
+        if (pud_none(*pud)) {
+            if (has_install)
+                err = __pmd_alloc(walk->mm, pud, addr);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+
+        walk->action = ACTION_SUBTREE;
+
+        if (ops->pud_entry)
+            err = ops->pud_entry(pud, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+        if (walk->action == ACTION_CONTINUE)
+            continue;
+
+        if (!has_handler) { /* No handlers for lower page tables. */
+            if (!has_install)
+                continue; /* Nothing to do. */
+            /* We are ONLY installing, so avoid unnecessarily
+             * splitting a present huge page. */
+            if (pud_present(*pud) && pud_trans_huge(*pud))
+                continue;
+        }
+
+        if (walk->vma)
+            split_huge_pud(walk->vma, pud, addr);
+        else if (pud_leaf(*pud) || !pud_present(*pud))
+            continue; /* Nothing to do. */
+
+        if (pud_none(*pud))
+            goto again;
+
+        err = walk_pmd_range(pud, addr, next, walk);
+        if (err)
+            break;
+    } while (pud++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pmd_t *pmd;
+    unsigned long next;
+    const struct mm_walk_ops *ops = walk->ops;
+    bool has_handler = ops->pte_entry;
+    bool has_install = ops->install_pte;
+    int err = 0;
+    int depth = real_depth(3);
+
+    if (!pud_present(pudval) || pud_leaf(pudval)) {
+        walk->action = ACTION_AGAIN;
+        return 0;
+    }
+
+    pmd = pmd_offset(pud, addr);
+    do {
+again:
+        next = pmd_addr_end(addr, end);
+        if (pmd_none(*pmd)) {
+            if (has_install)
+                err = __pte_alloc(walk->mm, pmd);
+            else if (ops->pte_hole)
+                err = ops->pte_hole(addr, next, depth, walk);
+            if (err)
+                break;
+            if (!has_install)
+                continue;
+        }
+
+        walk->action = ACTION_SUBTREE;
+
+        if (ops->pmd_entry)
+            err = ops->pmd_entry(pmd, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+        if (walk->action == ACTION_CONTINUE)
+            continue;
+
+        if (!has_handler) { /* No handlers for lower page tables. */
+            if (!has_install)
+                continue; /* Nothing to do. */
+            /* We are ONLY installing, so avoid unnecessarily
+             * splitting a present huge page. */
+            if (pmd_present(*pmd) && pmd_trans_huge(*pmd))
+                continue;
+        }
+
+        if (walk->vma)
+            split_huge_pmd(walk->vma, pmd, addr);
+        else if (pmd_leaf(*pmd) || !pmd_present(*pmd))
+            continue; /* Nothing to do. */
+
+        err = walk_pte_range(pmd, addr, next, walk);
+        if (err)
+            break;
+
+        if (walk->action == ACTION_AGAIN)
+            goto again;
+
+    } while (pmd++, addr = next, addr != end);
+
+    return err;
+}
+
+int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+              struct mm_walk *walk)
+{
+    pte_t *pte;
+    int err = 0;
+    spinlock_t *ptl;
+
+    if (walk->no_vma) {
+        /* pte_offset_map() might apply user-specific validation.
+         * Indeed, on x86_64 the pmd entries set up by init_espfix_ap()
+         * fit its pmd_bad() check (_PAGE_NX set and _PAGE_RW clear),
+         * and CONFIG_EFI_PGT_DUMP efi_mm goes so far as to walk them. */
+        if (walk->mm == &init_mm || addr >= TASK_SIZE)
+            pte = pte_offset_kernel(pmd, addr);
+        else
+            pte = pte_offset_map(pmd, addr);
+
+        if (pte) {
+            err = walk_pte_range_inner(pte, addr, end, walk);
+            if (walk->mm != &init_mm && addr < TASK_SIZE)
+                pte_unmap(pte);
+        }
+    } else {
+        pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
+        if (pte) {
+            err = walk_pte_range_inner(pte, addr, end, walk);
+            pte_unmap_unlock(pte, ptl);
+        }
+    }
+    if (!pte)
+        walk->action = ACTION_AGAIN;
+    return err;
+}
+
+static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
+                unsigned long end, struct mm_walk *walk)
+{
+    const struct mm_walk_ops *ops = walk->ops;
+    int err = 0;
+
+    for (;;) {
+        if (ops->install_pte && pte_none(ptep_get(pte))) {
+            pte_t new_pte;
+
+            err = ops->install_pte(addr, addr + PAGE_SIZE, &new_pte, walk);
+            if (err)
+                break;
+
+            set_pte_at(walk->mm, addr, pte, new_pte);
+            /* Non-present before, so for arches that need it. */
+            if (!WARN_ON_ONCE(walk->no_vma))
+                update_mmu_cache(walk->vma, addr, pte);
+        } else {
+            err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
+            if (err)
+                break;
+        }
+        if (addr >= end - PAGE_SIZE)
+            break;
+        addr += PAGE_SIZE;
+        pte++;
+    }
+    return err;
 }
 ```
 
@@ -20903,440 +21347,6 @@ unsigned long get_unmapped_area(
 }
 ```
 
-# pgd_mapping
-
-## create_pgd_mapping
-
-```c
-static int __create_pgd_mapping(pgd_t *pgdir, phys_addr_t phys,
-                unsigned long virt, phys_addr_t size,
-                pgprot_t prot,
-                phys_addr_t (*pgtable_alloc)(enum pgtable_type),
-                int flags)
-{
-    int ret;
-
-    mutex_lock(&fixmap_lock);
-    ret = __create_pgd_mapping_locked(pgdir, phys, virt, size, prot, pgtable_alloc, flags) {
-        int ret;
-        unsigned long addr, end, next;
-        pgd_t *pgdp = pgd_offset_pgd(pgdir, virt);
-
-        /* If the virtual and physical address don't have the same offset
-        * within a page, we cannot map the region as the caller expects. */
-        if (WARN_ON((phys ^ virt) & ~PAGE_MASK))
-            return -EINVAL;
-
-        phys &= PAGE_MASK;
-        addr = virt & PAGE_MASK;
-        end = PAGE_ALIGN(virt + size);
-
-        do {
-            next = pgd_addr_end(addr, end);
-            ret = alloc_init_p4d(pgdp, addr, next, phys, prot, pgtable_alloc, flags);
-            if (ret)
-                return ret;
-            phys += next - addr;
-        } while (pgdp++, addr = next, addr != end);
-
-        return 0;
-    }
-    mutex_unlock(&fixmap_lock);
-
-    return ret;
-}
-
-int alloc_init_p4d(pgd_t *pgdp, unsigned long addr, unsigned long end,
-              phys_addr_t phys, pgprot_t prot,
-              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
-              int flags)
-{
-    int ret;
-    unsigned long next;
-    pgd_t pgd = READ_ONCE(*pgdp);
-    p4d_t *p4dp;
-
-    if (pgd_none(pgd)) {
-        pgdval_t pgdval = PGD_TYPE_TABLE | PGD_TABLE_UXN | PGD_TABLE_AF;
-        phys_addr_t p4d_phys;
-
-        if (flags & NO_EXEC_MAPPINGS)
-            pgdval |= PGD_TABLE_PXN;
-        BUG_ON(!pgtable_alloc);
-        p4d_phys = pgtable_alloc(TABLE_P4D);
-        if (p4d_phys == INVALID_PHYS_ADDR)
-            return -ENOMEM;
-        p4dp = p4d_set_fixmap(p4d_phys);
-        init_clear_pgtable(p4dp);
-        p4dp += p4d_index(addr);
-        __pgd_populate(pgdp, p4d_phys, pgdval);
-    } else {
-        BUG_ON(pgd_bad(pgd));
-        p4dp = p4d_set_fixmap_offset(pgdp, addr);
-    }
-
-    do {
-        p4d_t old_p4d = READ_ONCE(*p4dp);
-
-        next = p4d_addr_end(addr, end);
-
-        ret = alloc_init_pud(p4dp, addr, next, phys, prot, pgtable_alloc, flags);
-        if (ret)
-            goto out;
-
-        BUG_ON(p4d_val(old_p4d) != 0 &&
-               p4d_val(old_p4d) != READ_ONCE(p4d_val(*p4dp)));
-
-        phys += next - addr;
-    } while (p4dp++, addr = next, addr != end);
-
-out:
-    p4d_clear_fixmap();
-
-    return ret;
-}
-
-int alloc_init_pud(p4d_t *p4dp, unsigned long addr, unsigned long end,
-              phys_addr_t phys, pgprot_t prot,
-              phys_addr_t (*pgtable_alloc)(enum pgtable_type),
-              int flags)
-{
-    int ret = 0;
-    unsigned long next;
-    p4d_t p4d = READ_ONCE(*p4dp);
-    pud_t *pudp;
-
-    if (p4d_none(p4d)) {
-        p4dval_t p4dval = P4D_TYPE_TABLE | P4D_TABLE_UXN | P4D_TABLE_AF;
-        phys_addr_t pud_phys;
-
-        if (flags & NO_EXEC_MAPPINGS)
-            p4dval |= P4D_TABLE_PXN;
-        BUG_ON(!pgtable_alloc);
-        pud_phys = pgtable_alloc(TABLE_PUD);
-        if (pud_phys == INVALID_PHYS_ADDR)
-            return -ENOMEM;
-        pudp = pud_set_fixmap(pud_phys);
-        init_clear_pgtable(pudp);
-        pudp += pud_index(addr);
-        __p4d_populate(p4dp, pud_phys, p4dval);
-    } else {
-        BUG_ON(p4d_bad(p4d));
-        pudp = pud_set_fixmap_offset(p4dp, addr);
-    }
-
-    do {
-        pud_t old_pud = READ_ONCE(*pudp);
-
-        next = pud_addr_end(addr, end);
-
-        /* For 4K granule only, attempt to put down a 1GB block */
-        if (pud_sect_supported() &&
-           ((addr | next | phys) & ~PUD_MASK) == 0 &&
-            (flags & NO_BLOCK_MAPPINGS) == 0) {
-            pud_set_huge(pudp, phys, prot);
-
-            /* After the PUD entry has been populated once, we
-             * only allow updates to the permission attributes. */
-            BUG_ON(!pgattr_change_is_safe(pud_val(old_pud),
-                              READ_ONCE(pud_val(*pudp))));
-        } else {
-            ret = alloc_init_cont_pmd(pudp, addr, next, phys, prot, pgtable_alloc, flags);
-            if (ret)
-                goto out;
-
-            BUG_ON(pud_val(old_pud) != 0 &&
-                   pud_val(old_pud) != READ_ONCE(pud_val(*pudp)));
-        }
-        phys += next - addr;
-    } while (pudp++, addr = next, addr != end);
-
-out:
-    pud_clear_fixmap();
-
-    return ret;
-}
-
-int alloc_init_cont_pmd(pud_t *pudp, unsigned long addr,
-                   unsigned long end, phys_addr_t phys,
-                   pgprot_t prot,
-                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
-                   int flags)
-{
-    int ret;
-    unsigned long next;
-    pud_t pud = READ_ONCE(*pudp);
-    pmd_t *pmdp;
-
-    /* Check for initial section mappings in the pgd/pud. */
-    BUG_ON(pud_sect(pud));
-    if (pud_none(pud)) {
-        pudval_t pudval = PUD_TYPE_TABLE | PUD_TABLE_UXN | PUD_TABLE_AF;
-        phys_addr_t pmd_phys;
-
-        if (flags & NO_EXEC_MAPPINGS)
-            pudval |= PUD_TABLE_PXN;
-        BUG_ON(!pgtable_alloc);
-        pmd_phys = pgtable_alloc(TABLE_PMD);
-        if (pmd_phys == INVALID_PHYS_ADDR)
-            return -ENOMEM;
-        pmdp = pmd_set_fixmap(pmd_phys);
-        init_clear_pgtable(pmdp);
-        pmdp += pmd_index(addr);
-        __pud_populate(pudp, pmd_phys, pudval);
-    } else {
-        BUG_ON(pud_bad(pud));
-        pmdp = pmd_set_fixmap_offset(pudp, addr);
-    }
-
-    do {
-        pgprot_t __prot = prot;
-
-        next = pmd_cont_addr_end(addr, end);
-
-        /* use a contiguous mapping if the range is suitably aligned */
-        if ((((addr | next | phys) & ~CONT_PMD_MASK) == 0) &&
-            (flags & NO_CONT_MAPPINGS) == 0)
-            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
-
-        ret = init_pmd(pmdp, addr, next, phys, __prot, pgtable_alloc, flags);
-        if (ret)
-            goto out;
-
-        pmdp += pmd_index(next) - pmd_index(addr);
-        phys += next - addr;
-    } while (addr = next, addr != end);
-
-out:
-    pmd_clear_fixmap();
-
-    return ret;
-}
-
-int init_pmd(pmd_t *pmdp, unsigned long addr, unsigned long end,
-            phys_addr_t phys, pgprot_t prot,
-            phys_addr_t (*pgtable_alloc)(enum pgtable_type), int flags)
-{
-    unsigned long next;
-
-    do {
-        pmd_t old_pmd = READ_ONCE(*pmdp);
-
-        next = pmd_addr_end(addr, end);
-
-        /* try section mapping first */
-        if (((addr | next | phys) & ~PMD_MASK) == 0 &&
-            (flags & NO_BLOCK_MAPPINGS) == 0) {
-            pmd_set_huge(pmdp, phys, prot);
-
-            /* After the PMD entry has been populated once, we
-             * only allow updates to the permission attributes. */
-            BUG_ON(!pgattr_change_is_safe(pmd_val(old_pmd),
-                              READ_ONCE(pmd_val(*pmdp))));
-        } else {
-            int ret;
-
-            ret = alloc_init_cont_pte(pmdp, addr, next, phys, prot,
-                          pgtable_alloc, flags);
-            if (ret)
-                return ret;
-
-            BUG_ON(pmd_val(old_pmd) != 0 &&
-                   pmd_val(old_pmd) != READ_ONCE(pmd_val(*pmdp)));
-        }
-        phys += next - addr;
-    } while (pmdp++, addr = next, addr != end);
-
-    return 0;
-}
-
-int alloc_init_cont_pte(pmd_t *pmdp, unsigned long addr,
-                   unsigned long end, phys_addr_t phys,
-                   pgprot_t prot,
-                   phys_addr_t (*pgtable_alloc)(enum pgtable_type),
-                   int flags)
-{
-    unsigned long next;
-    pmd_t pmd = READ_ONCE(*pmdp);
-    pte_t *ptep;
-
-    BUG_ON(pmd_sect(pmd));
-    if (pmd_none(pmd)) {
-        pmdval_t pmdval = PMD_TYPE_TABLE | PMD_TABLE_UXN | PMD_TABLE_AF;
-        phys_addr_t pte_phys;
-
-        if (flags & NO_EXEC_MAPPINGS)
-            pmdval |= PMD_TABLE_PXN;
-        BUG_ON(!pgtable_alloc);
-        pte_phys = pgtable_alloc(TABLE_PTE);
-        if (pte_phys == INVALID_PHYS_ADDR)
-            return -ENOMEM;
-        ptep = pte_set_fixmap(pte_phys);
-        init_clear_pgtable(ptep);
-        ptep += pte_index(addr);
-        __pmd_populate(pmdp, pte_phys, pmdval);
-    } else {
-        BUG_ON(pmd_bad(pmd));
-        ptep = pte_set_fixmap_offset(pmdp, addr);
-    }
-
-    do {
-        pgprot_t __prot = prot;
-
-        next = pte_cont_addr_end(addr, end);
-
-        /* use a contiguous mapping if the range is suitably aligned */
-        if ((((addr | next | phys) & ~CONT_PTE_MASK) == 0) &&
-            (flags & NO_CONT_MAPPINGS) == 0)
-            __prot = __pgprot(pgprot_val(prot) | PTE_CONT);
-
-        init_pte(ptep, addr, next, phys, __prot) {
-            do {
-                pte_t old_pte = __ptep_get(ptep);
-
-                /* Required barriers to make this visible to the table walker
-                * are deferred to the end of alloc_init_cont_pte(). */
-                __set_pte_nosync(ptep, pfn_pte(__phys_to_pfn(phys), prot)) {
-                    WRITE_ONCE(*ptep, pte);
-                }
-
-                /* After the PTE entry has been populated once, we
-                * only allow updates to the permission attributes. */
-                BUG_ON(!pgattr_change_is_safe(pte_val(old_pte), pte_val(__ptep_get(ptep))));
-
-                phys += PAGE_SIZE;
-            } while (ptep++, addr += PAGE_SIZE, addr != end);
-        }
-
-        ptep += pte_index(next) - pte_index(addr);
-        phys += next - addr;
-    } while (addr = next, addr != end);
-
-    /* Note: barriers and maintenance necessary to clear the fixmap slot
-     * ensure that all previous pgtable writes are visible to the table
-     * walker. */
-    pte_clear_fixmap();
-
-    return 0;
-}
-```
-
-## remove_pgd_mapping
-
-```c
-__remove_pgd_mapping()
-    /* free phys mem which virt addr is [start, end] */
-    unmap_hotplug_range(asid, pgdir, start, end, 0, tlb) {
-        do {
-            if (pgd_none(pgd))
-                continue;
-        /* 1. pgd */
-            unmap_hotplug_p4d_range(asid, pgdp, addr, next, free_mapped, tlb) {
-                do {
-                    if (p4d_none(p4d))
-                        continue;
-        /* 2. pud */
-                    unmap_hotplug_pud_range(asid, p4dp, addr, next, free_mapped, tlb) {
-                        do {
-                            if (pud_none(pud))
-                                continue;
-                            if (pud_sect(pud)) {
-                                pud_clear(pudp);
-                                // tlb_batach_tlb_gather(tlb, addr | ARM64_TLB_FLUSH_PUD);
-
-                                flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-                                    --->
-                                if (free_mapped) {
-                                    free_hotplug_page_range(pud_page(pud), PUD_SIZE, tlb)
-                                        free_pages()
-                                }
-                                continue;
-                            }
-        /* 2. pmd */
-                            unmap_hotplug_pmd_range(asid, pudp, addr, next, free_mapped, tlb) {
-                                do {
-                                    if (pmd_none(pmd))
-                                        continue;
-
-                                    flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-                                        --->
-                                    if (pmd_sect(pmd)) {
-                                        pmd_clear(pmdp);
-                                        if (free_mapped)
-                                            free_hotplug_page_range(pmd_page(pmd), PMD_SIZE, tlb)
-                                               free_pages()
-                                        continue;
-                                    }
-        /* 3. pte */
-                                    unmap_hotplug_pte_range(asid, pmdp, addr, next, free_mapped, tlb);
-                                        do {
-                                            if (pte_none(pte))
-                                                continue;
-                                            pte_clear(NULL, addr, ptep);
-
-                                            flush_tlb_kernel_range(addr, addr + PAGE_SIZE);
-                                                --->
-                                            if (free_mapped) {
-                                                free_hotplug_page_range(pte_page(pte), PAGE_SIZE, tlb)
-                                                   free_pages()
-                                            }
-                                        } while (addr += PAGE_SIZE, addr < end);
-                                    }
-                                } while (addr = next, addr < end);
-                            }
-                        } while (addr = next, addr < end);
-                    }
-                } while (addr = next, addr < end);
-            }
-        } while (addr = next, addr < end)
-
-    /* free phsy mem of pgtable which is used to map virt addr [start, end] */
-    free_empty_tables()
-        do {
-            pgd = READ_ONCE(*pgdp);
-            if (pgd_none(pgd))
-                continue;
-            free_empty_p4d_table(asid, pgdp, addr, next, floor, ceiling, tlb) {
-                do {
-                    if (p4d_none(p4d))
-                        continue;
-                    free_empty_pud_table(asid, p4dp, addr, next, floor, ceiling, tlb) {
-                        do {
-                            pud = READ_ONCE(*pudp);
-                            free_empty_pmd_table(asid, pudp, addr, next, floor, ceiling, tlb) {
-                                do {
-                                    pmd = READ_ONCE(*pmdp);
-                                    if (pmd_none(pmd))
-                                        continue;
-                                    free_empty_pte_table(asid, pmdp, addr, next, floor, ceiling, tlb) {
-                                        do {
-                                            WARN_ON(!pte_none(pte));
-                                        } while ();
-
-                                        pmd_clear(pmdp);
-                                        __flush_tlb_kernel_pgtable(start);
-                                        free_hotplug_pgtable_page(virt_to_page(ptep), tlb);
-                                            free_pages()
-                                    }
-                                } while (addr = next, addr < end);
-
-                                pud_clear(pudp);
-                                __flush_tlb_kernel_pgtable(start);
-                                free_hotplug_pgtable_page(virt_to_page(pmdp), tlb);
-                                    free_pages()
-                            }
-                        } while (addr = next, addr < end);
-
-                        p4d_clear(p4dp);
-                        __flush_tlb_kernel_pgtable(start);
-                        free_hotplug_pgtable_page(virt_to_page(pudp), tlb);
-                            free_pages()
-                    }
-                } while (addr = next, addr < end);
-            }
-        } while (addr = next, addr < end);
-```
-
 # mmap
 
 * bin 的技术小屋 [原理](https://mp.weixin.qq.com/s/AUsgFOaePwVsPozC3F6Wjw) ⊙ [源码](https://mp.weixin.qq.com/s/BY3OZ6rkYYyQil_webt7Xg)
@@ -25086,7 +25096,11 @@ void task_numa_fault(int last_cpupid, int mem_node, int pages, int flags)
     p->numa_faults[task_faults_idx(NUMA_CPUBUF, cpu_node, priv)] += pages;
     p->numa_faults_locality[local] += pages;
 }
+```
 
+#### task_numa_placement
+
+```c
 void task_numa_placement(struct task_struct *p)
     __context_unsafe(/* conditional locking */)
 {
@@ -25096,6 +25110,7 @@ void task_numa_placement(struct task_struct *p)
     unsigned long total_faults;
     u64 runtime, period;
     spinlock_t *group_lock = NULL;
+    long __maybe_unused new_fp;
     struct numa_group *ng;
 
     /* The p->mm->numa_scan_seq field gets updated without
@@ -25162,6 +25177,9 @@ void task_numa_placement(struct task_struct *p)
                 ng->total_faults += diff;
                 group_faults += ng->faults[mem_idx];
             }
+
+            new_fp = (long)READ_ONCE(p->mm->sc_stat.footprint) + diff;
+            WRITE_ONCE(p->mm->sc_stat.footprint, max(new_fp, 0L));
         }
 
         if (!ng) {
@@ -26322,87 +26340,40 @@ tlb_finish_mmu(&tlb) {
 }
 ```
 
-# mremap
+# mremap-TODO
 
 ```c
-SYSCALL_DEFINE5(mremap) {
-    vma = vma_lookup(mm, addr);
-    if (flags & (MREMAP_FIXED | MREMAP_DONTUNMAP)) {
-        ret = mremap_to(addr, old_len, new_addr, new_len,
-                &locked, flags, &uf, &uf_unmap_early,
-                &uf_unmap);
-        goto out;
-    }
-    if (old_len >= new_len) {
-        VMA_ITERATOR(vmi, mm, addr + new_len);
+SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
+        unsigned long, new_len, unsigned long, flags,
+        unsigned long, new_addr)
+{
+    struct vm_userfaultfd_ctx uf = NULL_VM_UFFD_CTX;
+    LIST_HEAD(uf_unmap_early);
+    LIST_HEAD(uf_unmap);
+    /* There is a deliberate asymmetry here: we strip the pointer tag
+     * from the old address but leave the new address alone. This is
+     * for consistency with mmap(), where we prevent the creation of
+     * aliasing mappings in userspace by leaving the tag bits of the
+     * mapping address intact. A non-zero tag will cause the subsequent
+     * range checks to reject the address as invalid.
+     *
+     * See Documentation/arch/arm64/tagged-address-abi.rst for more
+     * information. */
+    struct vma_remap_struct vrm = {
+        .addr           = untagged_addr(addr),
+        .old_len        = old_len,
+        .new_len        = new_len,
+        .flags          = flags,
+        .new_addr       = new_addr,
 
-        if (old_len == new_len) {
-            ret = addr;
-            goto out;
-        }
+        .uf             = &uf,
+        .uf_unmap_early = &uf_unmap_early,
+        .uf_unmap       = &uf_unmap,
 
-        ret = do_vmi_munmap(&vmi, mm, addr + new_len, old_len - new_len,
-                    &uf_unmap, true);
-        if (ret)
-            goto out;
+        .remap_type     = MREMAP_INVALID, /* We set later. */
+    };
 
-        ret = addr;
-        goto out_unlocked;
-    }
-
-    /* Ok, we need to grow */
-    vma = vma_to_resize(addr, old_len, new_len, flags);
-
-    /* old_len exactly to the end of the area.. */
-    if (old_len == vma->vm_end - addr) {
-        /* can we just expand the current mapping? */
-        if (vma_expandable(vma, new_len - old_len)) {
-            long pages = (new_len - old_len) >> PAGE_SHIFT;
-            unsigned long extension_start = addr + old_len;
-            unsigned long extension_end = addr + new_len;
-            pgoff_t extension_pgoff = vma->vm_pgoff +
-                ((extension_start - vma->vm_start) >> PAGE_SHIFT);
-            VMA_ITERATOR(vmi, mm, extension_start);
-
-            vma = vma_merge(&vmi, mm, vma, extension_start,
-                extension_end, vma->vm_flags, vma->anon_vma,
-                vma->vm_file, extension_pgoff, vma_policy(vma),
-                vma->vm_userfaultfd_ctx, anon_vma_name(vma));
-            if (!vma) {
-                vm_unacct_memory(pages);
-                ret = -ENOMEM;
-                goto out;
-            }
-
-            if (vma->vm_flags & VM_LOCKED) {
-                mm->locked_vm += pages;
-                locked = true;
-                new_addr = addr;
-            }
-            ret = addr;
-            goto out;
-        }
-    }
-
-    ret = -ENOMEM;
-    if (flags & MREMAP_MAYMOVE) {
-        unsigned long map_flags = 0;
-        if (vma->vm_flags & VM_MAYSHARE)
-            map_flags |= MAP_SHARED;
-
-        new_addr = get_unmapped_area(vma->vm_file, 0, new_len,
-            vma->vm_pgoff + ((addr - vma->vm_start) >> PAGE_SHIFT),
-            map_flags);
-        if (IS_ERR_VALUE(new_addr)) {
-            ret = new_addr;
-            goto out;
-        }
-
-        ret = move_vma(vma, addr, old_len, new_len, new_addr,
-            &locked, flags, &uf, &uf_unmap);
-    }
-out:
-    return ret;
+    return do_mremap(&vrm);
 }
 ```
 
@@ -30663,6 +30634,19 @@ void exit_mm(void)
     if (!mm)
         return;
 
+    exit_mm_sched_cache(mm) {
+        unsigned long fp, sub;
+
+        if (!current->total_numa_faults)
+            return;
+        /* No lock protection due to performance considerations.
+        * Make sure mm->sc_stat.footprint does not become
+        * negative. */
+        fp = READ_ONCE(mm->sc_stat.footprint);
+        sub = min(fp, current->total_numa_faults);
+        WRITE_ONCE(mm->sc_stat.footprint, fp - sub);
+    }
+
     mmap_read_lock(mm);
     mmgrab_lazy_tlb(mm);
     BUG_ON(mm != current->active_mm);
@@ -30678,158 +30662,7 @@ void exit_mm(void)
     mmap_read_unlock(mm);
     mm_update_next_owner(mm);
 
-    mmput(mm) {
-        if (atomic_dec_and_test(&mm->mm_users)) {
-            __mmput(mm) {
-                uprobe_clear_state(mm);
-                exit_aio(mm);
-                ksm_exit(mm);
-                khugepaged_exit(mm); /* must run before exit_mmap */
-
-                exit_mmap(mm) {
-                    struct mmu_gather tlb;
-                    struct vm_area_struct *vma;
-                    unsigned long nr_accounted = 0;
-                    MA_STATE(mas, &mm->mm_mt, 0, 0);
-                    int count = 0;
-
-                    /* mm's last user has gone, and its about to be pulled down */
-                    mmu_notifier_release(mm);
-
-                    mmap_read_lock(mm);
-                    arch_exit_mmap(mm);
-
-                    vma = mas_find(&mas, ULONG_MAX);
-                    if (!vma || unlikely(xa_is_zero(vma))) {
-                        /* Can happen if dup_mmap() received an OOM */
-                        mmap_read_unlock(mm);
-                        mmap_write_lock(mm);
-                        goto destroy;
-                    }
-
-                    lru_add_drain();
-                    flush_cache_mm(mm);
-                    tlb_gather_mmu_fullmm(&tlb, mm);
-
-                    /* update_hiwater_rss(mm) here? but nobody should be looking */
-                    /* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
-                    unmap_vmas(&tlb, &mas, vma, 0, ULONG_MAX, ULONG_MAX, false) {
-                        struct mmu_notifier_range range;
-                        struct zap_details details = {
-                            .zap_flags = ZAP_FLAG_DROP_MARKER | ZAP_FLAG_UNMAP,
-                            /* Careful - we need to zap private pages too! */
-                            .even_cows = true,
-                        };
-
-                        mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma->vm_mm,
-                                    start_addr, end_addr);
-                        mmu_notifier_invalidate_range_start(&range);
-                        do {
-                            unsigned long start = start_addr;
-                            unsigned long end = end_addr;
-                            hugetlb_zap_begin(vma, &start, &end);
-                            unmap_single_vma(tlb, vma, start, end, &details, mm_wr_locked)
-                                --->
-                            hugetlb_zap_end(vma, &details);
-                            vma = mas_find(mas, tree_end - 1);
-                        } while (vma && likely(!xa_is_zero(vma)));
-                        mmu_notifier_invalidate_range_end(&range);
-                    }
-
-                    mmap_read_unlock(mm);
-
-                    /* Set MMF_OOM_SKIP to hide this task from the oom killer/reaper
-                     * because the memory has been already freed. */
-                    set_bit(MMF_OOM_SKIP, &mm->flags);
-                    mmap_write_lock(mm);
-                    mt_clear_in_rcu(&mm->mm_mt);
-                    mas_set(&mas, vma->vm_end);
-                    free_pgtables(&tlb, &mas, vma, FIRST_USER_ADDRESS, USER_PGTABLES_CEILING, true);
-                        --->
-                    tlb_finish_mmu(&tlb);
-
-                    /* Walk the list again, actually closing and freeing it, with preemption
-                     * enabled, without holding any MM locks besides the unreachable
-                     * mmap_write_lock. */
-                    mas_set(&mas, vma->vm_end);
-                    do {
-                        if (vma->vm_flags & VM_ACCOUNT) {
-                            nr_accounted += vma_pages(vma);
-                        }
-
-                        remove_vma(vma, true) {
-                            might_sleep();
-                            if (vma->vm_ops && vma->vm_ops->close)
-                                vma->vm_ops->close(vma);
-                            if (vma->vm_file)
-                                fput(vma->vm_file);
-                            mpol_put(vma_policy(vma));
-                            if (unreachable)
-                                __vm_area_free(vma);
-                            else {
-                                vm_area_free(vma) {
-                                    kmem_cache_free(vm_area_cachep, vma);
-                                }
-                            }
-                        }
-
-                        count++;
-                        cond_resched();
-                        vma = mas_find(&mas, ULONG_MAX);
-                    } while (vma && likely(!xa_is_zero(vma)));
-
-                    BUG_ON(count != mm->map_count);
-
-                    trace_exit_mmap(mm);
-                destroy:
-                    __mt_destroy(&mm->mm_mt);
-                    mmap_write_unlock(mm);
-                    vm_unacct_memory(nr_accounted);
-                }
-                mm_put_huge_zero_page(mm);
-                set_mm_exe_file(mm, NULL);
-                if (!list_empty(&mm->mmlist)) {
-                    spin_lock(&mmlist_lock);
-                    list_del(&mm->mmlist);
-                    spin_unlock(&mmlist_lock);
-                }
-                if (mm->binfmt)
-                    module_put(mm->binfmt->module);
-                lru_gen_del_mm(mm);
-
-                mmdrop(mm) {
-                    if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
-                        __mmdrop(mm) {
-                            cleanup_lazy_tlbs(mm);
-
-                            WARN_ON_ONCE(mm == current->active_mm);
-                            mm_free_pgd(mm) {
-                                pgd_free(mm, mm->pgd) {
-                                    if (PGD_SIZE == PAGE_SIZE)
-                                        free_page((unsigned long)pgd);
-                                    else
-                                        kmem_cache_free(pgd_cache, pgd);
-                                }
-                            }
-                            destroy_context(mm);
-                            mmu_notifier_subscriptions_destroy(mm);
-                            check_mm(mm);
-                            put_user_ns(mm->user_ns);
-                            mm_pasid_drop(mm);
-                            mm_destroy_cid(mm);
-
-                            for (i = 0; i < NR_MM_COUNTERS; i++) {
-                                percpu_counter_destroy(&mm->rss_stat[i]);
-                            }
-                            free_mm(mm) {
-                                kmem_cache_free(mm_cachep, (mm));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    mmput(mm);
 
     if (test_thread_flag(TIF_MEMDIE)) {
         exit_oom_victim() {
@@ -30842,6 +30675,165 @@ void exit_mm(void)
 }
 ```
 
+## mmput
+
+```c
+void mmput(struct mm_struct *mm)
+{
+    might_sleep();
+
+    if (atomic_dec_and_test(&mm->mm_users)) {
+        __mmput(mm) {
+            uprobe_clear_state(mm);
+            exit_aio(mm);
+            ksm_exit(mm);
+            khugepaged_exit(mm); /* must run before exit_mmap */
+
+            exit_mmap(mm) {
+                struct mmu_gather tlb;
+                struct vm_area_struct *vma;
+                unsigned long nr_accounted = 0;
+                MA_STATE(mas, &mm->mm_mt, 0, 0);
+                int count = 0;
+
+                /* mm's last user has gone, and its about to be pulled down */
+                mmu_notifier_release(mm);
+
+                mmap_read_lock(mm);
+                arch_exit_mmap(mm);
+
+                vma = mas_find(&mas, ULONG_MAX);
+                if (!vma || unlikely(xa_is_zero(vma))) {
+                    /* Can happen if dup_mmap() received an OOM */
+                    mmap_read_unlock(mm);
+                    mmap_write_lock(mm);
+                    goto destroy;
+                }
+
+                lru_add_drain();
+                flush_cache_mm(mm);
+                tlb_gather_mmu_fullmm(&tlb, mm);
+
+                /* update_hiwater_rss(mm) here? but nobody should be looking */
+                /* Use ULONG_MAX here to ensure all VMAs in the mm are unmapped */
+                unmap_vmas(&tlb, &mas, vma, 0, ULONG_MAX, ULONG_MAX, false) {
+                    struct mmu_notifier_range range;
+                    struct zap_details details = {
+                        .zap_flags = ZAP_FLAG_DROP_MARKER | ZAP_FLAG_UNMAP,
+                        /* Careful - we need to zap private pages too! */
+                        .even_cows = true,
+                    };
+
+                    mmu_notifier_range_init(&range, MMU_NOTIFY_UNMAP, 0, vma->vm_mm,
+                                start_addr, end_addr);
+                    mmu_notifier_invalidate_range_start(&range);
+                    do {
+                        unsigned long start = start_addr;
+                        unsigned long end = end_addr;
+                        hugetlb_zap_begin(vma, &start, &end);
+                        unmap_single_vma(tlb, vma, start, end, &details, mm_wr_locked)
+                            --->
+                        hugetlb_zap_end(vma, &details);
+                        vma = mas_find(mas, tree_end - 1);
+                    } while (vma && likely(!xa_is_zero(vma)));
+                    mmu_notifier_invalidate_range_end(&range);
+                }
+
+                mmap_read_unlock(mm);
+
+                /* Set MMF_OOM_SKIP to hide this task from the oom killer/reaper
+                    * because the memory has been already freed. */
+                set_bit(MMF_OOM_SKIP, &mm->flags);
+                mmap_write_lock(mm);
+                mt_clear_in_rcu(&mm->mm_mt);
+                mas_set(&mas, vma->vm_end);
+                free_pgtables(&tlb, &mas, vma, FIRST_USER_ADDRESS, USER_PGTABLES_CEILING, true);
+                    --->
+                tlb_finish_mmu(&tlb);
+
+                /* Walk the list again, actually closing and freeing it, with preemption
+                    * enabled, without holding any MM locks besides the unreachable
+                    * mmap_write_lock. */
+                mas_set(&mas, vma->vm_end);
+                do {
+                    if (vma->vm_flags & VM_ACCOUNT) {
+                        nr_accounted += vma_pages(vma);
+                    }
+
+                    remove_vma(vma, true) {
+                        might_sleep();
+                        if (vma->vm_ops && vma->vm_ops->close)
+                            vma->vm_ops->close(vma);
+                        if (vma->vm_file)
+                            fput(vma->vm_file);
+                        mpol_put(vma_policy(vma));
+                        if (unreachable)
+                            __vm_area_free(vma);
+                        else {
+                            vm_area_free(vma) {
+                                kmem_cache_free(vm_area_cachep, vma);
+                            }
+                        }
+                    }
+
+                    count++;
+                    cond_resched();
+                    vma = mas_find(&mas, ULONG_MAX);
+                } while (vma && likely(!xa_is_zero(vma)));
+
+                BUG_ON(count != mm->map_count);
+
+                trace_exit_mmap(mm);
+            destroy:
+                __mt_destroy(&mm->mm_mt);
+                mmap_write_unlock(mm);
+                vm_unacct_memory(nr_accounted);
+            }
+            mm_put_huge_zero_page(mm);
+            set_mm_exe_file(mm, NULL);
+            if (!list_empty(&mm->mmlist)) {
+                spin_lock(&mmlist_lock);
+                list_del(&mm->mmlist);
+                spin_unlock(&mmlist_lock);
+            }
+            if (mm->binfmt)
+                module_put(mm->binfmt->module);
+            lru_gen_del_mm(mm);
+
+            mmdrop(mm) {
+                if (unlikely(atomic_dec_and_test(&mm->mm_count))) {
+                    __mmdrop(mm) {
+                        cleanup_lazy_tlbs(mm);
+
+                        WARN_ON_ONCE(mm == current->active_mm);
+                        mm_free_pgd(mm) {
+                            pgd_free(mm, mm->pgd) {
+                                if (PGD_SIZE == PAGE_SIZE)
+                                    free_page((unsigned long)pgd);
+                                else
+                                    kmem_cache_free(pgd_cache, pgd);
+                            }
+                        }
+                        destroy_context(mm);
+                        mmu_notifier_subscriptions_destroy(mm);
+                        check_mm(mm);
+                        put_user_ns(mm->user_ns);
+                        mm_pasid_drop(mm);
+                        mm_destroy_cid(mm);
+
+                        for (i = 0; i < NR_MM_COUNTERS; i++) {
+                            percpu_counter_destroy(&mm->rss_stat[i]);
+                        }
+                        free_mm(mm) {
+                            kmem_cache_free(mm_cachep, (mm));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+```
 # dma
 
 ## dma_alloc_coherent
@@ -35611,301 +35603,6 @@ static int __hugetlb_vmemmap_optimize_folio(const struct hstate *h,
     }
 
     return ret;
-}
-```
-
-#### walk_kernel_page_table_range
-
-```c
-int walk_kernel_page_table_range(unsigned long start, unsigned long end,
-        const struct mm_walk_ops *ops, pgd_t *pgd, void *private)
-{
-    struct mm_struct *mm = &init_mm;
-    struct mm_walk walk = {
-        .ops        = ops,
-        .mm         = mm,
-        .pgd        = pgd,
-        .private    = private,
-        .no_vma     = true,
-        .vma        = NULL,
-    };
-
-    if (start >= end)
-        return -EINVAL;
-    if (!check_ops_valid(ops))
-        return -EINVAL;
-
-    mmap_assert_locked(mm);
-
-    return walk_pgd_range(start, end, &walk) {
-        pgd_t *pgd;
-        unsigned long next;
-        const struct mm_walk_ops *ops = walk->ops;
-        bool has_handler = ops->p4d_entry || ops->pud_entry || ops->pmd_entry ||
-            ops->pte_entry;
-        bool has_install = ops->install_pte;
-        int err = 0;
-
-        if (walk->pgd)
-            pgd = walk->pgd + pgd_index(addr);
-        else
-            pgd = pgd_offset(walk->mm, addr);
-
-        do {
-            next = pgd_addr_end(addr, end);
-            if (pgd_none_or_clear_bad(pgd)) {
-                if (has_install)
-                    err = __p4d_alloc(walk->mm, pgd, addr);
-                else if (ops->pte_hole)
-                    err = ops->pte_hole(addr, next, 0, walk);
-                if (err)
-                    break;
-                if (!has_install)
-                    continue;
-            }
-            if (ops->pgd_entry) {
-                err = ops->pgd_entry(pgd, addr, next, walk);
-                if (err)
-                    break;
-            }
-            if (has_handler || has_install)
-                err = walk_p4d_range(pgd, addr, next, walk);
-            if (err)
-                break;
-        } while (pgd++, addr = next, addr != end);
-
-        return err;
-    }
-}
-
-static int walk_p4d_range(pgd_t *pgd, unsigned long addr, unsigned long end,
-              struct mm_walk *walk)
-{
-    p4d_t *p4d;
-    unsigned long next;
-    const struct mm_walk_ops *ops = walk->ops;
-    bool has_handler = ops->pud_entry || ops->pmd_entry || ops->pte_entry;
-    bool has_install = ops->install_pte;
-    int err = 0;
-    int depth = real_depth(1);
-
-    p4d = p4d_offset(pgd, addr);
-    do {
-        next = p4d_addr_end(addr, end);
-        if (p4d_none_or_clear_bad(p4d)) {
-            if (has_install)
-                err = __pud_alloc(walk->mm, p4d, addr);
-            else if (ops->pte_hole)
-                err = ops->pte_hole(addr, next, depth, walk);
-            if (err)
-                break;
-            if (!has_install)
-                continue;
-        }
-        if (ops->p4d_entry) {
-            err = ops->p4d_entry(p4d, addr, next, walk);
-            if (err)
-                break;
-        }
-        if (has_handler || has_install)
-            err = walk_pud_range(p4d, addr, next, walk);
-        if (err)
-            break;
-    } while (p4d++, addr = next, addr != end);
-
-    return err;
-}
-
-int walk_pud_range(p4d_t *p4d, unsigned long addr, unsigned long end,
-              struct mm_walk *walk)
-{
-    pud_t *pud;
-    unsigned long next;
-    const struct mm_walk_ops *ops = walk->ops;
-    bool has_handler = ops->pmd_entry || ops->pte_entry;
-    bool has_install = ops->install_pte;
-    int err = 0;
-    int depth = real_depth(2);
-
-    pud = pud_offset(p4d, addr);
-    do {
- again:
-        next = pud_addr_end(addr, end);
-        if (pud_none(*pud)) {
-            if (has_install)
-                err = __pmd_alloc(walk->mm, pud, addr);
-            else if (ops->pte_hole)
-                err = ops->pte_hole(addr, next, depth, walk);
-            if (err)
-                break;
-            if (!has_install)
-                continue;
-        }
-
-        walk->action = ACTION_SUBTREE;
-
-        if (ops->pud_entry)
-            err = ops->pud_entry(pud, addr, next, walk);
-        if (err)
-            break;
-
-        if (walk->action == ACTION_AGAIN)
-            goto again;
-        if (walk->action == ACTION_CONTINUE)
-            continue;
-
-        if (!has_handler) { /* No handlers for lower page tables. */
-            if (!has_install)
-                continue; /* Nothing to do. */
-            /* We are ONLY installing, so avoid unnecessarily
-             * splitting a present huge page. */
-            if (pud_present(*pud) && pud_trans_huge(*pud))
-                continue;
-        }
-
-        if (walk->vma)
-            split_huge_pud(walk->vma, pud, addr);
-        else if (pud_leaf(*pud) || !pud_present(*pud))
-            continue; /* Nothing to do. */
-
-        if (pud_none(*pud))
-            goto again;
-
-        err = walk_pmd_range(pud, addr, next, walk);
-        if (err)
-            break;
-    } while (pud++, addr = next, addr != end);
-
-    return err;
-}
-
-int walk_pmd_range(pud_t *pud, unsigned long addr, unsigned long end,
-              struct mm_walk *walk)
-{
-    pmd_t *pmd;
-    unsigned long next;
-    const struct mm_walk_ops *ops = walk->ops;
-    bool has_handler = ops->pte_entry;
-    bool has_install = ops->install_pte;
-    int err = 0;
-    int depth = real_depth(3);
-
-    pmd = pmd_offset(pud, addr);
-    do {
-again:
-        next = pmd_addr_end(addr, end);
-        if (pmd_none(*pmd)) {
-            if (has_install)
-                err = __pte_alloc(walk->mm, pmd);
-            else if (ops->pte_hole)
-                err = ops->pte_hole(addr, next, depth, walk);
-            if (err)
-                break;
-            if (!has_install)
-                continue;
-        }
-
-        walk->action = ACTION_SUBTREE;
-
-        if (ops->pmd_entry)
-            err = ops->pmd_entry(pmd, addr, next, walk);
-        if (err)
-            break;
-
-        if (walk->action == ACTION_AGAIN)
-            goto again;
-        if (walk->action == ACTION_CONTINUE)
-            continue;
-
-        if (!has_handler) { /* No handlers for lower page tables. */
-            if (!has_install)
-                continue; /* Nothing to do. */
-            /* We are ONLY installing, so avoid unnecessarily
-             * splitting a present huge page. */
-            if (pmd_present(*pmd) && pmd_trans_huge(*pmd))
-                continue;
-        }
-
-        if (walk->vma)
-            split_huge_pmd(walk->vma, pmd, addr);
-        else if (pmd_leaf(*pmd) || !pmd_present(*pmd))
-            continue; /* Nothing to do. */
-
-        err = walk_pte_range(pmd, addr, next, walk);
-        if (err)
-            break;
-
-        if (walk->action == ACTION_AGAIN)
-            goto again;
-
-    } while (pmd++, addr = next, addr != end);
-
-    return err;
-}
-
-int walk_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
-              struct mm_walk *walk)
-{
-    pte_t *pte;
-    int err = 0;
-    spinlock_t *ptl;
-
-    if (walk->no_vma) {
-        /* pte_offset_map() might apply user-specific validation.
-         * Indeed, on x86_64 the pmd entries set up by init_espfix_ap()
-         * fit its pmd_bad() check (_PAGE_NX set and _PAGE_RW clear),
-         * and CONFIG_EFI_PGT_DUMP efi_mm goes so far as to walk them. */
-        if (walk->mm == &init_mm || addr >= TASK_SIZE)
-            pte = pte_offset_kernel(pmd, addr);
-        else
-            pte = pte_offset_map(pmd, addr);
-
-        if (pte) {
-            err = walk_pte_range_inner(pte, addr, end, walk);
-            if (walk->mm != &init_mm && addr < TASK_SIZE)
-                pte_unmap(pte);
-        }
-    } else {
-        pte = pte_offset_map_lock(walk->mm, pmd, addr, &ptl);
-        if (pte) {
-            err = walk_pte_range_inner(pte, addr, end, walk);
-            pte_unmap_unlock(pte, ptl);
-        }
-    }
-    if (!pte)
-        walk->action = ACTION_AGAIN;
-    return err;
-}
-
-static int walk_pte_range_inner(pte_t *pte, unsigned long addr,
-                unsigned long end, struct mm_walk *walk)
-{
-    const struct mm_walk_ops *ops = walk->ops;
-    int err = 0;
-
-    for (;;) {
-        if (ops->install_pte && pte_none(ptep_get(pte))) {
-            pte_t new_pte;
-
-            err = ops->install_pte(addr, addr + PAGE_SIZE, &new_pte, walk);
-            if (err)
-                break;
-
-            set_pte_at(walk->mm, addr, pte, new_pte);
-            /* Non-present before, so for arches that need it. */
-            if (!WARN_ON_ONCE(walk->no_vma))
-                update_mmu_cache(walk->vma, addr, pte);
-        } else {
-            err = ops->pte_entry(pte, addr, addr + PAGE_SIZE, walk);
-            if (err)
-                break;
-        }
-        if (addr >= end - PAGE_SIZE)
-            break;
-        addr += PAGE_SIZE;
-        pte++;
-    }
-    return err;
 }
 ```
 
