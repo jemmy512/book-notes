@@ -770,133 +770,218 @@ DMA APIs here are from different subsystems. The most important split is:
 - Need fine-grained IOVA control with an IOMMU: `dma_iova_try_alloc()` family
 - Need to share one DMA buffer with another driver/device: `dma_buf_export()` + `dma_buf_attach()` + `dma_buf_map_attachment()`
 
-## dma_alloc_coherent
+## Coherent alloc
 
-Use for memory that the CPU and device both access repeatedly, such as descriptor rings, doorbells, and firmware mailboxes.
+| API | Notes |
+|---|---|
+| `dma_{alloc,free}_coherent()` | Allocate a zeroed, cache-coherent buffer; returns CPU address and `dma_addr_t`. Wrapper over `dma_alloc_attrs(..., 0)`. Free must not be called from hard IRQ context. |
+| `dma_{alloc,free}_attrs()` | Base allocator taking `DMA_ATTR_*` flags; attrs on free must match the allocation. |
+| `dmam_{alloc,free}_coherent()` | Managed (devres) version; freed automatically on driver detach, or explicitly with the free call. |
+| `dmam_alloc_attrs()` | Managed version of `dma_alloc_attrs()`. |
+| `dma_{alloc,free}_wc()` | Coherent alloc with `DMA_ATTR_WRITE_COMBINE`, and its free. |
+| `dma_mmap_wc()` | mmap a write-combine buffer to userspace. |
+| `dma_mmap_coherent()` | mmap a coherent buffer to userspace (wrapper over `dma_mmap_attrs`). |
+| `dma_mmap_attrs()` | Base mmap function with attrs. |
+| `dma_can_mmap()` | Whether the device's DMA ops support mmap of coherent memory. |
+| `dma_get_sgtable()` | Build an `sg_table` describing a coherent buffer (e.g. for dma-buf export). |
+| `dma_get_sgtable_attrs()` | Base version with attrs. |
 
-- Returns a CPU virtual address and a DMA address
-- Usually no explicit `dma_sync_*()` is needed
-- Free with `dma_free_coherent()`
-- Managed variant: `dmam_alloc_coherent()`
+## Non-coherent alloc
 
-## dma_map_single
+| API | Notes |
+|---|---|
+| `dma_{alloc,free}_noncoherent()` | Buffer that needs explicit `dma_sync_*()`; takes a direction. |
+| `dma_{alloc,free}_pages()` | Allocate DMA-able pages; returns `struct page *`. |
+| `dma_mmap_pages()` | mmap pages from `dma_alloc_pages()` to userspace. |
+| `dma_{alloc,free}_noncontiguous()` | Physically discontiguous buffer returned as an `sg_table`. |
+| `dma_{vmap,vunmap}_noncontiguous()` | Create / remove a contiguous kernel virtual mapping. |
+| `dma_mmap_noncontiguous()` | mmap a noncontiguous buffer to userspace. |
 
-Use for a normal kernel buffer that already exists and is being handed to hardware for a bounded transfer.
+## Streaming map
 
-- Maps a linear CPU buffer into device DMA address space
-- Pair with `dma_unmap_single()`
-- Do not let the CPU touch the buffer between map and unmap unless the ownership rules and sync calls are respected
+| API | Notes |
+|---|---|
+| `dma_{map,unmap}_single()` | Map a kernel virtual (linear-map) buffer. Not for vmalloc or stack memory. Unmap direction and size must match the map call. |
+| `dma_{map,unmap}_single_attrs()` | Base versions with attrs (e.g. `DMA_ATTR_SKIP_CPU_SYNC`). |
+| `dma_{map,unmap}_page()` | Map a `struct page` plus offset; works for highmem. |
+| `dma_{map,unmap}_page_attrs()` | Base page versions with attrs. |
+| `dma_{map,unmap}_phys()` | Map a physical address directly; used with `DMA_ATTR_MMIO`. |
+| `dma_{map,unmap}_resource()` | Map a peer device's MMIO region (non-RAM) for DMA. |
+| `dma_mapping_error()` | Must be checked after every map call. |
 
-## dma_map_sgtable
+## Scatter-gather
 
-Use when the buffer is naturally scatter-gather, or already described by an `sg_table`.
+| API | Notes |
+|---|---|
+| `dma_{map,unmap}_sg()` | Map a scatterlist; returns the number of DMA segments (0 on failure), which may be fewer than `nents`. Unmap uses the original `nents`, not the returned count. |
+| `dma_{map,unmap}_sg_attrs()` | Base versions with attrs. |
+| `dma_{map,unmap}_sgtable()` | Map / unmap an `sg_table`; map returns 0 or -errno and updates `sgt->nents`. |
 
-- `dma_map_sgtable()` is the modern form when you already have an `sg_table`
-- `dma_map_sg()` is the older scatterlist form
-- Pair with `dma_unmap_sgtable()` or `dma_unmap_sg()`
-- Device DMA addresses may be merged/coalesced compared with the original list
+## IOVA (batched)
 
-## dma_map_phys
+| API | Notes |
+|---|---|
+| `dma_iova_try_alloc()` / `dma_iova_free()` | Try to reserve an IOVA range (returns false if the device has no IOMMU-backed path) / release it after unlink. |
+| `dma_iova_{link,unlink}()` | Link a physical range into the reserved IOVA space / unlink part of it. |
+| `dma_iova_sync()` | Flush IOTLB after linking. |
+| `dma_iova_destroy()` | Unlink and free in one call. |
+| `dma_use_iova()` | Whether the state uses the IOVA path. |
+| `dma_iova_size()` | Size of the allocated IOVA range. |
 
-Use when you already have a physical address and need to turn it into a DMA address for a given device.
+## Sync
 
-- Mostly used by lower-level code
-- `dma_map_resource()` is the safer helper for MMIO or P2P-style resource mappings
-- Pair with `dma_unmap_phys()` or `dma_unmap_resource()`
+| API | Notes |
+|---|---|
+| `dma_sync_single_for_{cpu,device}()` | Give buffer ownership to the CPU before reading / back to the device. |
+| `dma_sync_single_range_for_{cpu,device}()` | Same, for a sub-range of a mapping. |
+| `dma_sync_sg_for_{cpu,device}()` | Scatterlist version; use the original `nents`. |
+| `dma_sync_sgtable_for_{cpu,device}()` | `sg_table` version. |
+| `dma_need_sync()` | Whether syncs are needed for this DMA address. |
+| `dma_dev_need_sync()` | Device-level version of `dma_need_sync()`. |
+| `dma_need_unmap()` | Whether unmap must be called; lets drivers skip tracking state. |
 
-## dma_alloc_noncontiguous
+## Mask / capability
 
-Use when you want a DMA allocation represented as an `sg_table` instead of one flat CPU mapping.
+| API | Notes |
+|---|---|
+| `dma_set_mask()` | Set the streaming DMA address mask. |
+| `dma_set_coherent_mask()` | Set the coherent DMA address mask. |
+| `dma_set_mask_and_coherent()` | Set both masks; the usual probe-time call. |
+| `dma_coerce_mask_and_coherent()` | Forces the mask without checking; legacy platform code. |
+| `dma_addressing_limited()` | True if the device cannot address all system RAM. |
+| `dma_max_mapping_size()` | Largest single mapping supported (e.g. swiotlb limit). |
+| `dma_opt_mapping_size()` | Optimal mapping size for performance. |
+| `dma_get_merge_boundary()` | IOMMU segment merge boundary; used by the block layer. |
+| `dma_coherent_ok()` | Whether a physical range is usable for a coherent buffer. |
+| `dma_pci_p2pdma_supported()` | Whether the device supports PCI peer-to-peer DMA. |
 
-- Returns an `sg_table`
-- On IOMMU systems it can represent non-contiguous backing memory with a contiguous device view
-- Helpers: `dma_vmap_noncontiguous()`, `dma_vunmap_noncontiguous()`, `dma_mmap_noncontiguous()`
-- Free with `dma_free_noncontiguous()`
+## Segment / alignment
 
-## dma_request_slave_channel
+| API | Notes |
+|---|---|
+| `dma_{get,set}_max_seg_size()` | Get / set the maximum size of one scatterlist segment. |
+| `dma_{get,set}_seg_boundary()` | Get / set the boundary mask a segment must not cross. |
+| `dma_get_seg_boundary_nr_pages()` | Segment boundary expressed in pages. |
+| `dma_{get,set}_min_align_mask()` | Get / set the minimum alignment mask for mappings (e.g. NVMe). |
+| `dma_get_cache_alignment()` | Minimum alignment DMA buffers need for cache safety. |
 
-This belongs to DMAEngine, not the DMA-mapping API.
+## DMA pool
 
-- Requests a DMA controller channel associated with the device
-- Typical flow: request channel, prepare descriptor, submit, issue pending, wait for completion/callback
-- Use this when hardware transfers are performed by a standalone DMA engine rather than by the device doing bus mastering itself
+| API | Notes |
+|---|---|
+| `dma_pool_{create,destroy}()` | Create a pool of fixed-size coherent blocks (wrapper over `dma_pool_create_node()`); destroy requires all blocks to be freed first. |
+| `dma_pool_create_node()` | NUMA-aware pool creation. |
+| `dma_pool_{alloc,free}()` | Allocate a block (returns CPU address and DMA handle) / return it to the pool. |
+| `dma_pool_zalloc()` | Same as `dma_pool_alloc()`, but zeroed. |
+| `dmam_pool_{create,destroy}()` | Managed (devres) pool creation / destruction. |
 
-## dma_iova_try_alloc
+## Unmap state macros
 
-Reserve IOVA space for an advanced mapping flow.
+| API | Notes |
+|---|---|
+| `dma_unmap_addr{,_set}()` | Read / save a DMA address in a driver struct; compiles away if unmap needs no state. |
+| `dma_unmap_len{,_set}()` | Read / save a length. |
 
-- Only relevant on IOMMU-backed configurations
-- Used when the driver wants explicit control over IOVA lifetime/layout
+## Direction enum
 
-## dma_iova_link
+| API | Notes |
+|---|---|
+| `DMA_BIDIRECTIONAL` | Data may flow either way. Value 0. |
+| `DMA_TO_DEVICE` | CPU to device (write). Value 1. |
+| `DMA_FROM_DEVICE` | Device to CPU (read). Value 2. |
+| `DMA_NONE` | Debug only; invalid for real mappings. Value 3. |
 
-Link physical memory into the reserved IOVA range.
+## Attribute flag
 
-- Binds a physical range into a previously allocated IOVA window
-- Useful for multi-step construction of a DMA mapping
+| API | Notes |
+|---|---|
+| `DMA_ATTR_WEAK_ORDERING` | Allow the platform to relax ordering. |
+| `DMA_ATTR_WRITE_COMBINE` | Write-combine mapping. |
+| `DMA_ATTR_NO_KERNEL_MAPPING` | Skip the kernel virtual mapping; returns a page cookie instead. |
+| `DMA_ATTR_SKIP_CPU_SYNC` | Skip the implicit cache sync at map/unmap. |
+| `DMA_ATTR_FORCE_CONTIGUOUS` | Force physically contiguous allocation. |
+| `DMA_ATTR_ALLOC_SINGLE_PAGES` | Hint that large contiguous allocations are unnecessary. |
+| `DMA_ATTR_NO_WARN` | Suppress allocation failure warnings. |
+| `DMA_ATTR_PRIVILEGED` | Privileged-only device access mapping. |
+| `DMA_ATTR_MMIO` | Physical address is MMIO, not RAM (used with `dma_map_phys`). |
+| `DMA_ATTR_DEBUGGING_IGNORE_CACHELINES` | Silence DMA-debug cacheline overlap warnings. |
+| `DMA_ATTR_REQUIRE_COHERENT` | Fail unless the mapping can be coherent. |
+| `DMA_ATTR_CC_SHARED` | Memory shared with the host in confidential-computing guests. |
 
-## dma_iova_sync
+## Export
 
-Synchronize IOVA mapping state after changes.
+| API | Notes |
+|---|---|
+| `dma_buf_export()` | Exporter creates a dma-buf from a `struct dma_buf_export_info`. |
+| `DEFINE_DMA_BUF_EXPORT_INFO()` | Macro that defines an export-info struct with the owner and resv defaults filled in. |
+| `dma_buf_fd()` | Create a file descriptor for a dma-buf, to hand to userspace. |
+| `dma_buf_fd_install()` | Install a dma-buf on an already-reserved fd. |
+| `dma_buf_{get,put}()` | Importer resolves an fd to a `struct dma_buf` and takes a reference / drops the reference. |
+| `dma_buf_iter_{begin,next}()` | Start iterating the global list of dma-bufs (takes a reference on the first buffer) / move to the next one and release the reference on the previous one. |
 
-- Typically used after linking/unlinking ranges
-- Makes mapping updates visible to the IOMMU/device side
+## Attach / detach
 
-### dma_iova_destroy
+| API | Notes |
+|---|---|
+| `dma_buf_{attach,detach}()` | Static attach of a device to a buffer / detach it. |
+| `dma_buf_dynamic_attach()` | Attach with importer ops, so the exporter can move the buffer. Undone with `dma_buf_detach()`. |
+| `dma_buf_is_dynamic()` | True if the buffer supports dynamic attachments. |
+| `dma_buf_attach_revocable()` | True if the importer implements `invalidate_mappings` (needed for the revoke sequence). |
 
-Tear down the IOVA mapping state when finished.
+## Pin / map
 
-- Releases linked mappings and associated state
-- Usually paired with `dma_iova_try_alloc()`
+| API | Notes |
+|---|---|
+| `dma_buf_{pin,unpin}()` | Pin the backing store so it can't move / unpin it. Needs the resv lock. |
+| `dma_buf_{map,unmap}_attachment()` | Get / release the `sg_table` for the attachment. Needs the resv lock. |
+| `dma_buf_{map,unmap}_attachment_unlocked()` | Same as map / unmap, but takes and releases the resv lock itself. |
+| `dma_buf_invalidate_mappings()` | Exporter tells all attachments the buffer is moving or being revoked. Must hold the resv lock. |
 
-## dma_buf_export
+## CPU access
 
-Exporter-side entry point for the dma-buf framework.
+| API | Notes |
+|---|---|
+| `dma_buf_{begin,end}_cpu_access()` | Prepare for / finish CPU access (cache sync). |
+| `dma_buf_mmap()` | mmap the buffer to userspace. |
+| `dma_buf_{vmap,vunmap}()` | Kernel virtual mapping into an `iosys_map` / remove it. Needs the resv lock. |
+| `dma_buf_{vmap,vunmap}_unlocked()` | vmap / vunmap that takes the resv lock itself. |
 
-- Wraps a driver-owned buffer in a `struct dma_buf`
-- Usually followed by `dma_buf_fd()` to hand the buffer to userspace
-- The actual storage is owned by the exporter; dma-buf provides the sharing wrapper
+## Exporter ops (`dma_buf_ops`)
 
-## dma_buf_attach
+| Op | Notes |
+|---|---|
+| `{attach,detach}` | Optional. Called when a device attaches / detaches. |
+| `{pin,unpin}` | Optional. Pin / unpin the backing store. |
+| `{map,unmap}_dma_buf` | Mandatory. Return / release the `sg_table` for an attachment. |
+| `release` | Mandatory. Called when the last reference is dropped. |
+| `{begin,end}_cpu_access` | Optional. Cache sync before / after CPU access. |
+| `mmap` | Optional. Userspace mapping. |
+| `{vmap,vunmap}` | Optional. Kernel virtual mapping / remove it. |
 
-Importer-side device attachment.
+## Importer ops (`dma_buf_attach_ops`)
 
-- Associates a consumer device with a shared dma-buf
-- Exporter checks whether the device can access the backing storage
-- One attachment per importing device
+| Op | Notes |
+|---|---|
+| `allow_peer2peer` | Set to true if the importer can handle resources without `struct page`. |
+| `invalidate_mappings` | Optional callback for a move or revoke. The importer must unmap within bounded time. |
 
-## dma_buf_map_attachment
+## dma-heap (in-kernel)
 
-Get the importer-visible DMA mapping for an attached dma-buf.
+| API | Notes |
+|---|---|
+| `dma_heap_add()` | Register a heap that userspace can allocate dma-bufs from. |
+| `dma_heap_get_drvdata()` | Get the driver's private data from a heap. |
+| `dma_heap_get_name()` | Get the heap's name. |
 
-- Returns an `sg_table` mapped for the importing device
-- Under the hood, exporter code usually ends up using the DMA-mapping API such as `dma_map_sgtable()`
-- Pair with `dma_buf_unmap_attachment()`
+## uapi ioctl
 
-## Practical order
-
-### Bus-mastering device with its own DMA capability
-
-1. Set mask: `dma_set_mask_and_coherent()` or `dma_set_mask()` + `dma_set_coherent_mask()`
-2. Allocate ring memory with `dma_alloc_coherent()`
-3. Map payload buffers with `dma_map_single()` or `dma_map_sgtable()`
-4. Sync on non-coherent platforms if needed
-5. Unmap payload buffers when I/O completes
-
-### Driver using a DMA controller
-
-1. Request channel with `dma_request_slave_channel()`
-2. Prepare DMAEngine descriptor
-3. Submit and start transfer
-4. Completion callback or wait path handles teardown
-
-### Cross-device shared buffer
-
-1. Exporter calls `dma_buf_export()`
-2. Importer gets the fd and calls `dma_buf_get()`
-3. Importer calls `dma_buf_attach()`
-4. Importer calls `dma_buf_map_attachment()`
-5. Importer unmaps and detaches when done
+| ioctl | Notes |
+|---|---|
+| `DMA_BUF_IOCTL_SYNC` | Bracket CPU access with start/end and read/write/rw flags (`DMA_BUF_SYNC_*`). |
+| `DMA_BUF_SET_NAME` | Set the buffer's debug name (up to `DMA_BUF_NAME_LEN`, 32 bytes). The `_A` and `_B` variants are compatibility encodings. |
+| `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` | Export the buffer's fences as a sync_file. |
+| `DMA_BUF_IOCTL_IMPORT_SYNC_FILE` | Import a sync_file's fences into the buffer. |
+| `DMA_HEAP_IOCTL_ALLOC` | Allocate a dma-buf from a heap device. |
 
 # PCI
 
