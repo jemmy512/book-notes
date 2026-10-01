@@ -25178,8 +25178,12 @@ void task_numa_placement(struct task_struct *p)
                 group_faults += ng->faults[mem_idx];
             }
 
-            new_fp = (long)READ_ONCE(p->mm->sc_stat.footprint) + diff;
-            WRITE_ONCE(p->mm->sc_stat.footprint, max(new_fp, 0L));
+            grp = READ_ONCE(p->mm->sched_cache_grp);
+			if (!grp)
+				continue;
+
+			new_fp = (long)READ_ONCE(grp->footprint) + diff;
+			WRITE_ONCE(grp->footprint, max(new_fp, 0L));
         }
 
         if (!ng) {
@@ -29388,6 +29392,7 @@ kernel_clone()
 
         tsk->mm = mm;
         tsk->active_mm = mm;
+        sched_cache_fork(tsk);
     }
 ```
 
@@ -30595,7 +30600,7 @@ void exit_mm(void)
 {
     struct mm_struct *mm = current->mm;
 
-    exit_mm_release(current, mm) {
+    mm_exit_exec_release(current, mm) {
         futex_exit_release(tsk) {
             if (unlikely(tsk->robust_list)) {
                 exit_robust_list(tsk) {
@@ -30634,17 +30639,34 @@ void exit_mm(void)
     if (!mm)
         return;
 
-    exit_mm_sched_cache(mm) {
-        unsigned long fp, sub;
+    sched_cache_exit_mm(current) {
+        struct sched_cache_group *grp = sched_cache_replace_grp(p, NULL) {
+            struct sched_cache_group *old;
 
-        if (!current->total_numa_faults)
-            return;
-        /* No lock protection due to performance considerations.
-        * Make sure mm->sc_stat.footprint does not become
-        * negative. */
-        fp = READ_ONCE(mm->sc_stat.footprint);
-        sub = min(fp, current->total_numa_faults);
-        WRITE_ONCE(mm->sc_stat.footprint, fp - sub);
+            old = rcu_deref_sched_cache_grp(p);
+            rcu_assign_pointer(p->sched_cache_grp, new);
+
+            return old;
+        }
+
+    #ifdef CONFIG_NUMA_BALANCING
+        /* Subtract this task's footprint from the group before dropping the
+        * reference, so the group footprint converges as its threads exit.
+        * Unlocked for performance; clamp to avoid underflow. */
+        if (grp && p->total_numa_faults) {
+            unsigned long fp = READ_ONCE(grp->footprint);
+            unsigned long sub = min(fp, p->total_numa_faults);
+
+            WRITE_ONCE(grp->footprint, fp - sub);
+        }
+    #endif
+
+        sched_cache_group_put(grp) {
+            if (!grp || !refcount_dec_and_test(&grp->refcnt))
+                return;
+
+            call_rcu(&grp->rcu, sched_cache_group_free_rcu);
+        }
     }
 
     mmap_read_lock(mm);

@@ -8614,8 +8614,8 @@ s64 update_se(struct rq *rq, struct sched_entity *se)
 ```c
 void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 {
+    struct sched_cache_group *grp = rcu_dereference_all(p->sched_cache_grp);
     struct sched_cache_time *pcpu_sched;
-    struct mm_struct *mm = p->mm;
     int mm_sched_llc = -1;
     unsigned long epoch;
 
@@ -8625,14 +8625,22 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
     if (p->sched_class != &fair_sched_class)
         return;
     /* init_task, kthreads and user thread created
-     * by user_mode_thread() don't have mm. */
-    if (!mm || !mm->sc_stat.pcpu_sched)
+     * by user_mode_thread() don't have a cache group.
+     * In theory a kernel thread does not have any valid
+     * cache group, because sched_cache_fork() is not
+     * invoked for a kernel thread - !grp should gate the
+     * kernel thread. Use the PF_KTHREAD check explicitly
+     * here for safety reasons, to guard against future
+     * modifications and to pair with task_tick_cache(). */
+    if (p->flags & PF_KTHREAD || !grp || !grp->pcpu_sched)
         return;
 
-    pcpu_sched = per_cpu_ptr(mm->sc_stat.pcpu_sched, cpu_of(rq));
+    pcpu_sched = per_cpu_ptr(grp->pcpu_sched, cpu_of(rq));
 
     scoped_guard (raw_spinlock, &rq->cpu_epoch_lock) {
         __update_mm_sched(rq, pcpu_sched) {
+            lockdep_assert_held(&rq->cpu_epoch_lock);
+
             unsigned int period = max(READ_ONCE(llc_epoch_period), 1U);
             unsigned long n, now = jiffies;
             long delta = now - rq->cpu_epoch_next;
@@ -8650,7 +8658,6 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
                 __shr_u64(&pcpu_sched->runtime, n);
             }
         }
-
         pcpu_sched->runtime += delta_exec;
         rq->cpu_runtime += delta_exec;
         epoch = rq->cpu_epoch;
@@ -8658,30 +8665,32 @@ void account_mm_sched(struct rq *rq, struct task_struct *p, s64 delta_exec)
 
     /* If this process hasn't hit task_cache_work() for a while invalidate
      * its preferred state. */
-    if ((long)(epoch - READ_ONCE(mm->sc_stat.epoch)) > llc_epoch_affinity_timeout ||
-        invalid_llc_nr(mm, p, cpu_of(rq)) || exceed_llc_capacity(mm, cpu_of(rq))) {
-        if (READ_ONCE(mm->sc_stat.cpu) != -1)
-            WRITE_ONCE(mm->sc_stat.cpu, -1);
+    if ((long)(epoch - READ_ONCE(grp->epoch)) > llc_epoch_affinity_timeout ||
+        invalid_llc_nr(grp, p, cpu_of(rq)) || exceed_llc_capacity(grp, cpu_of(rq)))
+    {
+        if (READ_ONCE(grp->cpu) != -1)
+            WRITE_ONCE(grp->cpu, -1);
     }
 
-    mm_sched_llc = get_pref_llc(p, mm);
+    mm_sched_llc = get_pref_llc(p, grp);
 
     /* task not on rq accounted later in account_entity_enqueue() */
-    if (task_running_on_cpu(rq->cpu, p) && READ_ONCE(p->preferred_llc) != mm_sched_llc) {
+    if (task_running_on_cpu(rq->cpu, p) &&
+        READ_ONCE(p->preferred_llc) != mm_sched_llc) {
         account_llc_dequeue(rq, p);
         WRITE_ONCE(p->preferred_llc, mm_sched_llc);
         account_llc_enqueue(rq, p);
     }
 }
 
-int get_pref_llc(struct task_struct *p, struct mm_struct *mm)
+int get_pref_llc(struct task_struct *p, struct sched_cache_group *grp)
 {
     int mm_sched_llc = -1, mm_sched_cpu;
 
-    if (!mm)
+    if (!grp)
         return -1;
 
-    mm_sched_cpu = READ_ONCE(mm->sc_stat.cpu);
+    mm_sched_cpu = READ_ONCE(grp->cpu);
     if (mm_sched_cpu != -1) {
         mm_sched_llc = llc_id(mm_sched_cpu);
 
@@ -8869,26 +8878,26 @@ void task_tick_numa(struct rq *rq, struct task_struct *curr)
 ```c
 void task_tick_cache(struct rq *rq, struct task_struct *p)
 {
+    struct sched_cache_group *grp = rcu_dereference_all(p->sched_cache_grp);
     struct callback_head *work = &p->cache_work;
-    struct mm_struct *mm = p->mm;
     unsigned long epoch;
 
     if (!sched_cache_enabled())
         return;
 
-    if (!mm || p->flags & PF_KTHREAD || !mm->sc_stat.pcpu_sched)
+    if (!grp || p->flags & PF_KTHREAD || !grp->pcpu_sched)
         return;
 
     epoch = rq->cpu_epoch;
     /* avoid moving backwards */
-    if (time_after_eq(mm->sc_stat.epoch, epoch))
+    if (time_after_eq(grp->epoch, epoch))
         return;
 
-    guard(raw_spinlock)(&mm->sc_stat.lock);
+    guard(raw_spinlock)(&grp->lock);
 
     if (work->next == work) {
         task_work_add(p, work, TWA_RESUME);
-        WRITE_ONCE(mm->sc_stat.epoch, epoch);
+        WRITE_ONCE(grp->epoch, epoch);
     }
 }
 
@@ -8898,6 +8907,7 @@ void task_cache_work(struct callback_head *work)
     unsigned long next_scan, now = jiffies;
     struct task_struct *p = current, *cur;
     unsigned long curr_m_a_occ = 0;
+    struct sched_cache_group *grp;
     struct mm_struct *mm = p->mm;
     unsigned long m_a_occ = 0;
     cpumask_var_t cpus;
@@ -8909,18 +8919,22 @@ void task_cache_work(struct callback_head *work)
     if (p->flags & PF_EXITING)
         return;
 
-    next_scan = READ_ONCE(mm->sc_stat.next_scan);
+    grp = READ_ONCE(mm->sched_cache_grp);
+    if (!grp)
+        return;
+
+    next_scan = READ_ONCE(grp->next_scan);
     if (time_before(now, next_scan))
         return;
 
     /* only 1 thread is allowed to scan */
-    if (!try_cmpxchg(&mm->sc_stat.next_scan, &next_scan, now + max_t(unsigned long, READ_ONCE(llc_epoch_period), 1)))
+    if (!try_cmpxchg(&grp->next_scan, &next_scan, now + max_t(unsigned long, READ_ONCE(llc_epoch_period), 1)))
         return;
 
     curr_cpu = task_cpu(p);
     if (invalid_llc_nr(mm, p, curr_cpu) || exceed_llc_capacity(mm, curr_cpu)) {
-        if (READ_ONCE(mm->sc_stat.cpu) != -1)
-            WRITE_ONCE(mm->sc_stat.cpu, -1);
+        if (READ_ONCE(grp->cpu) != -1)
+            WRITE_ONCE(grp->cpu, -1);
 
         return;
     }
@@ -8931,7 +8945,7 @@ void task_cache_work(struct callback_head *work)
     scoped_guard (cpus_read_lock) {
         guard(rcu)();
 
-        get_scan_cpumasks(cpus, p);
+        get_scan_cpumasks(cpus, p, grp);
 
         for_each_cpu(cpu, cpus) {
             /* XXX sched_cluster_active */
@@ -8943,10 +8957,7 @@ void task_cache_work(struct callback_head *work)
                 continue;
 
             for_each_cpu(i, sched_domain_span(sd)) {
-                occ = fraction_mm_sched(cpu_rq(i), per_cpu_ptr(mm->sc_stat.pcpu_sched, i)) {
-                    __update_mm_sched(rq, pcpu_sched);
-                    return div64_u64(NICE_0_LOAD * pcpu_sched->runtime, rq->cpu_runtime + 1);
-                }
+                occ = fraction_mm_sched(cpu_rq(i), per_cpu_ptr(grp->pcpu_sched, i));
                 a_occ += occ;
                 if (occ > m_occ) {
                     m_occ = occ;
@@ -8976,7 +8987,7 @@ void task_cache_work(struct callback_head *work)
                 m_a_cpu = m_cpu;
             }
 
-            if (llc_id(cpu) == llc_id(READ_ONCE(mm->sc_stat.cpu)))
+            if (llc_id(cpu) == llc_id(READ_ONCE(grp->cpu)))
                 curr_m_a_occ = a_occ;
 
             cpumask_andnot(cpus, cpus, sched_domain_span(sd));
@@ -8984,7 +8995,7 @@ void task_cache_work(struct callback_head *work)
     }
 
     if (m_a_occ > (2 * curr_m_a_occ)) {
-        /* Avoid switching sc_stat.cpu too fast.
+        /* Avoid switching sched_cache_grp->cpu too fast.
          * The reason to choose 2X is because:
          * 1. It is better to keep the preferred LLC stable,
          *    rather than changing it frequently and cause migrations
@@ -8992,28 +9003,15 @@ void task_cache_work(struct callback_head *work)
          *    busy CPU than the old one(200% vs 100%, eg)
          * 3. 2X is chosen based on test results, as it delivers
          *    the optimal performance gain so far. */
-        WRITE_ONCE(mm->sc_stat.cpu, m_a_cpu);
+        WRITE_ONCE(grp->cpu, m_a_cpu);
     }
 
-    update_avg_scale(&mm->sc_stat.nr_running_avg, nr_running) {
-        int factor = per_cpu(sd_llc_size, raw_smp_processor_id());
-        s64 diff = sample - *avg;
-        u32 divisor;
-
-        /* Scale the divisor based on the number of CPUs contained
-        * in the LLC. This scaling ensures smaller LLC domains use
-        * a smaller divisor to achieve more precise sensitivity to
-        * changes in nr_running, while larger LLC domains are capped
-        * at a maximum divisor of 8 which is the default smoothing
-        * factor of EWMA in update_avg(). */
-        divisor = clamp_t(u32, (factor >> 2), 2, 8);
-        *avg += div64_s64(diff, divisor);
-    }
-
+    update_avg_scale(&grp->nr_running_avg, nr_running);
     free_cpumask_var(cpus);
 }
 
-void get_scan_cpumasks(cpumask_var_t cpus, struct task_struct *p)
+void get_scan_cpumasks(cpumask_var_t cpus, struct task_struct *p,
+                  struct sched_cache_group *grp)
 {
 #ifdef CONFIG_NUMA_BALANCING
     int cpu, curr_cpu, nid, pref_nid;
@@ -9021,7 +9019,7 @@ void get_scan_cpumasks(cpumask_var_t cpus, struct task_struct *p)
     if (!static_branch_likely(&sched_numa_balancing))
         goto out;
 
-    cpu = READ_ONCE(p->mm->sc_stat.cpu);
+    cpu = READ_ONCE(grp->cpu);
     if (cpu != -1)
         nid = cpu_to_node(cpu);
     curr_cpu = task_cpu(p);
@@ -9103,7 +9101,21 @@ void enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
             }
 
             update_load_avg(cfs_rq, se, 0);
-            clear_delayed(se);
+
+            clear_delayed(se) {
+                se->sched_delayed = 0;
+
+                if (!entity_is_task(se))
+                    return;
+
+                pref_llc_running_inc(rq_of(cfs_rq_of(se)), task_of(se));
+
+                for_each_sched_entity(se) {
+                    struct cfs_rq *cfs_rq = cfs_rq_of(se);
+
+                    cfs_rq->h_nr_runnable++;
+                }
+            }
         }
         return;
     }
@@ -9424,7 +9436,6 @@ void account_llc_enqueue(struct rq *rq, struct task_struct *p)
 
     pref_llc_queued = (pref_llc == task_llc(p));
     rq->nr_llc_running++;
-    rq->nr_pref_llc_running += pref_llc_queued;
 
     /* Record whether p is enqueued on its preferred
      * LLC, in order to pair with account_llc_dequeue()
@@ -9439,6 +9450,12 @@ void account_llc_enqueue(struct rq *rq, struct task_struct *p)
      * p->pref_llc_queued in account_llc_dequeue() would
      * be reliable. */
     p->pref_llc_queued = pref_llc_queued;
+
+    /* Skipped while delayed; clear_delayed() adds it back on wake. */
+    pref_llc_running_inc(rq, p) {
+        if (task_pref_llc_runnable(p))
+            rq->nr_pref_llc_running++;
+    }
 
     sd = rcu_dereference_all(rq->sd);
     if (sd && (unsigned int)pref_llc < sd->llc_max)
@@ -9547,10 +9564,24 @@ bool __dequeue_task(struct rq *rq, struct task_struct *p, int flags)
 
         WARN_ON_ONCE(delay && se->sched_delayed);
 
-        if (sched_feat(DELAY_DEQUEUE) && delay &&
-            !entity_eligible(cfs_rq, se)) {
+        if (sched_feat(DELAY_DEQUEUE) && delay && !entity_eligible(cfs_rq, se)) {
             update_load_avg(cfs_rq_of(se), se, UPDATE_UTIL_EST);
-            set_delayed(se);
+
+            set_delayed(se) {
+                    if (!entity_is_task(se)) {
+                    se->sched_delayed = 1;
+                    return;
+                }
+
+                pref_llc_running_dec(rq_of(cfs_rq_of(se)), task_of(se));
+                se->sched_delayed = 1;
+
+                for_each_sched_entity(se) {
+                    struct cfs_rq *cfs_rq = cfs_rq_of(se);
+
+                    cfs_rq->h_nr_runnable--;
+                }
+            }
             return false;
         }
     }
@@ -9807,7 +9838,10 @@ void account_llc_dequeue(struct rq *rq, struct task_struct *p)
 
     rq->nr_llc_running--;
     if (p->pref_llc_queued) {
-        rq->nr_pref_llc_running--;
+        /* Skipped if still delayed (set_delayed() already removed it);
+         * clearing pref_llc_queued below also stops clear_delayed()
+         * from re-adding it. */
+        pref_llc_running_dec(rq, p);
         /* Update the status in case
          * other logic might query
          * this. */
@@ -17337,7 +17371,7 @@ more_balance:
     }
     if (active_balance) {
         stop_one_cpu_nowait(cpu_of(busiest),
-                    active_load_balance_cpu_stop, busiest,
+                    alb_stop_fn(&env), busiest,
                     &busiest->active_balance_work);
     }
     preempt_enable();
@@ -17478,18 +17512,27 @@ int need_active_balance(struct lb_env *env)
     if (alb_break_llc(env))
         return 0;
 
-    if (asym_active_balance(env))
+    ret = asym_active_balance(env) {
+        return env->idle && sched_use_asym_prio(env->sd, env->dst_cpu) &&
+	       (sched_asym_prefer(env->dst_cpu, env->src_cpu) || !sched_use_asym_prio(env->sd, env->src_cpu));
+    }
+    if (ret)
         return 1;
 
-    if (imbalanced_active_balance(env))
+    ret = imbalanced_active_balance(env) {
+        if ((env->migration_type == migrate_task) && (sd->nr_balance_failed > sd->cache_nice_tries+2))
+            return 1;
+
+        return 0;
+    }
+    if (ret)
         return 1;
 
     /* The dst_cpu is idle and the src_cpu CPU has only 1 CFS task.
      * It's worth migrating the task if the src_cpu's capacity is reduced
      * because of other sched_class or IRQs if more capacity stays
      * available on dst_cpu. */
-    if (env->idle &&
-        (env->src_rq->cfs.h_nr_runnable == 1)) {
+    if (env->idle && (env->src_rq->cfs.h_nr_runnable == 1)) {
         if ((check_cpu_capacity(env->src_rq, sd)) &&
             (capacity_of(env->src_cpu)*sd->imbalance_pct < capacity_of(env->dst_cpu)*100))
             return 1;
@@ -18855,8 +18898,11 @@ static bool migrate_degrades_llc(struct task_struct *p, struct lb_env *env)
     /* We know the env->src_cpu has some tasks prefer to
      * run on env->dst_cpu, skip the tasks do not prefer
      * env->dst_cpu, and find the one that prefers. */
-    if (env->migration_type == migrate_llc_task &&
-        READ_ONCE(p->preferred_llc) != llc_id(env->dst_cpu))
+    if (migrate_llc_task_wrong_dst(p, env) {
+        return sched_cache_enabled() &&
+            (env->migration_type == migrate_llc_task || env->flags & LBF_ACTIVE_LB_LLC) &&
+            READ_ONCE(p->preferred_llc) != llc_id(env->dst_cpu);
+    })
         return true;
 
     if (can_migrate_llc_task(env, p) != mig_forbid)
@@ -18868,7 +18914,7 @@ static bool migrate_degrades_llc(struct task_struct *p, struct lb_env *env)
 enum llc_mig can_migrate_llc_task(struct lb_env *env,
                      struct task_struct *p)
 {
-    struct mm_struct *mm;
+    struct sched_cache_group *grp;
     bool to_pref;
     int cpu, src_cpu, dst_cpu;
 
@@ -18877,18 +18923,18 @@ enum llc_mig can_migrate_llc_task(struct lb_env *env,
 
     src_cpu = env->src_cpu;
     dst_cpu = env->dst_cpu;
-    mm = p->mm;
-    if (!mm)
+    grp = rcu_dereference_all(p->sched_cache_grp);
+    if (!grp)
         return mig_unrestricted;
 
-    cpu = READ_ONCE(mm->sc_stat.cpu);
+    cpu = READ_ONCE(grp->cpu);
     if (cpu < 0 || cpus_share_cache(src_cpu, dst_cpu))
         return mig_unrestricted;
 
     /* skip cache aware load balance for too many threads */
-    if (invalid_llc_nr(mm, p, dst_cpu) || exceed_llc_capacity(mm, dst_cpu)) {
-        if (READ_ONCE(mm->sc_stat.cpu) != -1)
-            WRITE_ONCE(mm->sc_stat.cpu, -1);
+    if (invalid_llc_nr(grp, p, dst_cpu) || exceed_llc_capacity(grp, dst_cpu)) {
+        if (READ_ONCE(grp->cpu) != -1)
+            WRITE_ONCE(grp->cpu, -1);
         return mig_unrestricted;
     }
 
@@ -18902,7 +18948,7 @@ enum llc_mig can_migrate_llc_task(struct lb_env *env,
     return can_migrate_llc(src_cpu, dst_cpu, task_util(p), to_pref);
 }
 
-static bool invalid_llc_nr(struct mm_struct *mm, struct task_struct *p,
+static bool invalid_llc_nr(struct sched_cache_group *grp, struct task_struct *p,
                int cpu)
 {
     int scale;
@@ -18926,8 +18972,52 @@ static bool invalid_llc_nr(struct mm_struct *mm, struct task_struct *p,
     if (scale == INT_MAX)
         return false;
 
-    return !fits_capacity((mm->sc_stat.nr_running_avg * cpu_smt_num_threads),
+    return !fits_capacity((READ_ONCE(grp->nr_running_avg) * cpu_smt_num_threads),
             (scale * per_cpu(sd_llc_size, cpu)));
+}
+
+bool exceed_llc_capacity(struct sched_cache_group *grp, int cpu)
+{
+#ifdef CONFIG_NUMA_BALANCING
+    unsigned long llc, footprint;
+    struct sched_domain *sd;
+    int scale;
+
+    guard(rcu)();
+
+    sd = rcu_dereference_sched_domain(cpu_rq(cpu)->sd);
+    if (!sd)
+        return true;
+
+    if (static_branch_likely(&sched_numa_balancing)) {
+        /* TBD: RDT exclusive LLC ways reserved should be
+         * excluded. */
+        llc = sd->llc_bytes;
+        footprint = READ_ONCE(grp->footprint);
+
+        /* Scale the LLC size by 256*llc_aggr_tolerance
+         * and compare it to the task's footprint.
+         *
+         * Suppose the L3 size is 32MB. If the
+         * llc_aggr_tolerance is 1:
+         * When the footprint is larger than 32MB, the
+         * process is regarded as exceeding the LLC
+         * capacity. If the llc_aggr_tolerance is 99:
+         * When the footprint is larger than 784GB, the
+         * process is regarded as exceeding the LLC
+         * capacity:
+         * 784GB = (1 + (99 - 1) * 256) * 32MB
+         * If the llc_aggr_tolerance is 100:
+         * ignore the footprint and do the aggregation
+         * anyway. */
+        scale = get_sched_cache_scale(256);
+        if (scale == INT_MAX)
+            return false;
+
+        return ((llc * (u64)scale) < (footprint * PAGE_SIZE));
+    }
+#endif
+    return false;
 }
 ```
 
@@ -20471,25 +20561,7 @@ out_free_interp:
         }
 
         /* Maps the mm_struct mm into the current task struct. */
-        exec_mmap(bprm->mm) {
-            tsk = current;
-            old_mm = current->mm;
-            exec_mm_release(tsk, old_mm);
-
-            active_mm = tsk->active_mm;
-            tsk->active_mm = mm;
-            tsk->mm = mm;
-
-            activate_mm(active_mm, mm) {
-                switch_mm(prev_mm, next_mm, current) {
-                    if (prev != next) {
-                        __switch_mm(next);
-                            --->
-                    }
-                    update_saved_ttbr0(tsk, next);
-                }
-            }
-        }
+        exec_mmap(bprm->mm);
         bprm->mm = NULL;
 
         exec_task_namespaces() {
@@ -20827,6 +20899,85 @@ out_free_interp:
             regs->sp = sp;
         }
     }
+}
+```
+
+## exec_mmap
+
+```c
+static int exec_mmap(struct linux_binprm *bprm)
+{
+    struct task_exec_state *exec_state __free(put_task_exec_state) = NULL;
+    struct mm_struct *mm = bprm->mm;
+    struct task_struct *tsk;
+    struct mm_struct *old_mm, *active_mm;
+    int ret;
+
+    exec_state = alloc_task_exec_state(bprm->user_ns);
+    if (!exec_state)
+        return -ENOMEM;
+
+    /* Notify parent that we're no longer interested in the old VM */
+    tsk = current;
+    old_mm = current->mm;
+    /* Clean up futexes and release the mm */
+    mm_exit_exec_release(tsk, old_mm);
+
+    ret = down_write_killable(&tsk->signal->exec_update_lock);
+    if (ret)
+        return ret;
+
+    if (old_mm) {
+        /* If there is a pending fatal signal perhaps a signal
+         * whose default action is to create a coredump get
+         * out and die instead of going through with the exec. */
+        ret = mmap_read_lock_killable(old_mm);
+        if (ret) {
+            up_write(&tsk->signal->exec_update_lock);
+            return ret;
+        }
+    }
+
+    task_lock(tsk);
+    membarrier_exec_mmap(mm);
+
+    local_irq_disable();
+    active_mm = tsk->active_mm;
+    tsk->active_mm = mm;
+    tsk->mm = mm;
+
+    sched_cache_exec_mmap(tsk, mm) {
+        struct sched_cache_group *old;
+
+        old = sched_cache_replace_grp(p, sched_cache_group_get(mm->sched_cache_grp));
+        sched_cache_group_put(old);
+    }
+
+    mm_init_cid(mm, tsk);
+    exec_state = task_exec_state_replace(tsk, exec_state);
+    /* This prevents preemption while active_mm is being loaded and
+     * it and mm are being updated, which could cause problems for
+     * lazy tlb mm refcounting when these are updated by context
+     * switches. Not all architectures can handle irqs off over
+     * activate_mm yet. */
+    if (!IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
+        local_irq_enable();
+    activate_mm(active_mm, mm);
+    if (IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
+        local_irq_enable();
+    lru_gen_add_mm(mm);
+    task_unlock(tsk);
+    lru_gen_use_mm(mm);
+    if (old_mm) {
+        mmap_read_unlock(old_mm);
+        BUG_ON(active_mm != old_mm);
+        /* Defer teardown to setup_new_exec(), outside the exec locks. */
+        bprm->old_mm = old_mm;
+    } else {
+        mmdrop_lazy_tlb(active_mm);
+    }
+    futex_exec_done(tsk);
+    return 0;
 }
 ```
 
