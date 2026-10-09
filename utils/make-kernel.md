@@ -696,7 +696,9 @@ logfile ~/.msmtp.log
 
     git add xxx.c
     git commit -s
-    git format-patch -<n> -v<n> origin --cover-letter
+    # -<n>: HEAD~n patches
+    # -v<n>: n-th version of the patch
+    git format-patch -<n> -v<n> --cover-letter --base=auto
 
     ./scripts/checkpatch.pl  vx-000x-name.patch
     ./scripts/get_maintainer.pl vx-000x-name.patch
