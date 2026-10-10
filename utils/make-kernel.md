@@ -794,6 +794,20 @@ for fn in netif_rx_internal netif_receive_skb_internal netif_receive_skb_list_in
 done | tee /tmp/objdump-diff.txt
 ```
 
+# b4
+
+```sh
+# retrieve whole patchset
+b4 am <msg-id>
+
+# fetch whole email
+b4 mbox <msg-id>
+
+# retrieve inline diff from an email reply
+b4 mbox --single-message -o - '<msg-id>' | git mailinfo msg  patch
+git apply patch
+```
+
 # git cmd
 
 ```sh
