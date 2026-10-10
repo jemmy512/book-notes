@@ -2,6 +2,7 @@
 
 Patch | Merged
  :- | :-:
+[[PATCH v2] sched/cache: Remove the old cache group footprint on exec](https://lore.kernel.org/all/20261010111612.31345-1-jemmywong512@gmail.com/#r) |
 [[PATCH v2 1/3] sched/fair: Add smt_balance and llc_balance to the decision matrix](https://lore.kernel.org/lkml/20261002154634.71878-2-jemmywong512@gmail.com/) |
 [[PATCH 0/3] sched: Fix proxy-exec use of curr and donor](https://lore.kernel.org/lkml/20261008132604.98242-1-jemmywong512@gmail.com/) |
 [[PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/) | :white_check_mark:
