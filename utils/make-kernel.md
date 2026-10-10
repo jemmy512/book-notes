@@ -18,9 +18,14 @@ makdir -P /code && cd /code
 # vpn doesn't support git:// protocol
 nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
 
-# sched/core subsystem git repo
-git remote add tip git://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git
-git remote add stable https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+cgroup      https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git
+ext4        https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git
+jemmy       https://github.com/jemmy512/linux.git
+mm          https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git/
+net-next    https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git
+origin      https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
+tip         https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git
+stable      https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
 ```
 
 ## fetch tag
@@ -1461,3 +1466,49 @@ cp perf usr/bin
 ```
 
 Download any missing *.so dependencies from [archlinuxarm.org](https://archlinuxarm.org/packages/aarch64/perf), mv the *.so to `usr/lib` since perf is dynamic linked.
+
+# lore.kernel.org
+
+**Search Tips**
+
+Prefix | Meaning | Example
+| - | - | - |
+`s:` | Subject | `s:sched` or `s: "cache aware"`
+`f:` | From | `f:peterz or f:mingo@`
+`l:` | List-Id | `l:linux-kernel.vger.kernel.org`
+`b:` | Body (incl. attachments) | `b:regression`
+`nq:` | Non-quoted body text | `nq:bug (ignores quoted replies)`
+`d:` | Date (sender clock) | `d:2026-09-01..` or `d:1.month.ago..` or `d:2026-09-01..2026-09-10`
+`rt:` | Received time | `rt:1.week.ago..` `2.weeks.ago..`
+`dfn:` | Filename in patch | `dfn:kernel/sched/*`
+`dfhh:` | Function name in hunk | `dfhh:pick_next_task*`
+`dfb: / dfa:` | Added / removed lines | `dfb:EEVDF`
+`a:` | To + Cc + From | `a:torvalds`
+`tc:` | To + Cc | `tc:stable@vger.kernel.org`
+
+* Terms are `AND` by default
+* `OR` must be uppercase
+* `NOT` or `-` to exclude
+* `"exact phrase"` for phrases
+* `*` wildcards (on most prefixes)
+* `Parentheses` for grouping
+
+```sh
+# Recent scheduler patches (files changed)
+dfn:kernel/sched/* AND rt:1.month.ago..
+
+# Subject contains "sched"
+s:sched AND rt:2.weeks.ago..
+
+# From main scheduler maintainers
+(f:peterz OR f:mingo@ OR f:juri.lelli OR f:vincent.guittot) AND rt:1.month.ago..
+
+# Function-level search
+dfhh:schedule* OR dfhh:pick_next_task*
+
+# Bug / regression mentions about scheduler
+(nq:bug OR nq:regression) AND (s:sched OR dfn:kernel/sched/*) AND rt:1.month.ago..
+
+# Combined high-signal query
+(dfn:kernel/sched/* OR s:sched/ OR s:"sched:") AND rt:1.week.ago..
+```

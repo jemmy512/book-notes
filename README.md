@@ -2,16 +2,10 @@
 
 Patch | Merged
  :- | :-:
+[[PATCH v2 1/3] sched/fair: Add smt_balance and llc_balance to the decision matrix](https://lore.kernel.org/lkml/20261002154634.71878-2-jemmywong512@gmail.com/) |
+[[PATCH 0/3] sched: Fix proxy-exec use of curr and donor](https://lore.kernel.org/lkml/20261008132604.98242-1-jemmywong512@gmail.com/) |
 [[PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/) | :white_check_mark:
 [[PATCH v3] tools/nolibc/types.h: fix mismatched parenthesis in minor()](https://lore.kernel.org/all/20250411073624.22153-1-jemmywong512@gmail.com/) | :white_check_mark:
-
-<details>
-<summary> :pushpin: RFC </summary>
-
-Patch | RFC
- :- | :-:
-[[PATCH 0/3] sched: Fix proxy-exec use of curr and donor](https://lore.kernel.org/lkml/20261008132604.98242-1-jemmywong512@gmail.com/) |
-[[PATCH v2 1/3] sched/fair: Add smt_balance and llc_balance to the decision matrix](https://lore.kernel.org/lkml/20261002154634.71878-2-jemmywong512@gmail.com/) |
 [[PATCH v2] net/rps: consolidate RPS dispatch into helpers](https://lore.kernel.org/all/20260711121009.76842-1-jemmywong512@gmail.com/) |
 [[PATCH] sched: Add _TIF_NEED_RESCHED_LAZY to __resched_curr check](https://lore.kernel.org/all/20250928151421.60919-1-jemmywong512@gmail.com/) |
 [[PATCH v1] sched/eevdf: propagate min slice during {throttle, unthrottle}_cfs_rq](https://lore.kernel.org/all/20250714040516.10196-1-jemmywong512@gmail.com/) |
@@ -22,7 +16,6 @@ Patch | RFC
 [[PATCH v0 00/13] [RFC] sched: Add more Scope-based Resource Management Support](https://lore.kernel.org/all/406C7288-E330-46D3-94A6-F42FB828F613@gmail.com/)
 [[PATCH 0/2] sched: Refine scheduler naming for clarity and specificity](https://lore.kernel.org/all/20250219182020.393006-1-jemmywong512@gmail.com/) |
 
-</details>
 
 # Linux Kernel
 
