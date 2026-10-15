@@ -606,6 +606,26 @@ sudo fuser -km /code
 sudo umount /code
 ```
 
+## change version
+
+```sh
+cd /Volumes/code/linux
+
+# change to 6.17.0-rc3-00273-g0136b373651b
+sed -i '' \
+  -e 's/^VERSION = .*/VERSION = 6/' \
+  -e 's/^PATCHLEVEL = .*/PATCHLEVEL = 17/' \
+  -e 's/^SUBLEVEL = .*/SUBLEVEL = 0/' \
+  -e 's/^EXTRAVERSION = .*/EXTRAVERSION = -rc3/' \
+  Makefile
+
+scripts/config --disable LOCALVERSION_AUTO
+scripts/config --set-str LOCALVERSION "-00273-g0136b373651b"
+
+make olddefconfig ARCH=arm64
+make -j$(sysctl -n hw.ncpu) Image modules
+```
+
 # ltp
 
 ```sh
@@ -654,10 +674,12 @@ Enable 2-Step Verification
 	smtpEncryption = tls
 	smtpUser = xxx@gmail.com
 	smtpPass = xxx
-	suppresscc = self
+	# suppresscc = self
+    # auto cc
+    cc = xxxx <xxx@gmail.com>
 	confirm = always
     # only enable if send mail by msmtp
-    sendmailCmd = /usr/bin/msmtp
+    # sendmailCmd = /usr/bin/msmtp
 [https]
 	proxy = http://localhost:7890
 [http]
@@ -705,7 +727,9 @@ logfile ~/.msmtp.log
     # -v<n>: n-th version of the patch
     git format-patch -<n> -v<n> --cover-letter --base=auto
 
+    # format check
     ./scripts/checkpatch.pl  vx-000x-name.patch
+    # get maitainer to cc
     ./scripts/get_maintainer.pl vx-000x-name.patch
 
     git send-email --to=xxx@gmail.com --cc=xxx@gmail.com vx-000x-name.patch
@@ -716,7 +740,7 @@ logfile ~/.msmtp.log
     ```sh
     git add fs/namespace.c
     git commit -s --amend --no-edit
-    git format-patch -<n> -v<n> origin
+    git format-patch -<n> -v<n> --cover-letter --base=auto
 
     ./scripts/checkpatch.pl  v2-0001-xxx.patch v2-0002-xxx.patch
 
