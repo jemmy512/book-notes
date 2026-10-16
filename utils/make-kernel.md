@@ -17,15 +17,99 @@ makdir -P /code && cd /code
 
 # vpn doesn't support git:// protocol
 nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
+```
 
-cgroup      https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git
-ext4        https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git
-jemmy       https://github.com/jemmy512/linux.git
-mm          https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git/
-net-next    https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git
-origin      https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git
-tip         https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git
-stable      https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+## dev branch
+
+| Subsystem | Development branch | Commit subject prefix | Git URL |
+|---|---|---|---|
+| Scheduler | `sched/core` | `sched:`, `sched/<area>:` (e.g. `sched/fair:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Locking | `locking/core` | `locking/<area>:` (e.g. `locking/mutex:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| IRQ | `irq/core` | `irq:`, `irqchip:`, `irqchip/<driver>:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Timers | `timers/core` | `timers:`, `hrtimers:`, `clocksource:`, `clockevents:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| x86 | `x86/core` and other topic branches | `x86/<area>:` (e.g. `x86/mm:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Memory management | `mm-unstable`, `mm-stable` | `mm:`, `mm/<area>:` (e.g. `mm/slab:`) | https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git |
+| Networking — features | `main` | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git |
+| Networking — fixes | `main` | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git |
+| Block / I/O | `for-next` | `block:`, `blk-mq:` or component/driver prefix | https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git |
+| Cgroup | `for-next` | `cgroup:` | https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git |
+| DRM / graphics | `drm-next` | `drm:`, `drm/<area>:` (e.g. `drm/i915:`) | https://gitlab.freedesktop.org/drm/kernel.git |
+| ext4 | `dev` | `ext4:` | https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git |
+| USB | `usb-next` | `usb:` (e.g. `usb: xhci:`) | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/usb.git |
+| Driver core | See note below | `driver core:` | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/driver-core.git |
+| Cross-subsystem integration | `master` | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git |
+| Linus’s mainline | `master` | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git |
+
+Prefixes follow the code being changed, not the Git remote or target branch. Check recent commits touching the same files for the preferred spelling and capitalization.
+
+The email tag is separate from the commit subject prefix: use `[PATCH net-next]` for networking development and `[PATCH net]` for networking fixes. Other subsystems generally use `[PATCH]`, unless their maintainers specify otherwise.
+
+Driver core: select the base branch according to current maintainer guidance; do not assume `driver-core-next` is available.
+
+```sh
+# ~/.zshrc
+LINUX_PWD="/Volumes/code/linux"
+
+linux_remote_add() {
+    local repo="${1:-/Volumes/code/linux}"
+    local remote url current_url
+
+    git -C "$repo" rev-parse --git-dir >/dev/null || return $?
+
+    for remote url in                                                                   \
+        tip     https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git             \
+        mem     https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git             \
+        net     https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git     \
+        cgroup  https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git           \
+        ext4    https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git          \
+        blockio https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git         \
+        drm     https://gitlab.freedesktop.org/drm/kernel.git                           \
+        usb     https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/usb.git          \
+        driver  https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/driver-core.git
+    do
+        if current_url=$(git -C "$repo" remote get-url "$remote" 2>/dev/null); then
+            if [[ "$current_url" != "$url" ]]; then
+                printf 'Refusing to change remote %s: %s (expected %s)\n' \
+                    "$remote" "$current_url" "$url" >&2
+                return 1
+            fi
+            printf 'Already configured: %s\n' "$remote"
+        else
+            git -C "$repo" remote add "$remote" "$url" || return $?
+            printf 'Added: %s\n' "$remote"
+        fi
+    done
+}
+
+linux_remote_rm() {
+    git remote | while IFS= read -r remote; do
+        [[ "$remote" == origin ]] || git remote remove "$remote"
+    done
+}
+
+linux_fetch() {
+    local repo="$LINUX_PWD"
+    local remote branch
+
+    # driver is registered, but its development branch is not yet selected.
+    # Fetch x86/core only; add other x86 topic branches here as needed.
+    for remote branch in            \
+        tip         sched/core      \
+        tip         locking/core    \
+        tip         irq/core        \
+        tip         timers/core     \
+        tip         x86/core        \
+        mem         mm-stable       \
+        net         main            \
+        cgroup      for-next        \
+        ext4        dev             \
+        blockio     for-next
+        # drm         drm-next       \
+        # usb         usb-next       \
+    do
+        git -C "$repo" fetch "$remote" "$branch" || return $?
+    done
+}
 ```
 
 ## fetch tag
