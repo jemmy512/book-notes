@@ -2,8 +2,8 @@
 
 Patch | Merged
  :- | :-:
-[[PATCH v3] sched/cache: Remove the old cache group footprint on exec](https://lore.kernel.org/all/20261015053604.29927-1-jemmywong512@gmail.com/#r) | Reviewd
-[[PATCH v2 1/3] sched/fair: Add smt_balance and llc_balance to the decision matrix](https://lore.kernel.org/lkml/20261002154634.71878-2-jemmywong512@gmail.com/) | Reviewd
+[[PATCH v4] sched/cache: Remove the old cache group footprint on exec](https://lore.kernel.org/all/20261022031933.46869-1-jemmywong512@gmail.com/) | Reviewed
+[[PATCH v2 1/3] sched/fair: Add smt_balance and llc_balance to the decision matrix](https://lore.kernel.org/lkml/20261002154634.71878-2-jemmywong512@gmail.com/) | Reviewed
 [[PATCH v3] sched/cache: Avoid publishing partial LLC utilization](https://lore.kernel.org/all/20261016032759.45279-1-jemmywong512@gmail.com/) | :white_check_mark:
 [[PATCH 0/3] sched: Fix proxy-exec use of curr and donor](https://lore.kernel.org/lkml/20261008132604.98242-1-jemmywong512@gmail.com/) |
 [[PATCH v4] Improve readability of copy_tree](https://lore.kernel.org/all/20240606173912.99442-1-jemmywong512@gmail.com/) | :white_check_mark:
