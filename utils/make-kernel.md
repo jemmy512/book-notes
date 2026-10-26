@@ -58,7 +58,7 @@ linux_remote_add() {
 
     for remote url in                                                                   \
         tip     https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git             \
-        mem     https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git             \
+        mm     https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git             \
         net     https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git     \
         cgroup  https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git           \
         ext4    https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git          \
@@ -99,7 +99,7 @@ linux_fetch() {
         tip         irq/core        \
         tip         timers/core     \
         tip         x86/core        \
-        mem         mm-stable       \
+        mm          mm-stable       \
         net         main            \
         cgroup      for-next        \
         ext4        dev             \
@@ -987,12 +987,14 @@ curl --proxy http://localhost:7890 https://github.com
     ```
 
 * config github
+    * surge **Enhanced Mode** can capture SSH traffic, there no need to make this config
 
     ```sh
     # ~/.ssh/config
     Host github.com
         Hostname github.com
-        ProxyCommand nc -x localhost:7890 %h %p
+        ProxyCommand nc -v -X 5 -x 127.0.0.1:7891 %h %p
+
         # git-for-windows can replace nc with connect
         # ProxyCommand connect -S localhost:1085 %h %p
 
