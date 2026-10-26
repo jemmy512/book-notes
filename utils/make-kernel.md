@@ -710,6 +710,57 @@ make olddefconfig ARCH=arm64
 make -j$(sysctl -n hw.ncpu) Image modules
 ```
 
+# make ubuntu
+
+```sh
+cd /code/linux
+cp "/boot/config-$(uname -r)" .config
+
+scripts/config --set-str LOCALVERSION "-custom"
+scripts/config --disable LOCALVERSION_AUTO
+
+scripts/config --set-str SYSTEM_TRUSTED_KEYS ""
+scripts/config --set-str SYSTEM_REVOCATION_KEYS ""
+
+scripts/config --disable DEBUG_INFO
+scripts/config --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+scripts/config --disable DEBUG_INFO_DWARF4
+scripts/config --disable DEBUG_INFO_DWARF5
+scripts/config --disable DEBUG_INFO_BTF
+scripts/config --disable DEBUG_INFO_BTF_MODULES
+scripts/config --enable DEBUG_INFO_NONE
+
+# Optional for a first build: avoid Rust toolchain requirements.
+scripts/config --disable RUST
+
+make olddefconfig
+```
+
+```sh
+make -j$(nproc)
+make -s kernelrelease
+
+# NSTALL_MOD_PATH=/lib/modules/<kernel-release>
+# INSTALL_PATH=/boot
+make modules_install && make install
+```
+
+```sh
+KREL=$(make -s kernelrelease)
+
+# Generate an initramfs explicitly if the installation hook did not.
+if [[ ! -s "/boot/initrd.img-$KREL" ]]; then
+    dracut --force "/boot/initrd.img-$KREL" "$KREL"
+fi
+
+update-grub
+
+ls -lh "/boot/vmlinuz-$KREL" "/boot/initrd.img-$KREL"
+ls -ld "/lib/modules/$KREL"
+
+reboot
+```
+
 # ltp
 
 ```sh
@@ -944,19 +995,19 @@ repo forall -c 'git clean -fdx'
 
 ## download
 
-* [clash-linux-amd64-v1.18.0.gz - For x86 / x64 Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-amd64-v1.18.0.gz)
-* [clash-linux-arm64-v1.18.0.gz - For ARM Linux](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-linux-arm64-v1.18.0.gz)
-* [clash-darwin-amd64-v1.18.0.gz - For intel macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-amd64-v1.18.0.gz)
-* [clash-darwin-arm64-v1.18.0.gz - For Apple silicon macOS](https://pub-eac3eb5670f44f09984dee5c57939316.r2.dev/clash-darwin-arm64-v1.18.0.gz)
+* [mihomo-linux-amd64-compatible-v1.19.24.gz - For x86 / x64 Linux](https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-amd64-compatible-v1.19.24.gz)
+* [mihomo-linux-arm64-v1.19.24.gz - For ARM Linux](https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-linux-arm64-v1.19.24.gz)
+* [mihomo-darwin-amd64-compatible-v1.19.24.gz - For intel macOS](https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-darwin-amd64-compatible-v1.19.24.gz)
+* [mihomo-darwin-arm64-v1.19.24.gz  - For Apple silicon macOS](https://github.com/MetaCubeX/mihomo/releases/download/v1.19.24/mihomo-darwin-arm64-v1.19.24.gz)
 
 
 ```sh
-gzip -dk clash-*-*-v1.18.0.gz
-chmod +x clash-*-*-v1.18.0
-cp clash-*-*-v1.18.0 /usr/local/bin/clash
+gzip -dk mihomo-*-v1.19.24.gz
+chmod +x mihomo-*-v1.19.24 #
+cp mihomo-*-v1.19.24 /usr/local/bin/mihomo
 
-mkdir /usr/local/etc/clash
-cd /usr/local/etc/clash
+mkdir /usr/local/etc/mihomo
+cd /usr/local/etc/mihomo
 # download proxy cfg
 wget https://***.*/feeds/***/clash.yml
 # rename
@@ -965,7 +1016,7 @@ mv clash.yml ./config.yaml
 wget https://github.com/SukkaW/Koolshare-Clash/raw/refs/heads/master/koolclash/koolclash/config/Country.mmdb
 
 # run clash
-clash -d /usr/local/etc/clash # default 127.0.0.1:7890
+mihomo -d /usr/local/etc/mihomo # default 127.0.0.1:7890
 ```
 
 Test
@@ -1014,17 +1065,17 @@ curl --proxy http://localhost:7890 https://github.com
     sudo apt-get update
     ```
 
-## clash.service
+## mihomo.service
 
 ```sh
 # sudo vim /etc/systemd/system/clash.service
 [Unit]
-Description=Clash VPN Daemon
+Description=mihomo VPN Daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/clash -d /usr/local/etc/clash
+ExecStart=/usr/local/bin/mihomo -d /usr/local/etc/mihomo
 Restart=on-failure
 RestartSec=20s
 StartLimitIntervalSec=60s
@@ -1038,10 +1089,10 @@ WantedBy=multi-user.target
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl enable clash.service
-sudo systemctl start clash.service
-sudo systemctl status clash.service
-sudo systemctl stop clash.service
+sudo systemctl enable mihomo.service
+sudo systemctl start mihomo.service
+sudo systemctl status mihomo.service
+sudo systemctl stop mihomo.service
 ```
 
 ## share macOS vpn to qemu
