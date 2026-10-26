@@ -27,7 +27,7 @@ Set-NetIPInterface -InterfaceIndex <ETHERNET_INDEX> -AddressFamily IPv4 -Forward
 Advertise the current AI subnet and the additional SSH host:
 
 ```powershell
-tailscale set --advertise-routes=10.x.x.x/16
+tailscale set --advertise-routes=10.x.x.x/16,10.x.x.x/32 --unattended
 ```
 
 In the Tailscale admin console:
@@ -35,6 +35,43 @@ In the Tailscale admin console:
 - Approve both routes for the Windows PC.
 - Permit only authorized users/devices and required service ports through grants/ACLs.
 - Coordinate firewall and routing changes with IT.
+
+### Example ACL policy (addresses redacted)
+
+Merge these entries into the existing `acls` array in the Tailscale access-control policy; do not overwrite unrelated policy settings. Replace the placeholders with approved addresses before saving:
+
+```json
+{
+	"acls": [
+		{
+			"action": "accept",
+			"src": ["<HOME_MAC_TAILSCALE_IP>"],
+			"dst": [
+				"<OFFICE_WINDOWS_TAILSCALE_IP>:*",
+				"<OFFICE_AI_SUBNET_CIDR>:*",
+				"<OFFICE_SSH_HOST_IP>/32:*"
+			]
+		},
+		{
+			"action": "accept",
+			"src": ["*"],
+			"proto": "1",
+			"dst": ["*:*"]
+		}
+	]
+}
+```
+
+- `<HOME_MAC_TAILSCALE_IP>`: the Mac's current Tailscale IPv4 address.
+- `<OFFICE_WINDOWS_TAILSCALE_IP>`: the Windows PC's current Tailscale IPv4 address.
+- `<OFFICE_AI_SUBNET_CIDR>`: the approved AI network prefix, including its CIDR mask.
+- `<OFFICE_SSH_HOST_IP>`: the additional office SSH server's IPv4 address, without a CIDR mask.
+
+The first entry allows the Mac to access all ports on the Windows PC and the listed office destinations. Access to Windows itself (such as RDP on TCP 3389) is separate from access to its advertised subnets. For least privilege, replace `:*` with the required service ports.
+
+The second entry allows IPv4 ICMP (`proto: "1"`) from any source to any destination matched by the policy. It is broader than a Mac-to-office-only rule; retain it only if approved by IT. It does not grant TCP/UDP access.
+
+ACL permissions do not approve subnet routes, enable Windows RDP, or override Windows Firewall. Device re-registration can change Tailscale IP addresses, requiring updates to these IP-based rules.
 
 ## 2. Home Mac Tailscale client configuration
 
