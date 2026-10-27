@@ -58,7 +58,7 @@ linux_remote_add() {
 
     for remote url in                                                                   \
         tip     https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git             \
-        mm     https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git             \
+        mm      https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git             \
         net     https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git     \
         cgroup  https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git           \
         ext4    https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git          \
@@ -490,7 +490,7 @@ Just press Enter to accept the default when encounter a choice.
 ## start
 
 ```sh
-# with ramfs as root fs
+# 1. roofs: ramfs
 qemu-system-aarch64 \
     -m 4096M -smp 8 \
     -cpu cortex-a57 \
@@ -520,6 +520,131 @@ qemu-system-aarch64 \
     -hda /code/rootfs.ext4 \
     -append "root=/dev/vda rw nokaslr console=ttyAMA0 loglevel=8" \
     -nographic
+```
+
+```sh
+# 2. rootfs: ArchLinux.utm
+alias qemu-on='sudo qemu-system-aarch64 \
+    -accel hvf \
+    -machine virt \
+    -cpu max \
+    -m 8196 \
+    -drive file=/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2,format=qcow2 \
+    -kernel "/Volumes/code/linux/arch/arm64/boot/Image" \
+    -nic vmnet-shared \
+    -virtfs local,path=/Volumes/code,mount_tag=code,security_model=mapped-xattr \
+    -append "root=/dev/vda2" -nographic'
+
+alias numa-on='sudo qemu-system-aarch64 \
+    -accel hvf \
+    -machine virt \
+    -cpu max \
+    -smp cpus=8,sockets=4,cores=2,threads=1 \
+    -m 16384 \
+    -object memory-backend-ram,id=mem0,size=4G \
+    -object memory-backend-ram,id=mem1,size=4G \
+    -object memory-backend-ram,id=mem2,size=4G \
+    -object memory-backend-ram,id=mem3,size=4G \
+    -numa node,nodeid=0,cpus=0-1,memdev=mem0 \
+    -numa node,nodeid=1,cpus=2-3,memdev=mem1 \
+    -numa node,nodeid=2,cpus=4-5,memdev=mem2 \
+    -numa node,nodeid=3,cpus=6-7,memdev=mem3 \
+    -drive file=/Volumes/code/ArchLinux.utm/Data/BB208CBD-BFB4-4895-9542-48527C9E5473.qcow2,format=qcow2,if=none,id=disk0 \
+    -device virtio-blk-pci,drive=disk0 \
+    -kernel /Volumes/code/linux/arch/arm64/boot/Image \
+    -append "root=/dev/vda2 console=ttyAMA0 console=ttyAMA1 console=hvc0" \
+    -nic vmnet-shared \
+    -virtfs local,path=/Volumes/code,mount_tag=code,security_model=mapped-xattr \
+    \
+    -serial mon:stdio \
+    -serial telnet:127.0.0.1:4445,server,nowait \
+    -device virtio-serial-pci \
+    -device virtconsole,chardev=char0 \
+    -chardev socket,id=char0,path=/tmp/hvc0,server=on,wait=off \
+    -nographic'
+```
+
+```sh
+# 3. UTM roofs with libvirt
+function vm_start {
+    local vm_state connection_error
+    local uri='qemu:///system?socket=/opt/homebrew/var/run/libvirt/libvirt-sock'
+    local -i deadline
+
+    sudo brew services start libvirt || return $?
+
+    if ! sudo pgrep -x virtlogd >/dev/null; then
+        sudo /opt/homebrew/sbin/virtlogd --daemon || return $?
+    fi
+
+    # Homebrew can return before libvirt is accepting connections.
+    deadline=$((SECONDS + 30))
+    until connection_error=$(sudo env LC_ALL=C virsh -c "$uri" list --name 2>&1); do
+        if (( SECONDS >= deadline )); then
+            printf 'libvirt did not become ready within 30 seconds:\n%s\n' "$connection_error" >&2
+            return 1
+        fi
+        sleep 1
+    done
+
+    vm_state=$(sudo env LC_ALL=C virsh -c "$uri" domstate Arch) || return $?
+    case "$vm_state" in
+        'shut off') sudo virsh -c "$uri" start Arch ;;
+        running) printf 'Arch is already running.\n' ;;
+        *)
+            printf 'Arch is in state "%s"; not starting it.\n' "$vm_state" >&2
+            return 1
+            ;;
+    esac
+}
+
+function vm_stop {
+    local vm_state active_vms
+    local -i deadline
+
+    vm_state=$(sudo env LC_ALL=C virsh domstate Arch) || return $?
+    if [[ "$vm_state" != 'shut off' ]]; then
+        sudo virsh shutdown Arch || return $?
+        deadline=$((SECONDS + 120))
+        while true; do
+            vm_state=$(sudo env LC_ALL=C virsh domstate Arch) || return $?
+            [[ "$vm_state" == 'shut off' ]] && break
+            if (( SECONDS >= deadline )); then
+                printf 'Arch did not shut down within 120 seconds; leaving daemons running.\n' >&2
+                return 1
+            fi
+            sleep 1
+        done
+    fi
+
+    active_vms=$(sudo virsh list --name) || return $?
+    if [[ -n "$active_vms" ]]; then
+        printf 'Other VMs are still active; leaving daemons running:\n%s\n' "$active_vms" >&2
+        return 1
+    fi
+
+    sudo brew services stop libvirt || return $?
+    if sudo pgrep -x virtlogd >/dev/null; then
+        sudo pkill -TERM -x virtlogd || return $?
+    fi
+    printf 'Arch is shut off; libvirt and virtlogd have been stopped.\n'
+}
+
+function vm_cso {
+    if (( $# == 0 )); then
+        sudo virsh console Arch
+    elif (( $# == 1 )) && [[ "$1" == [0-3] ]]; then
+        sudo virsh console Arch --devname "ua-hvc$1"
+    else
+        printf 'Usage: vm_cso [0|1|2|3]\n' >&2
+        return 2
+    fi
+}
+
+alias vm_mk='source bee-init && make Image -j$(nproc) ARCH=arm64 LLVM=1 HOSTCFLAGS="$HOSTCFLAGS -DO_LARGEFILE=0"  KBUILD_HOSTLDFLAGS="" "$@"'
+alias vm_def='sudo virsh define /Users/jemmy/.config/libvirt/arch-linux.xml'
+alias vm_undef='sudo virsh undefine Arch --nvram'
+alias vm_list='sudo virsh list --all'
 ```
 
 ## gdb
@@ -599,7 +724,7 @@ make distclean
 
 1. make a case-sensitive partiton
 
-    Open Disk Utility.app and create an APFS (Case-sensitive) partition. You don't need to specify the size because it will scale automatically.
+    Open `Disk Utility.app` and create an `APFS (Case-sensitive) partition`. You don't need to specify the size because it will scale automatically.
 
 2. install tools and config environment
 
@@ -646,7 +771,7 @@ make distclean
         -append "root=/dev/vda2" -nographic
     ```
 
-## hvp
+## hvf
 
 * [在 MacOS 上做 Linux 内核开发的一些有趣经验和坑](https://blog.hackret.com/2023/07/564/)
 
