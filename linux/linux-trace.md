@@ -12848,12 +12848,10 @@ SYSCALL_DEFINE5(perf_event_open,
 }
 ```
 
-# bcc
-
-* [BCC - Tools for BPF-based Linux IO analysis, networking, monitoring, and more](https://github.com/iovisor/bcc/tree/master)
-![](../images/kernel/bcc-bpf.png)
-
 # bpf
+
+![](../images/kernel/bcc-bpf.png)
+* [BCC - Tools for BPF-based Linux IO analysis, networking, monitoring, and more](https://github.com/iovisor/bcc/tree/master)
 
 ```c
 SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, size)
@@ -13005,3 +13003,14 @@ SYSCALL_DEFINE3(bpf, int, cmd, union bpf_attr __user *, uattr, unsigned int, siz
     }
 }
 ```
+
+## BPF_BTF_LOAD
+## BPF_MAP_CREATE
+## BPF_PROG_LOAD
+## BPF_LINK_CREATE
+## BPF_RAW_TRACEPOINT_OPEN
+## BPF_MAP_UPDATE_ELEM
+## BPF_MAP_LOOKUP_ELEM
+## BPF_MAP_DELETE_ELEM
+## BPF_MAP_GET_NEXT_KEY
+## BPF_OBJ_GET_INFO_BY_FD
