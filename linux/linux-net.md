@@ -28705,6 +28705,87 @@ static void ep_remove_safe(struct eventpoll *ep, struct epitem *epi)
     percpu_counter_dec(&ep->user->epoll_watches);
     return ep_refcount_dec_and_test(ep);
 }
+
+void ep_remove(struct eventpoll *ep, struct epitem *epi)
+{
+    struct file *file __free(fput) = NULL;
+
+    lockdep_assert_irqs_enabled();
+    lockdep_assert_held(&ep->mtx);
+
+    ep_unregister_pollwait(ep, epi) {
+        struct eppoll_entry **p = &epi->pwqlist;
+        struct eppoll_entry *pwq;
+
+        while ((pwq = *p) != NULL) {
+            *p = pwq->next;
+            ep_remove_wait_queue(pwq);
+            kmem_cache_free(pwq_cache, pwq);
+        }
+    }
+
+    /* If we manage to grab a reference it means we're not in
+     * eventpoll_release_file() and aren't going to be: once @file's
+     * refcount has reached zero, file_ref_get() cannot bring it back. */
+    file = epi_fget(epi);
+    if (!file)
+        return;
+
+    ep_remove_file(ep, epi, file);
+    ep_remove_epi(ep, epi);
+    WARN_ON_ONCE(ep_put(ep));
+}
+
+void ep_remove_file(struct eventpoll *ep, struct epitem *epi,
+                 struct file *file)
+{
+    struct epitems_head *to_free = NULL;
+    struct hlist_head *head;
+
+    lockdep_assert_held(&ep->mtx);
+
+    spin_lock(&file->f_lock);
+    head = file->f_ep;
+    if (hlist_is_singular_node(&epi->fllink, head)) {
+        /* Last watcher: publish NULL so the eventpoll_release()
+         * fastpath in include/linux/eventpoll.h can skip the slow
+         * path on a future __fput(). Safe because every f_ep writer
+         * either holds a pin on @file via epi_fget() or is __fput()
+         * itself -- see the comment in eventpoll_release(). */
+        WRITE_ONCE(file->f_ep, NULL);
+        if (!is_file_epoll(file)) {
+            struct epitems_head *v;
+            v = container_of(head, struct epitems_head, epitems);
+            if (!smp_load_acquire(&v->next))
+                to_free = v;
+        }
+    }
+    hlist_del_rcu(&epi->fllink);
+    spin_unlock(&file->f_lock);
+    free_ephead(to_free);
+}
+
+void ep_remove_epi(struct eventpoll *ep, struct epitem *epi)
+{
+    lockdep_assert_held(&ep->mtx);
+
+    rb_erase_cached(&epi->rbn, &ep->rbr);
+
+    spin_lock_irq(&ep->lock);
+    if (ep_is_linked(epi))
+        list_del_init(&epi->rdllink);
+    spin_unlock_irq(&ep->lock);
+
+    wakeup_source_unregister(ep_wakeup_source(epi));
+    /* At this point it is safe to free the eventpoll item. Use the union
+     * field epi->rcu, since we are trying to minimize the size of
+     * 'struct epitem'. The 'rbn' field is no longer in use. Protected by
+     * ep->mtx. The rcu read side, reverse_path_check_proc(), does not make
+     * use of the rbn field. */
+    kfree_rcu(epi, rcu);
+
+    percpu_counter_dec(&ep->user->epoll_watches);
+}
 ```
 
 ## epoll_wait
