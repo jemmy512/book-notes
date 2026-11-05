@@ -19,32 +19,38 @@ makdir -P /code && cd /code
 nohup git clone https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git /code/linux &
 ```
 
-## dev branch
+## dev and bug-fix branches
 
-| Subsystem | Development branch | Commit subject prefix | Git URL |
-|---|---|---|---|
-| Scheduler | `sched/core` | `sched:`, `sched/<area>:` (e.g. `sched/fair:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
-| Locking | `locking/core` | `locking/<area>:` (e.g. `locking/mutex:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
-| IRQ | `irq/core` | `irq:`, `irqchip:`, `irqchip/<driver>:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
-| Timers | `timers/core` | `timers:`, `hrtimers:`, `clocksource:`, `clockevents:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
-| x86 | `x86/core` and other topic branches | `x86/<area>:` (e.g. `x86/mm:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
-| Memory management | `mm-unstable`, `mm-stable` | `mm:`, `mm/<area>:` (e.g. `mm/slab:`) | https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git |
-| Networking — features | `main` | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git |
-| Networking — fixes | `main` | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git |
-| Block / I/O | `for-next` | `block:`, `blk-mq:` or component/driver prefix | https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git |
-| Cgroup | `for-next` | `cgroup:` | https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git |
-| DRM / graphics | `drm-next` | `drm:`, `drm/<area>:` (e.g. `drm/i915:`) | https://gitlab.freedesktop.org/drm/kernel.git |
-| ext4 | `dev` | `ext4:` | https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git |
-| USB | `usb-next` | `usb:` (e.g. `usb: xhci:`) | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/usb.git |
-| Driver core | See note below | `driver core:` | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/driver-core.git |
-| Cross-subsystem integration | `master` | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git |
-| Linus’s mainline | `master` | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git |
+| Subsystem | Dev branch | Bug-fix branch (current release) | Commit subject prefix | Git URL |
+|---|---|---|---|---|
+| Scheduler | `sched/core` | `sched/urgent` | `sched:`, `sched/<area>:` (e.g. `sched/fair:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Locking | `locking/core` | `locking/urgent` | `locking/<area>:` (e.g. `locking/mutex:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| IRQ | `irq/core` | `irq/urgent` | `irq:`, `genirq:`, `irqchip:`, `irqchip/<driver>:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Timers | `timers/core` | `timers/urgent` | `timers:`, `hrtimers:`, `clocksource:`, `clockevents:` | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| x86 | `x86/core` and other topic branches | `x86/urgent` | `x86/<area>:` (e.g. `x86/mm:`) | https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git |
+| Memory management | `mm-unstable`, `mm-stable` | `mm-hotfixes-unstable`, `mm-hotfixes-stable` | `mm:`, `mm/<area>:` (e.g. `mm/slab:`) | https://git.kernel.org/pub/scm/linux/kernel/git/akpm/mm.git |
+| Networking — features | `main` | Use `net.git` below | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net-next.git |
+| Networking — fixes | Not a feature tree | `main` | `net:` or protocol/driver prefix (e.g. `tcp:`) | https://git.kernel.org/pub/scm/linux/kernel/git/netdev/net.git |
+| Block / I/O | `for-next` | `block-<release>`; sometimes `block-<release>-fixes` | `block:`, `blk-mq:` or component/driver prefix | https://git.kernel.org/pub/scm/linux/kernel/git/axboe/linux.git |
+| Cgroup | `for-next` | `for-<release>-fixes` | `cgroup:` | https://git.kernel.org/pub/scm/linux/kernel/git/tj/cgroup.git |
+| DRM / graphics | `drm-next` | `drm-fixes` | `drm:`, `drm/<area>:` (e.g. `drm/i915:`) | https://gitlab.freedesktop.org/drm/kernel.git |
+| ext4 | `dev` | `fixes` | `ext4:` | https://git.kernel.org/pub/scm/linux/kernel/git/tytso/ext4.git |
+| USB | `usb-next` | `usb-linus` | `usb:` (e.g. `usb: xhci:`) | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/usb.git |
+| Driver core | See note below | No dedicated fix branch currently published; see note below | `driver core:` | https://git.kernel.org/pub/scm/linux/kernel/git/gregkh/driver-core.git |
+| Cross-subsystem integration | `master` | None; fixes go through the relevant subsystem | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git |
+| Linus’s mainline | `master` | `master` receives subsystem fix pull requests | Prefix of the affected subsystem; no tree-specific prefix | https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git |
+
+Bug-fix branches above are for fixes targeting the current mainline release, not stable-kernel backport queues. Non-urgent fixes may still go through a development branch; maintainers decide the route. For tip, mainline bug fixes should apply against mainline even if the maintainer will queue them in an urgent branch.
+
+Branch names were checked against the published refs on 2026-11-02. `<release>` is the major.minor version, not a literal branch name: examples currently include `block-7.4`, `block-7.4-fixes`, and `for-7.4-fixes`. Check the maintainer's latest pull request or guidance to select the active release branch; old release branches may remain published. The Block / I/O row covers block-layer fixes; io_uring uses separate `io_uring-<release>` branches in the same repository.
+
+Memory management: `mm-hotfixes-unstable` is the staging queue and `mm-hotfixes-stable` is the stabilized hotfix queue. Here, “stable” describes the queue, not the kernel.org stable release trees. ext4 also publishes `for-stable`, which is separate from its mainline `fixes` branch.
 
 Prefixes follow the code being changed, not the Git remote or target branch. Check recent commits touching the same files for the preferred spelling and capitalization.
 
 The email tag is separate from the commit subject prefix: use `[PATCH net-next]` for networking development and `[PATCH net]` for networking fixes. Other subsystems generally use `[PATCH]`, unless their maintainers specify otherwise.
 
-Driver core: select the base branch according to current maintainer guidance; do not assume `driver-core-next` is available.
+Driver core: select the base branch according to current maintainer guidance; do not assume `driver-core-next` or `driver-core-linus` is available. The repository currently publishes `main`, `master`, and topic branches rather than those dedicated queue names. Mainline is a suitable base for mainline fixes unless the maintainer requests another base.
 
 ```sh
 # ~/.zshrc
