@@ -2606,7 +2606,14 @@ static inline void __switch_mm(struct mm_struct *next)
     /* init_mm.pgd does not contain any user mappings and it is always
      * active for kernel addresses in TTBR1. Just set the reserved TTBR0. */
     if (next == &init_mm) {
-        cpu_set_reserved_ttbr0();
+        cpu_set_reserved_ttbr0() {
+            cpu_set_reserved_ttbr0_nosync() {
+                unsigned long ttbr = phys_to_ttbr(__pa_symbol(reserved_pg_dir));
+
+                write_sysreg(ttbr, ttbr0_el1);
+            }
+            isb();
+        }
         return;
     }
 
@@ -2650,20 +2657,66 @@ void check_and_switch_context(struct mm_struct *mm)
     }
 
     cpu = smp_processor_id();
-    if (cpumask_test_and_clear_cpu(cpu, &tlb_flush_pending))
-        local_flush_tlb_all();
+    if (cpumask_test_and_clear_cpu(cpu, &tlb_flush_pending)) {
+        local_flush_tlb_all() {
+            dsb(nshst);
+            __tlbi(vmalle1);
+            dsb(nsh);
+            isb();
+        }
+    }
 
     atomic64_set(this_cpu_ptr(&active_asids), asid);
     raw_spin_unlock_irqrestore(&cpu_asid_lock, flags);
 
 switch_mm_fastpath:
 
-    arm64_apply_bp_hardening();
+    arm64_apply_bp_hardening() {
+        struct bp_hardening_data *d;
+
+        if (!alternative_has_cap_unlikely(ARM64_SPECTRE_V2))
+            return;
+
+        d = this_cpu_ptr(&bp_hardening_data);
+        if (d->fn)
+            d->fn();
+    }
 
     /* Defer TTBR0_EL1 setting for user threads to uaccess_enable() when
      * emulating PAN. */
     if (!system_uses_ttbr0_pan())
         cpu_switch_mm(mm->pgd, mm);
+}
+
+void cpu_switch_mm(pgd_t *pgd, struct mm_struct *mm)
+{
+    BUG_ON(pgd == swapper_pg_dir);
+    cpu_do_switch_mm(virt_to_phys(pgd),mm);
+}
+
+void cpu_do_switch_mm(phys_addr_t pgd_phys, struct mm_struct *mm)
+{
+    unsigned long ttbr1 = read_sysreg(ttbr1_el1);
+    unsigned long asid = ASID(mm);
+    unsigned long ttbr0 = phys_to_ttbr(pgd_phys);
+
+    /* Skip CNP for the reserved ASID */
+    if (system_supports_cnp() && asid)
+        ttbr0 |= TTBRx_EL1_CnP;
+
+    /* SW PAN needs a copy of the ASID in TTBR0 for entry */
+    if (IS_ENABLED(CONFIG_ARM64_SW_TTBR0_PAN))
+        ttbr0 |= FIELD_PREP(TTBRx_EL1_ASID_MASK, asid);
+
+    /* Set ASID in TTBR1 since TCR.A1 is set */
+    ttbr1 &= ~TTBRx_EL1_ASID_MASK;
+    ttbr1 |= FIELD_PREP(TTBRx_EL1_ASID_MASK, asid);
+
+    cpu_set_reserved_ttbr0_nosync();
+    write_sysreg(ttbr1, ttbr1_el1);
+    write_sysreg(ttbr0, ttbr0_el1);
+    isb();
+    post_ttbr_update_workaround();
 }
 ```
 
@@ -12048,7 +12101,7 @@ sched_vslice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 ### next_buddy
 
-The **next buddy** is a hint stored in `cfs_rq->next` — a pointer to a `sched_entity` that the scheduler *should prefer to pick next*, ahead of the normal EEVDF-ordered leftmost entity in the run queue. It's a lightweight scheduling hint, not a hard guarantee.
+The **next buddy** is a hint stored in `cfs_rq->next` - a pointer to a `sched_entity` that the scheduler *should prefer to pick next*, ahead of the normal EEVDF-ordered leftmost entity in the run queue. It's a lightweight scheduling hint, not a hard guarantee.
 
 ```c
     struct sched_entity    *curr;
@@ -12070,7 +12123,7 @@ static void set_next_buddy(struct cfs_rq *cfs_rq, struct sched_entity *se)
 
 Guards:
 - The entity must be **on the run queue** (`on_rq`) and not **DELAY_DEQUEUE** deferred (`sched_delayed`).
-- Idle tasks are **never** promoted to buddy — that would defeat the purpose.
+- Idle tasks are **never** promoted to buddy - that would defeat the purpose.
 
 #### Where It's Set
 
@@ -12089,7 +12142,7 @@ Guards:
     }
     ```
 
-    When a task wakes up another but **preemption is not triggered immediately**, the woken task is set as the next buddy so it gets priority at the next scheduling decision. The rationale: if task A just woke task B, B likely needs data A just produced — keep it cache-warm.
+    When a task wakes up another but **preemption is not triggered immediately**, the woken task is set as the next buddy so it gets priority at the next scheduling decision. The rationale: if task A just woke task B, B likely needs data A just produced - keep it cache-warm.
 
     `set_preempt_buddy` applies an EEVDF-aware filter: only set the buddy if the candidate doesn't have a *sooner* deadline than the existing buddy:
 
@@ -12133,7 +12186,7 @@ Guards:
 
     When a newly woken task has a **shorter time slice** than the current one, it's a signal it should run soon (it's a short/interactive burst). It's set as the next buddy unless there's already a buddy with an even shorter slice.
 
-3. `yield_to_task_fair()` — explicit CPU yield
+3. `yield_to_task_fair()` - explicit CPU yield
 
     ```c
     static bool yield_to_task_fair(struct rq *rq, struct task_struct *p)
@@ -12180,7 +12233,7 @@ The buddy is only honored if:
 |---|---|---|
 | `NEXT_BUDDY` | **off** | Set the woken task as buddy on failed preemption |
 | `PICK_BUDDY` | **on** | Actually honor `cfs_rq->next` when picking next task |
-| `CACHE_HOT_BUDDY` | **on** | Don't migrate a buddy away — treat it as cache-hot |
+| `CACHE_HOT_BUDDY` | **on** | Don't migrate a buddy away - treat it as cache-hot |
 
 #### Summary
 
@@ -16490,12 +16543,12 @@ Load balance trigger time:
 
 | Load Balance Stop mechanism | Periodic | New-idle | Scope |
 |---|---|---|---|
-| `sd->last_balance + interval` not elapsed | `continue` (skip level) | — | Per domain |
+| `sd->last_balance + interval` not elapsed | `continue` (skip level) | - | Per domain |
 | `should_we_balance()` → `continue_balancing=0` | `break` (stop all) | `break` (stop all) | All remaining |
 | `SD_SERIALIZE` lock taken | `continue` (skip level) | `continue` (skip level) | Per domain |
-| `avg_idle < curr_cost + max_newidle_lb_cost` | — | `break` (stop all) | All remaining |
-| `SD_BALANCE_NEWIDLE` not set | — | `continue` (skip level) | Per domain |
-| Task successfully pulled | — | `break` (stop all) | All remaining |
+| `avg_idle < curr_cost + max_newidle_lb_cost` | - | `break` (stop all) | All remaining |
+| `SD_BALANCE_NEWIDLE` not set | - | `continue` (skip level) | Per domain |
+| Task successfully pulled | - | `break` (stop all) | All remaining |
 
 ## tick_balance
 
@@ -17514,7 +17567,7 @@ int need_active_balance(struct lb_env *env)
 
     ret = asym_active_balance(env) {
         return env->idle && sched_use_asym_prio(env->sd, env->dst_cpu) &&
-	       (sched_asym_prefer(env->dst_cpu, env->src_cpu) || !sched_use_asym_prio(env->sd, env->src_cpu));
+           (sched_asym_prefer(env->dst_cpu, env->src_cpu) || !sched_use_asym_prio(env->sd, env->src_cpu));
     }
     if (ret)
         return 1;
@@ -20188,7 +20241,7 @@ SYM_CODE_END(ret_from_fork)
 * **Sections** in an ELF file contain the actual data or metadata, such as code, data, symbol tables, or debugging information.
 
 Program Header | Note
-:-: | :-:
+:- | :-
 PT_NULL (0x0) | Unused entry.
 PT_LOAD (0x1) | Loadable segment (e.g., code or data to be mapped into memory).
 PT_DYNAMIC (0x2) | Dynamic linking information.
@@ -20204,7 +20257,7 @@ PT_GNU_RELRO (0x6474E552) | Read-only after relocation segment.
 ---
 
 Section Header | Note
-:-: | :-:
+:- | :-
 SHT_NULL (0x0) | Inactive or null section.
 SHT_PROGBITS (0x1) | Program data (e.g., .text for code, .data for initialized data).
 SHT_SYMTAB (0x2) | Symbol table (used for linking).
@@ -20228,7 +20281,6 @@ struct linux_binfmt {
     struct list_head lh;
     struct module *module;
     int (*load_binary)(struct linux_binprm *);
-    int (*load_shlib)(struct file *);
     int (*core_dump)(struct coredump_params *cprm);
     unsigned long min_coredump;     /* minimal dump size */
 };
@@ -20236,7 +20288,6 @@ struct linux_binfmt {
 static struct linux_binfmt elf_format = {
     .module         = THIS_MODULE,
     .load_binary    = load_elf_binary,
-    .load_shlib     = load_elf_library,
     .core_dump      = elf_core_dump,
     .min_coredump   = ELF_EXEC_PAGESIZE,
 };
@@ -20274,170 +20325,667 @@ struct linux_binprm {
 ```c
 /* do_execve -> do_execveat_common -> exec_binprm -> search_binary_handler */
 SYSCALL_DEFINE3(execve,
-  const char __user *, filename,
-  const char __user *const __user *, argv,
-  const char __user *const __user *, envp)
+        const char __user *, filename,
+        const char __user *const __user *, argv,
+        const char __user *const __user *, envp)
 {
-    return do_execve(getname(filename), argv, envp) {
-        struct user_arg_ptr argv = { .ptr.native = __argv };
-        struct user_arg_ptr envp = { .ptr.native = __envp };
-        return do_execveat_common(AT_FDCWD, filename, argv, envp, 0) {
-            struct linux_binprm *bprm;
-            int retval;
+    CLASS(filename, name)(filename);
+    return do_execveat_common(AT_FDCWD, name, native_arg(argv), native_arg(envp), 0);
+}
 
-            /* We're below the limit (still or again), so we don't want to make
-             * further execve() calls fail. */
-            current->flags &= ~PF_NPROC_EXCEEDED;
+int do_execveat_common(int fd, struct filename *filename,
+                  struct user_arg_ptr argv,
+                  struct user_arg_ptr envp,
+                  int flags)
+{
+    int retval;
 
-            bprm = alloc_bprm(fd, filename) {
-                *bprm = kzalloc();
-                bprm->filename = filename->name;
-                bprm->interp = bprm->filename;
-                bprm_mm_init(bprm) {
-                    bprm->mm = mm = mm_alloc();
-                    bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+    /* We move the actual failure in case of RLIMIT_NPROC excess from
+     * set*uid() to execve() because too many poorly written programs
+     * don't check setuid() return code.  Here we additionally recheck
+     * whether NPROC limit is still exceeded. */
+    if ((current->flags & PF_NPROC_EXCEEDED) &&
+        is_rlimit_overlimit(current_ucounts(), UCOUNT_RLIMIT_NPROC, rlimit(RLIMIT_NPROC)))
+        return -EAGAIN;
 
-                    __bprm_mm_init(bprm) {
-                        bprm->vma = vma = vm_area_alloc(mm);
-                        vma_set_anonymous(vma);
+    /* We're below the limit (still or again), so we don't want to make
+     * further execve() calls fail. */
+    current->flags &= ~PF_NPROC_EXCEEDED;
 
-                        vma->vm_end = STACK_TOP_MAX;
-                        vma->vm_start = vma->vm_end - PAGE_SIZE;
-                        vm_flags_init(vma, VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP);
-                        vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+    /* DEFINE_CLASS(bprm, struct linux_binprm *, if (!IS_ERR(_T)) free_bprm(_T),
+        alloc_bprm(fd, name, flags), int fd, struct filename *name, int flags) */
+    CLASS(bprm, bprm)(fd, filename, flags);
+    if (IS_ERR(bprm))
+        return PTR_ERR(bprm);
 
-                        err = insert_vm_struct(mm, vma);
-                        mm->stack_vm = mm->total_vm = 1;
-                        bprm->p = vma->vm_end - sizeof(void *);
-                    }
-                }
+    retval = count(argv, MAX_ARG_STRINGS);
+    if (retval < 0)
+        return retval;
+    bprm->argc = retval;
+
+    retval = count(envp, MAX_ARG_STRINGS);
+    if (retval < 0)
+        return retval;
+    bprm->envc = retval;
+
+    retval = bprm_stack_limits(bprm);
+    if (retval < 0)
+        return retval;
+
+    retval = copy_string_kernel(bprm->filename, bprm);
+    if (retval < 0)
+        return retval;
+    bprm->exec = bprm->p;
+
+    retval = copy_strings(bprm->envc, envp, bprm);
+    if (retval < 0)
+        return retval;
+
+    retval = copy_strings(bprm->argc, argv, bprm);
+    if (retval < 0)
+        return retval;
+
+    /* When argv is empty, add an empty string ("") as argv[0] to
+     * ensure confused userspace programs that start processing
+     * from argv[1] won't end up walking envp. See also
+     * bprm_stack_limits(). */
+    if (bprm->argc == 0) {
+        retval = copy_string_kernel("", bprm);
+        if (retval < 0)
+            return retval;
+        bprm->argc = 1;
+
+        pr_warn_once("process '%s' launched '%s' with NULL argv: empty string added\n",
+                 current->comm, bprm->filename);
+    }
+
+    return bprm_execve(bprm);
+}
+```
+
+## alloc_bprm
+
+```c
+struct linux_binprm *alloc_bprm(int fd, struct filename *filename, int flags)
+{
+    struct linux_binprm *bprm;
+    struct file *file;
+    int retval = -ENOMEM;
+
+    file = do_open_execat(fd, filename, flags);
+    if (IS_ERR(file))
+        return ERR_CAST(file);
+
+    bprm = kzalloc_obj(*bprm);
+    if (!bprm) {
+        do_close_execat(file);
+        return ERR_PTR(-ENOMEM);
+    }
+
+    bprm->file = file;
+
+    if (fd == AT_FDCWD || filename->name[0] == '/') {
+        bprm->filename = filename->name;
+    } else {
+        if (filename->name[0] == '\0') {
+            bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
+            bprm->comm_from_dentry = 1;
+        } else {
+            bprm->fdpath = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s",
+                          fd, filename->name);
+        }
+        if (!bprm->fdpath)
+            goto out_free;
+
+        /* Record that a name derived from an O_CLOEXEC fd will be
+         * inaccessible after exec.  This allows the code in exec to
+         * choose to fail when the executable is not mmaped into the
+         * interpreter and an open file descriptor is not passed to
+         * the interpreter.  This makes for a better user experience
+         * than having the interpreter start and then immediately fail
+         * when it finds the executable is inaccessible. */
+        if (get_close_on_exec(fd))
+            bprm->interp_flags |= BINPRM_FLAGS_PATH_INACCESSIBLE;
+
+        bprm->filename = bprm->fdpath;
+    }
+    bprm->interp = bprm->filename;
+
+    /* At this point, security_file_open() has already been called (with
+     * __FMODE_EXEC) and access control checks for AT_EXECVE_CHECK will
+     * stop just after the security_bprm_creds_for_exec() call in
+     * bprm_execve().  Indeed, the kernel should not try to parse the
+     * content of the file with exec_binprm() nor change the calling
+     * thread, which means that the following security functions will not
+     * be called:
+     * - security_bprm_check()
+     * - security_bprm_creds_from_file()
+     * - security_bprm_committing_creds()
+     * - security_bprm_committed_creds() */
+    bprm->is_check = !!(flags & AT_EXECVE_CHECK);
+
+    retval = bprm_mm_init(bprm);
+    if (!retval)
+        return bprm;
+
+out_free:
+    free_bprm(bprm);
+    return ERR_PTR(retval);
+}
+
+int bprm_mm_init(struct linux_binprm *bprm)
+{
+    int err;
+    struct mm_struct *mm = NULL;
+
+    bprm->mm = mm = mm_alloc();
+    err = -ENOMEM;
+    if (!mm)
+        goto err;
+
+    /* Staged for would_dump() narrowing; consumed by begin_new_exec(). */
+    bprm->user_ns = get_user_ns(current_user_ns());
+
+    /* Save current stack limit for all calculations made during exec. */
+    task_lock(current->group_leader);
+    bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
+    task_unlock(current->group_leader);
+
+#ifndef CONFIG_MMU
+    bprm->p = PAGE_SIZE * MAX_ARG_PAGES - sizeof(void *);
+#else
+    err = create_init_stack_vma(bprm->mm, &bprm->vma, &bprm->p);
+    if (err)
+        goto err;
+#endif
+
+    return 0;
+
+err:
+    if (mm) {
+        bprm->mm = NULL;
+        mmdrop(mm);
+    }
+
+    return err;
+}
+
+int create_init_stack_vma(struct mm_struct *mm, struct vm_area_struct **vmap,
+              unsigned long *top_mem_p)
+{
+    vma_flags_t flags = VMA_STACK_INCOMPLETE_SETUP;
+    struct vm_area_struct *vma;
+    int err;
+
+    /* VMA_STACK_FLAGS and VMA_STACK_INCOMPLETE_SETUP must not overlap. */
+    VM_WARN_ON_ONCE(vma_flags_test_any_mask(&flags, VMA_STACK_FLAGS));
+
+    vma = vm_area_alloc(mm);
+    if (!vma)
+        return -ENOMEM;
+
+    if (mmap_write_lock_killable(mm)) {
+        err = -EINTR;
+        goto err_free;
+    }
+
+    /* Need to be called with mmap write lock
+     * held, to avoid race with ksmd. */
+    err = ksm_execve(mm);
+    if (err)
+        goto err_ksm;
+
+    vma_flags_set_mask(&flags, VMA_STACK_FLAGS);
+    vma_set_anonymous(vma);
+
+    /* Place the stack at the largest stack address the architecture
+     * supports. Later, we'll move this to an appropriate place. We don't
+     * use STACK_TOP because that can depend on attributes which aren't
+     * configured yet. */
+    vma->vm_end = STACK_TOP_MAX;
+    vma->vm_start = vma->vm._end - PAGE_SIZE;
+    if (pgtable_supports_soft_dirty())
+        vma_flags_set(&flags, VMA_SOFTDIRTY_BIT);
+    vma->flags = flags;
+    vma->vm_page_prot = vma_get_page_prot(vma);
+
+    err = insert_vm_struct(mm, vma);
+    if (err)
+        goto err;
+
+    mm->stack_vm = mm->total_vm = 1;
+    mmap_write_unlock(mm);
+    *vmap = vma;
+    *top_mem_p = vma->vm_end - sizeof(void *);
+    return 0;
+
+err:
+    ksm_exit(mm);
+err_ksm:
+    mmap_write_unlock(mm);
+err_free:
+    *vmap = NULL;
+    vm_area_free(vma);
+    return err;
+}
+```
+
+## copy_strings
+
+```c
+int copy_strings(int argc, struct user_arg_ptr argv,
+            struct linux_binprm *bprm)
+{
+    struct page *kmapped_page = NULL;
+    char *kaddr = NULL;
+    unsigned long kpos = 0;
+    int ret;
+
+    while (argc-- > 0) {
+        const char __user *str;
+        int len;
+        unsigned long pos;
+
+        ret = -EFAULT;
+        str = get_user_arg_ptr(argv, argc);
+        if (IS_ERR(str))
+            goto out;
+
+        len = strnlen_user(str, MAX_ARG_STRLEN);
+        if (!len)
+            goto out;
+
+        ret = -E2BIG;
+        if (!valid_arg_len(bprm, len))
+            goto out;
+
+        /* We're going to work our way backwards. */
+        pos = bprm->p;
+        str += len;
+        bprm->p -= len;
+        if (bprm_hit_stack_limit(bprm))
+            goto out;
+
+        while (len > 0) {
+            int offset, bytes_to_copy;
+
+            if (fatal_signal_pending(current)) {
+                ret = -ERESTARTNOHAND;
+                goto out;
             }
+            cond_resched();
 
-            retval = bprm_stack_limits(bprm) {
-                limit = _STK_LIM / 4 * 3;
-                limit = min(limit, bprm->rlim_stack.rlim_cur / 4);
-                ptr_size = (max(bprm->argc, 1) + bprm->envc) * sizeof(void *);
-                limit -= ptr_size;
-                bprm->argmin = bprm->p - limit;
+            offset = pos % PAGE_SIZE;
+            if (offset == 0)
+                offset = PAGE_SIZE;
+
+            bytes_to_copy = offset;
+            if (bytes_to_copy > len)
+                bytes_to_copy = len;
+
+            offset -= bytes_to_copy;
+            pos -= bytes_to_copy;
+            str -= bytes_to_copy;
+            len -= bytes_to_copy;
+
+            if (!kmapped_page || kpos != (pos & PAGE_MASK)) {
+                struct page *page;
+
+                page = get_arg_page(bprm, pos, 1);
+                if (!page) {
+                    ret = -E2BIG;
+                    goto out;
+                }
+
+                if (kmapped_page) {
+                    flush_dcache_page(kmapped_page);
+                    kunmap_local(kaddr);
+                    put_arg_page(kmapped_page);
+                }
+                kmapped_page = page;
+                kaddr = kmap_local_page(kmapped_page);
+                kpos = pos & PAGE_MASK;
+                flush_arg_page(bprm, kpos, kmapped_page);
             }
-            copy_string_kernel(bprm->filename, bprm)
-
-            bprm->exec = bprm->p;
-
-            retval = copy_strings(bprm->envc, envp, bprm);
-            retval = copy_strings(bprm->argc, argv, bprm);
-
-            retval = bprm_execve(bprm, fd, filename, flags) {
-                retval = prepare_bprm_creds(bprm);
-
-                check_unsafe_exec(bprm);
-                current->in_execve = 1;
-                sched_mm_cid_before_execve(current);
-
-                file = do_open_execat(fd, filename, flags) {
-                    do_filp_open(fd, name, &open_exec_flags);
-
-                    deny_write_access(file);
-                }
-
-                sched_exec() {
-                    struct task_struct *p = current;
-                    struct migration_arg arg;
-                    int dest_cpu;
-
-                    scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
-                        dest_cpu = p->sched_class->select_task_rq(p, task_cpu(p), WF_EXEC);
-                        if (dest_cpu == smp_processor_id())
-                            return;
-
-                        if (unlikely(!cpu_active(dest_cpu)))
-                            return;
-
-                        arg = (struct migration_arg){ p, dest_cpu };
-                    }
-                    stop_one_cpu(task_cpu(p), migration_cpu_stop, &arg);
-                }
-
-                bprm->file = file;
-
-                retval = exec_binprm(bprm) {
-                    /* Need to fetch pid before load_binary changes it */
-                    old_pid = current->pid;
-                    rcu_read_lock();
-                    old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
-                    rcu_read_unlock();
-
-                    /* This allows 4 levels of binfmt rewrites before failing hard. */
-                    for (depth = 0;; depth++) {
-                        struct file *exec;
-                        if (depth > 5)
-                        return -ELOOP;
-
-                        ret = search_binary_handler(bprm) {
-                            bool need_retry = IS_ENABLED(CONFIG_MODULES);
-                            struct linux_binfmt *fmt;
-                            int retval;
-
-                            retval = prepare_binprm(bprm) {
-                                memset(bprm->buf, 0, BINPRM_BUF_SIZE/*256*/);
-                                return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
-                            }
-
-                            retval = -ENOENT;
-                        retry:
-                            read_lock(&binfmt_lock);
-                            list_for_each_entry(fmt, &formats, lh) {
-                                if (!try_module_get(fmt->module))
-                                    continue;
-                                read_unlock(&binfmt_lock);
-
-                                retval = fmt->load_binary(bprm); /* load_elf_binary */
-
-                                read_lock(&binfmt_lock);
-                                put_binfmt(fmt);
-                                if (bprm->point_of_no_return || (retval != -ENOEXEC)) {
-                                    read_unlock(&binfmt_lock);
-                                    return retval;
-                                }
-                            }
-                            read_unlock(&binfmt_lock);
-
-                            return retval;
-                        }
-
-                        if (ret < 0)
-                            return ret;
-                        if (!bprm->interpreter)
-                            break;
-
-                        exec = bprm->file;
-                        bprm->file = bprm->interpreter;
-                        bprm->interpreter = NULL;
-
-                        allow_write_access(exec);
-                    }
-
-                    return 0;
-                }
-
-                sched_mm_cid_after_execve(current);
-                /* execve succeeded */
-                current->fs->in_exec = 0;
-                current->in_execve = 0;
-                rseq_execve(current);
-                user_events_execve(current);
-                acct_update_integrals(current);
-                task_numa_free(current, false);
-                return retval;
+            if (copy_from_user(kaddr+offset, str, bytes_to_copy)) {
+                ret = -EFAULT;
+                goto out;
             }
+        }
+    }
+    ret = 0;
+out:
+    if (kmapped_page) {
+        flush_dcache_page(kmapped_page);
+        kunmap_local(kaddr);
+        put_arg_page(kmapped_page);
+    }
+    return ret;
+}
 
+struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
+        int write)
+{
+    struct page *page;
+    struct vm_area_struct *vma = bprm->vma;
+    struct mm_struct *mm = bprm->mm;
+    int ret;
+
+    /* Avoid relying on expanding the stack down in GUP (which
+     * does not work for STACK_GROWSUP anyway), and just do it
+     * ahead of time. */
+    if (!mmap_read_lock_maybe_expand(mm, vma, pos, write))
+        return NULL;
+
+    /* We are doing an exec().  'current' is the process
+     * doing the exec and 'mm' is the new process's mm. */
+    ret = get_user_pages_remote(mm, pos, 1,
+            write ? FOLL_WRITE : 0,
+            &page, NULL);
+    mmap_read_unlock(mm);
+    if (ret <= 0)
+        return NULL;
+
+    if (write)
+        acct_arg_size(bprm, vma_pages(vma));
+
+    return page;
+}
+```
+
+## bprm_execve
+
+```c
+int bprm_execve(struct linux_binprm *bprm)
+{
+    int retval;
+
+    retval = prepare_bprm_creds(bprm);
+    if (retval)
+        return retval;
+
+    /* Check for unsafe execution states before exec_binprm(), which
+     * will call back into begin_new_exec(), into bprm_creds_from_file(),
+     * where setuid-ness is evaluated. */
+    check_unsafe_exec(bprm);
+    current->in_execve = 1;
+    sched_mm_cid_before_execve(current);
+
+    sched_exec();
+
+    /* Set the unchanging part of bprm->cred */
+    retval = security_bprm_creds_for_exec(bprm);
+    if (retval || bprm->is_check)
+        goto out;
+
+    retval = exec_binprm(bprm);
+    if (retval < 0)
+        goto out;
+
+    sched_mm_cid_after_execve(current);
+    rseq_execve(current);
+    /* execve succeeded */
+    current->in_execve = 0;
+    user_events_execve(current);
+    acct_update_integrals(current);
+    task_numa_free(current, false);
+    return retval;
+
+out:
+    /* If past the point of no return ensure the code never
+     * returns to the userspace process.  Use an existing fatal
+     * signal if present otherwise terminate the process with
+     * SIGSEGV. */
+    if (bprm->point_of_no_return && !fatal_signal_pending(current))
+        force_fatal_sig(SIGSEGV);
+
+    sched_mm_cid_after_execve(current);
+    rseq_force_update();
+    current->in_execve = 0;
+
+    return retval;
+}
+```
+
+## sched_exec
+
+```c
+void sched_exec(void)
+{
+    struct task_struct *p = current;
+    struct migration_arg arg;
+    int dest_cpu;
+
+    scoped_guard (raw_spinlock_irqsave, &p->pi_lock) {
+        dest_cpu = p->sched_class->select_task_rq(p, task_cpu(p), WF_EXEC);
+        if (dest_cpu == smp_processor_id())
+            return;
+
+        if (unlikely(!cpu_active(dest_cpu)))
+            return;
+
+        arg = (struct migration_arg){ p, dest_cpu };
+    }
+    stop_one_cpu(task_cpu(p), migration_cpu_stop, &arg);
+}
+
+int migration_cpu_stop(void *data)
+{
+    struct migration_arg *arg = data;
+    struct set_affinity_pending *pending = arg->pending;
+    struct task_struct *p = arg->task;
+    struct rq *rq = this_rq();
+    bool complete = false;
+    struct rq_flags rf;
+
+    /* The original target CPU might have gone down and we might
+     * be on another CPU but it doesn't matter. */
+    local_irq_save(rf.flags);
+    /* We need to explicitly wake pending tasks before running
+     * __migrate_task() such that we will not miss enforcing cpus_ptr
+     * during wakeups, see set_cpus_allowed_ptr()'s TASK_WAKING test. */
+    flush_smp_call_function_queue();
+
+    /* We may change the underlying rq, but the locks held will
+     * appropriately be "transferred" when switching. */
+    context_unsafe_alias(rq);
+
+    raw_spin_lock(&p->pi_lock);
+    rq_lock(rq, &rf);
+
+    /* If we were passed a pending, then ->stop_pending was set, thus
+     * p->migration_pending must have remained stable. */
+    WARN_ON_ONCE(pending && pending != p->migration_pending);
+
+    /* If task_rq(p) != rq, it cannot be migrated here, because we're
+     * holding rq->lock, if p->on_rq == 0 it cannot get enqueued because
+     * we're holding p->pi_lock. */
+    if (task_rq(p) == rq) {
+        if (is_migration_disabled(p))
+            goto out;
+
+        if (pending) {
+            p->migration_pending = NULL;
+            complete = true;
+
+            if (cpumask_test_cpu(task_cpu(p), &p->cpus_mask))
+                goto out;
+        }
+
+        if (task_on_rq_queued(p)) {
+            update_rq_clock(rq);
+            rq = __migrate_task(rq, &rf, p, arg->dest_cpu);
+        } else {
+            p->wake_cpu = arg->dest_cpu;
+        }
+
+        /* XXX __migrate_task() can fail, at which point we might end
+         * up running on a dodgy CPU, AFAICT this can only happen
+         * during CPU hotplug, at which point we'll get pushed out
+         * anyway, so it's probably not a big deal. */
+
+    } else if (pending) {
+        /* This happens when we get migrated between migrate_enable()'s
+         * preempt_enable() and scheduling the stopper task. At that
+         * point we're a regular task again and not current anymore.
+         *
+         * A !PREEMPT kernel has a giant hole here, which makes it far
+         * more likely. */
+
+        /* The task moved before the stopper got to run. We're holding
+         * ->pi_lock, so the allowed mask is stable - if it got
+         * somewhere allowed, we're done. */
+        if (cpumask_test_cpu(task_cpu(p), p->cpus_ptr)) {
+            p->migration_pending = NULL;
+            complete = true;
+            goto out;
+        }
+
+        /* When migrate_enable() hits a rq mis-match we can't reliably
+         * determine is_migration_disabled() and so have to chase after
+         * it. */
+        WARN_ON_ONCE(!pending->stop_pending);
+        preempt_disable();
+        rq_unlock(rq, &rf);
+        raw_spin_unlock_irqrestore(&p->pi_lock, rf.flags);
+        stop_one_cpu_nowait(task_cpu(p), migration_cpu_stop, &pending->arg, &pending->stop_work);
+        preempt_enable();
+        return 0;
+    }
+out:
+    if (pending)
+        pending->stop_pending = false;
+    rq_unlock(rq, &rf);
+    raw_spin_unlock_irqrestore(&p->pi_lock, rf.flags);
+
+    if (complete)
+        complete_all(&pending->done);
+
+    return 0;
+}
+```
+
+## exec_binprm
+
+```c
+static int exec_binprm(struct linux_binprm *bprm)
+{
+    pid_t old_pid, old_vpid;
+    int ret, depth;
+
+    /* Need to fetch pid before load_binary changes it */
+    old_pid = current->pid;
+    rcu_read_lock();
+    old_vpid = task_pid_nr_ns(current, task_active_pid_ns(current->parent));
+    rcu_read_unlock();
+
+    /* This allows 5 levels of binfmt rewrites before failing hard. */
+    for (depth = 0;; depth++) {
+        struct file *exec;
+        if (depth > 5)
+            return -ELOOP;
+
+        ret = search_binary_handler(bprm);
+        if (ret < 0)
+            return ret;
+        if (!bprm->interpreter)
+            break;
+
+        /* A stashed PT_INTERP substitute belonged to the replaced file. */
+        bprm_drop_loader(bprm);
+
+        exec = bprm->file;
+        bprm->file = bprm->interpreter;
+        bprm->interpreter = NULL;
+
+        if (unlikely(bprm->have_execfd)) {
+            if (bprm->executable) {
+                do_close_execat(exec);
+                return -ENOEXEC;
+            }
+            /* Kept for AT_EXECFD; the write denial rides along until hand-over. */
+            bprm->executable = exec;
+        } else {
+            do_close_execat(exec);
+        }
+    }
+
+    audit_bprm(bprm);
+    trace_sched_process_exec(current, old_pid, bprm);
+    ptrace_event(PTRACE_EVENT_EXEC, old_vpid);
+    proc_exec_connector(current);
+    return 0;
+}
+
+
+int search_binary_handler(struct linux_binprm *bprm)
+{
+    struct linux_binfmt *fmt;
+    int retval;
+
+    retval = prepare_binprm(bprm) {
+        loff_t pos = 0;
+
+        memset(bprm->buf, 0, BINPRM_BUF_SIZE);
+        return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+    }
+    if (retval < 0)
+        return retval;
+
+    retval = security_bprm_check(bprm);
+    if (retval)
+        return retval;
+
+    read_lock(&binfmt_lock);
+    list_for_each_entry(fmt, &formats, lh) {
+        if (!try_module_get(fmt->module))
+            continue;
+        read_unlock(&binfmt_lock);
+
+        retval = fmt->load_binary(bprm);
+
+        read_lock(&binfmt_lock);
+        put_binfmt(fmt);
+        if (bprm->point_of_no_return || (retval != -ENOEXEC)) {
+            read_unlock(&binfmt_lock);
             return retval;
         }
     }
+    read_unlock(&binfmt_lock);
+
+    return -ENOEXEC;
 }
 ```
 
 ## load_elf_binary
+
+```txt
+                 (1) ./ls              (2) ./ld.so           (3) ET_EXEC
+                 DYN + INTERP          DYN, no INTERP        EXEC
+
+256 TB           stack                 stack                 stack
+                 (grow down)
+
+                 ~~~ gap ~~~           ~~~ gap ~~~           ~~~ gap ~~~
+
+                 mmap: ld.so, vdso     mmap: this binary     mmap: ld.so?, vdso
+                 (grow down)
+
+                 ~~~ unused ~~~        ~~~ unused ~~~        ~~~ unused ~~~
+
+                 (grow up)
+                 heap                  (empty)               heap
+
+                 ~~~ page gap ~~~                            ~~~ page gap ~~~
+
+                 PIE image             heap @ ET_DYN_BASE    EXEC @ p_vaddr
+
+~170 TB          ET_DYN_BASE           ET_DYN_BASE           (unused)
+
+                 ~~~ unused ~~~        ~~~ unused ~~~        ~~~ unused ~~~
+
+0                0                     0                     0
+```
 
 ```c
 int load_elf_binary(struct linux_binprm *bprm)
@@ -20449,6 +20997,7 @@ int load_elf_binary(struct linux_binprm *bprm)
     struct elf_phdr *elf_ppnt, *elf_phdata, *interp_elf_phdata = NULL;
     struct elf_phdr *elf_property_phdata = NULL;
     unsigned long elf_brk;
+    bool brk_moved = false;
     int retval, i;
     unsigned long elf_entry;
     unsigned long e_entry;
@@ -20462,9 +21011,10 @@ int load_elf_binary(struct linux_binprm *bprm)
     struct mm_struct *mm;
     struct pt_regs *regs;
 
+/* 1: Validate the file */
     retval = -ENOEXEC;
     /* First of all, some simple consistency checks */
-    if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
+    if (memcmp(elf_ex->e_ident, ELFMAG, SELFMAG) != 0) /* \177ELF" magic */
         goto out;
 
     if (elf_ex->e_type != ET_EXEC && elf_ex->e_type != ET_DYN)
@@ -20473,20 +21023,14 @@ int load_elf_binary(struct linux_binprm *bprm)
         goto out;
     if (elf_check_fdpic(elf_ex))
         goto out;
-    if (!bprm->file->f_op->mmap)
+    if (!can_mmap_file(bprm->file))
         goto out;
 
-    elf_phdata = load_elf_phdrs(elf_ex, bprm->file) {
-        size = sizeof(struct elf_phdr) * elf_ex->e_phnum;
-        elf_phdata = kmalloc(size, GFP_KERNEL);
-        elf_read(elf_file, elf_phdata, size, elf_ex->e_phoff);
-        return elf_data;
-    }
+/* 2: Look for PT_INTERP and open the interpreter */
+    elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
     if (!elf_phdata)
         goto out;
 
-    /* This is the program interpreter used for shared libraries -
-     * for now assume that this is an a.out format binary. */
     elf_ppnt = elf_phdata;
     for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++) {
         char *elf_interpreter;
@@ -20499,19 +21043,40 @@ int load_elf_binary(struct linux_binprm *bprm)
         if (elf_ppnt->p_type != PT_INTERP)
             continue;
 
+        /* This is the program interpreter used for shared libraries -
+         * for now assume that this is an a.out format binary. */
+        retval = -ENOEXEC;
+        if (elf_ppnt->p_filesz > PATH_MAX || elf_ppnt->p_filesz < 2)
+            goto out_free_ph;
+
+        retval = -ENOMEM;
         elf_interpreter = kmalloc(elf_ppnt->p_filesz, GFP_KERNEL);
+        if (!elf_interpreter)
+            goto out_free_ph;
 
-        retval = elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz,
-                elf_ppnt->p_offset);
+        retval = elf_read(bprm->file, elf_interpreter, elf_ppnt->p_filesz, elf_ppnt->p_offset);
+        if (retval < 0)
+            goto out_free_interp;
+        /* make sure path is NULL terminated */
+        retval = -ENOEXEC;
+        if (elf_interpreter[elf_ppnt->p_filesz - 1] != '\0')
+            goto out_free_interp;
 
-        interpreter = open_exec(elf_interpreter) {
-            do_open_execat() {
-                do_filp_open();
-                deny_write_access();
-            }
+        interpreter = bprm_open_interpreter(bprm, elf_interpreter) {
+            if (bprm->loader)
+                return no_free_ptr(bprm->loader);
+            return open_exec(path);
         }
+        kfree(elf_interpreter);
+        retval = PTR_ERR(interpreter);
+        if (IS_ERR(interpreter))
+            goto out_free_ph;
 
-        interp_elf_ex = kmalloc(sizeof(*interp_elf_ex), GFP_KERNEL);
+        /* If the binary is not readable then enforce mm->dumpable = 0
+         * regardless of the interpreter's permissions. */
+        would_dump(bprm, interpreter);
+
+        interp_elf_ex = kmalloc_obj(*interp_elf_ex);
         if (!interp_elf_ex) {
             retval = -ENOMEM;
             goto out_free_file;
@@ -20529,6 +21094,29 @@ out_free_interp:
         goto out_free_ph;
     }
 
+    /* No PT_INTERP to substitute for: the override does not apply. */
+    bprm_drop_loader(bprm);
+
+/* 3. Inspect the remaining headers  */
+    elf_ppnt = elf_phdata;
+    for (i = 0; i < elf_ex->e_phnum; i++, elf_ppnt++)
+        switch (elf_ppnt->p_type) {
+        case PT_GNU_STACK:
+            if (elf_ppnt->p_flags & PF_X)
+                executable_stack = EXSTACK_ENABLE_X;
+            else
+                executable_stack = EXSTACK_DISABLE_X;
+            break;
+
+        case PT_LOPROC ... PT_HIPROC:
+            retval = arch_elf_pt_proc(elf_ex, elf_ppnt,
+                          bprm->file, false,
+                          &arch_state);
+            if (retval)
+                goto out_free_dentry;
+            break;
+        }
+
     /* Some simple consistency checks for the interpreter */
     if (interpreter) {
         retval = -ELIBBAD;
@@ -20536,130 +21124,71 @@ out_free_interp:
         if (memcmp(interp_elf_ex->e_ident, ELFMAG, SELFMAG) != 0)
             goto out_free_dentry;
         /* Verify the interpreter has a valid arch */
-        if (!elf_check_arch(interp_elf_ex) ||
-            elf_check_fdpic(interp_elf_ex))
+        if (!elf_check_arch(interp_elf_ex) || elf_check_fdpic(interp_elf_ex))
             goto out_free_dentry;
 
         /* Load the interpreter program headers */
         interp_elf_phdata = load_elf_phdrs(interp_elf_ex, interpreter);
+        if (!interp_elf_phdata)
+            goto out_free_dentry;
+
+        /* Pass PT_LOPROC..PT_HIPROC headers to arch code */
+        elf_property_phdata = NULL;
+        elf_ppnt = interp_elf_phdata;
+        for (i = 0; i < interp_elf_ex->e_phnum; i++, elf_ppnt++)
+            switch (elf_ppnt->p_type) {
+            case PT_GNU_PROPERTY:
+                elf_property_phdata = elf_ppnt;
+                break;
+
+            case PT_LOPROC ... PT_HIPROC:
+                retval = arch_elf_pt_proc(interp_elf_ex,
+                              elf_ppnt, interpreter,
+                              true, &arch_state);
+                if (retval)
+                    goto out_free_dentry;
+                break;
+            }
     }
 
     retval = parse_elf_properties(interpreter ?: bprm->file, elf_property_phdata, &arch_state);
+    if (retval)
+        goto out_free_dentry;
 
+    /* Allow arch code to reject the ELF at this point, whilst it's
+     * still possible to return an error to the code that invoked
+     * the exec syscall. */
+    retval = arch_check_elf(elf_ex,
+                !!interpreter, interp_elf_ex,
+                &arch_state);
+    if (retval)
+        goto out_free_dentry;
+
+/* 4: Point of no return */
     /* Flush all traces of the currently running executable */
-    retval = begin_new_exec(bprm) {
-        /* Make this the only thread in the thread group. */
-        retval = de_thread(me);
-        io_uring_task_cancel();
-        /* Ensure the files table is not shared. */
-        retval = unshare_files();
+    retval = begin_new_exec(bprm);
+    if (retval)
+        goto out_free_dentry;
 
-        set_mm_exe_file(bprm->mm, bprm->file) {
-            deny_write_access(new_exe_file);
-            rcu_assign_pointer(mm->exe_file, new_exe_file);
-            allow_write_access(old_exe_file);
-        }
+    /* Do this immediately, since STACK_TOP as used in setup_arg_pages
+       may depend on the personality.  */
+    SET_PERSONALITY2(*elf_ex, &arch_state);
+    if (elf_read_implies_exec(*elf_ex, executable_stack))
+        current->personality |= READ_IMPLIES_EXEC;
 
-        /* Maps the mm_struct mm into the current task struct. */
-        exec_mmap(bprm->mm);
-        bprm->mm = NULL;
+    const int snapshot_randomize_va_space = READ_ONCE(randomize_va_space);
+    if (!(current->personality & ADDR_NO_RANDOMIZE) && snapshot_randomize_va_space)
+        current->flags |= PF_RANDOMIZE;
 
-        exec_task_namespaces() {
-            if (tsk->nsproxy->time_ns_for_children == tsk->nsproxy->time_ns)
-                return 0;
+    setup_new_exec(bprm);
 
-            new = create_new_namespaces(0, tsk, current_user_ns(), tsk->fs);
-            timens_on_fork(new, tsk);
-            switch_task_namespaces(tsk, new);
-        }
+    /* Do this so that we can load the interpreter, if need be.  We will
+       change some of these later */
+    retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack);
+    if (retval < 0)
+        goto out_free_dentry;
 
-        posix_cpu_timers_exit(me);
-        exit_itimers(me);
-        flush_itimer_signals();
-
-        unshare_sighand(me) {
-            struct sighand_struct *oldsighand = me->sighand;
-
-            if (refcount_read(&oldsighand->count) != 1) {
-                struct sighand_struct *newsighand;
-                newsighand = kmem_cache_alloc(sighand_cachep, GFP_KERNEL);
-                if (!newsighand)
-                    return -ENOMEM;
-
-                refcount_set(&newsighand->count, 1);
-
-                write_lock_irq(&tasklist_lock);
-                spin_lock(&oldsighand->siglock);
-                memcpy(newsighand->action, oldsighand->action,
-                    sizeof(newsighand->action));
-                rcu_assign_pointer(me->sighand, newsighand);
-                spin_unlock(&oldsighand->siglock);
-                write_unlock_irq(&tasklist_lock);
-
-                __cleanup_sighand(oldsighand) {
-                    if (refcount_dec_and_test(&sighand->count)) {
-                        signalfd_cleanup(sighand) {
-                            wake_up_pollfree(&sighand->signalfd_wqh);
-                        }
-                        kmem_cache_free(sighand_cachep, sighand);
-                    }
-                }
-            }
-        }
-
-        do_close_on_exec(me->files) {
-            for (i = 0; ; i++) {
-                filp_close(file, files);
-            }
-        }
-
-        perf_event_exec();
-
-        setup_new_exec(bprm) {
-            arch_pick_mmap_layout() {
-                mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
-                mm->get_unmapped_area = arch_get_unmapped_area;
-            }
-        }
-    }
-
-    /* Finalizes the stack vm_area_struct */
-    setup_arg_pages(bprm, randomize_stack_top(STACK_TOP), executable_stack) {
-        stack_top = arch_align_stack(stack_top);
-        stack_top = PAGE_ALIGN(stack_top);
-        stack_shift = vma->vm_end - stack_top;
-
-        bprm->p -= stack_shift;
-        mm->arg_start = bprm->p;
-
-        if (bprm->loader)
-            bprm->loader -= stack_shift;
-        /* tracks the location of the program’s initial stack pointer
-         * (used for setting up argc, argv, and envp). */
-        bprm->exec -= stack_shift;
-
-        tlb_gather_mmu(&tlb, mm);
-        ret = mprotect_fixup(&vmi, &tlb, vma, &prev, vma->vm_start, vma->vm_end,
-                vm_flags);
-        tlb_finish_mmu(&tlb);
-
-        ret = relocate_vma_down(vma, stack_shift);
-
-        stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages */
-        stack_size = vma->vm_end - vma->vm_start;
-        rlim_stack = bprm->rlim_stack.rlim_cur & PAGE_MASK;
-
-        stack_expand = min(rlim_stack, stack_size + stack_expand);
-        stack_base = vma->vm_end - stack_expand;
-
-        current->mm->start_stack = bprm->p;
-        ret = expand_stack_locked(vma, stack_base) {
-            expand_downwards(vma, address) {
-
-            }
-        }
-    }
-
+/* 5: Map the PT_LOAD segments */
     elf_brk = 0;
 
     start_code = ~0UL;
@@ -20668,8 +21197,8 @@ out_free_interp:
     end_data = 0;
 
     /* Now we do a little grungy work by mmapping the ELF image into
-     * the correct location in memory. */
-    for (i = 0, elf_ppnt = elf_phdata; i < elf_ex->e_phnum; i++, elf_ppnt++) {
+       the correct location in memory. */
+    for(i = 0, elf_ppnt = elf_phdata; i < elf_ex->e_phnum; i++, elf_ppnt++) {
         int elf_prot, elf_flags;
         unsigned long k, vaddr;
         unsigned long total_size = 0;
@@ -20678,73 +21207,141 @@ out_free_interp:
         if (elf_ppnt->p_type != PT_LOAD)
             continue;
 
-        elf_prot = make_prot(elf_ppnt->p_flags, &arch_state, !!interpreter, false);
+        elf_prot = make_prot(elf_ppnt->p_flags, &arch_state, !!interpreter, false) {
+            int prot = 0;
 
-        elf_flags = MAP_PRIVATE;
+            if (p_flags & PF_R)
+                prot |= PROT_READ;
+            if (p_flags & PF_W)
+                prot |= PROT_WRITE;
+            if (p_flags & PF_X)
+                prot |= PROT_EXEC;
+
+            return arch_elf_adjust_prot(prot, arch_state, has_interp, is_interp);
+        }
+
+        elf_flags = MAP_PRIVATE; /* ile-backed copy-on-write mapping */
 
         vaddr = elf_ppnt->p_vaddr;
-
+        /* The first time through the loop, first_pt_load is true:
+         * layout will be calculated. Once set, use MAP_FIXED since
+         * we know we've already safely mapped the entire region with
+         * MAP_FIXED_NOREPLACE in the once-per-binary logic following. */
         if (!first_pt_load) {
             elf_flags |= MAP_FIXED;
         } else if (elf_ex->e_type == ET_EXEC) {
+            /* This logic is run once for the first LOAD Program
+             * Header for ET_EXEC binaries. No special handling
+             * is needed. */
             elf_flags |= MAP_FIXED_NOREPLACE;
         } else if (elf_ex->e_type == ET_DYN) {
-            if (interpreter) {
-                load_bias = ELF_ET_DYN_BASE; /* (2 * TASK_SIZE_64 / 3) */
-                if (current->flags & PF_RANDOMIZE) {
-                    load_bias += arch_mmap_rnd();
-                }
-                alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
-                if (alignment) {
-                    load_bias &= ~(alignment - 1);
-                }
-                elf_flags |= MAP_FIXED_NOREPLACE;
-            } else {
-                load_bias = 0;
-            }
+            /* This logic is run once for the first LOAD Program
+             * Header for ET_DYN binaries to calculate the
+             * randomization (load_bias) for all the LOAD
+             * Program Headers. */
 
-            load_bias = ELF_PAGESTART(load_bias - vaddr);
-
+            /* Calculate the entire size of the ELF mapping
+             * (total_size), used for the initial mapping,
+             * due to load_addr_set which is set to true later
+             * once the initial mapping is performed.
+             *
+             * Note that this is only sensible when the LOAD
+             * segments are contiguous (or overlapping). If
+             * used for LOADs that are far apart, this would
+             * cause the holes between LOADs to be mapped,
+             * running the risk of having the mapping fail,
+             * as it would be larger than the ELF file itself.
+             *
+             * As a result, only ET_DYN does this, since
+             * some ET_EXEC (e.g. ia64) may have large virtual
+             * memory holes between LOADs.
+             * */
             total_size = total_mapping_size(elf_phdata, elf_ex->e_phnum);
             if (!total_size) {
                 retval = -EINVAL;
                 goto out_free_dentry;
             }
+
+            /* Calculate any requested alignment. */
+            alignment = maximum_alignment(elf_phdata, elf_ex->e_phnum);
+
+            /**
+             * DOC: PIE handling
+             *
+             * There are effectively two types of ET_DYN ELF
+             * binaries: programs (i.e. PIE: ET_DYN with
+             * PT_INTERP) and loaders (i.e. static PIE: ET_DYN
+             * without PT_INTERP, usually the ELF interpreter
+             * itself). Loaders must be loaded away from programs
+             * since the program may otherwise collide with the
+             * loader (especially for ET_EXEC which does not have
+             * a randomized position).
+             *
+             * For example, to handle invocations of
+             * "./ld.so someprog" to test out a new version of
+             * the loader, the subsequent program that the
+             * loader loads must avoid the loader itself, so
+             * they cannot share the same load range. Sufficient
+             * room for the brk must be allocated with the
+             * loader as well, since brk must be available with
+             * the loader.
+             *
+             * Therefore, programs are loaded offset from
+             * ELF_ET_DYN_BASE and loaders are loaded into the
+             * independently randomized mmap region (0 load_bias
+             * without MAP_FIXED nor MAP_FIXED_NOREPLACE).
+             *
+             * See below for "brk" handling details,` which is
+             * also affected by program vs loader and ASLR. */
+            if (interpreter) {
+                /* On ET_DYN with PT_INTERP, we do the ASLR.
+                 * (2 * DEFAULT_MAP_WINDOW_64 / 3)   typically 2/3 of 48-bit VA */
+                load_bias = ELF_ET_DYN_BASE;
+                if (current->flags & PF_RANDOMIZE)
+                    load_bias += arch_mmap_rnd();
+                /* Adjust alignment as requested. */
+                if (alignment)
+                    load_bias &= ~(alignment - 1);
+                elf_flags |= MAP_FIXED_NOREPLACE;
+            } else {
+                /* For ET_DYN without PT_INTERP, we rely on
+                 * the architectures's (potentially ASLR) mmap
+                 * base address (via a load_bias of 0).
+                 *
+                 * When a large alignment is requested, we
+                 * must do the allocation at address "0" right
+                 * now to discover where things will load so
+                 * that we can adjust the resulting alignment.
+                 * In this case (load_bias != 0), we can use
+                 * MAP_FIXED_NOREPLACE to make sure the mapping
+                 * doesn't collide with anything. */
+                if (alignment > ELF_MIN_ALIGN) {
+                    load_bias = elf_load(bprm->file, 0, elf_ppnt, elf_prot, elf_flags, total_size);
+                    if (BAD_ADDR(load_bias)) {
+                        retval = IS_ERR_VALUE(load_bias) ? PTR_ERR((void*)load_bias) : -EINVAL;
+                        goto out_free_dentry;
+                    }
+                    vm_munmap(load_bias, total_size);
+                    /* Adjust alignment as requested. */
+                    if (alignment)
+                        load_bias &= ~(alignment - 1);
+                    elf_flags |= MAP_FIXED_NOREPLACE;
+                } else
+                    load_bias = 0;
+            }
+
+            /* Since load_bias is used for all subsequent loading
+             * calculations, we must lower it by the first vaddr
+             * so that the remaining calculations based on the
+             * ELF vaddrs will be correctly offset. The result
+             * is then page aligned. */
+            load_bias = ELF_PAGESTART(load_bias - vaddr);
         }
 
-        /* Map "eppnt->p_filesz" bytes from "filep" offset "eppnt->p_offset"
-         * into memory at "addr". Memory from "p_filesz" through "p_memsz"
-         * rounded up to the next page is zeroed. */
-        error = elf_load(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size) {
-            if (eppnt->p_filesz) {
-                map_addr = elf_map(filep, addr, eppnt, prot, type, total_size) {
-                    do_mmap();
-                }
-                if (BAD_ADDR(map_addr))
-                    return map_addr;
-                if (eppnt->p_memsz > eppnt->p_filesz) {
-                    zero_start = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_filesz;
-                    zero_end = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
-
-                    if (padzero(zero_start) && (prot & PROT_WRITE))
-                        return -EFAULT;
-                }
-            } else {
-                map_addr = zero_start = ELF_PAGESTART(addr);
-                zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
-            }
-
-            if (eppnt->p_memsz > eppnt->p_filesz) {
-                int error;
-
-                zero_start = ELF_PAGEALIGN(zero_start);
-                zero_end = ELF_PAGEALIGN(zero_end);
-                /* handling a memory break operation (expanding or contracting process memory) */
-                error = vm_brk_flags(zero_start, zero_end - zero_start, prot & PROT_EXEC ? VM_EXEC : 0);
-                if (error)
-                    map_addr = error;
-            }
-            return map_addr;
+        error = elf_load(bprm->file, load_bias + vaddr, elf_ppnt, elf_prot, elf_flags, total_size);
+        if (BAD_ADDR(error)) {
+            retval = IS_ERR_VALUE(error) ? PTR_ERR((void*)error) : -EINVAL;
+            goto out_free_dentry;
         }
 
         if (first_pt_load) {
@@ -20768,6 +21365,9 @@ out_free_interp:
         if (start_data < k)
             start_data = k;
 
+        /* Check to see if the section's size will overflow the
+         * allowed task size. Note that p_filesz must always be
+         * <= p_memsz so it is only necessary to check p_memsz. */
         if (BAD_ADDR(k) || elf_ppnt->p_filesz > elf_ppnt->p_memsz ||
             elf_ppnt->p_memsz > TASK_SIZE ||
             TASK_SIZE - elf_ppnt->p_memsz < k) {
@@ -20783,7 +21383,7 @@ out_free_interp:
         if (end_data < k)
             end_data = k;
         k = elf_ppnt->p_vaddr + elf_ppnt->p_memsz;
-        if (elf_brk < k)
+        if (k > elf_brk)
             elf_brk = k;
     }
 
@@ -20795,81 +21395,51 @@ out_free_interp:
     start_data += load_bias;
     end_data += load_bias;
 
-    current->mm->start_brk = current->mm->brk = ELF_PAGEALIGN(elf_brk);
-
+/* 6: Load the interpreter and pick the entry point */
     if (interpreter) {
-        /* load and map interpreter into current addr space */
         elf_entry = load_elf_interp(interp_elf_ex,
-            interpreter, load_bias, interp_elf_phdata, &arch_state
-        );
+                        interpreter,
+                        load_bias, interp_elf_phdata,
+                        &arch_state);
         if (!IS_ERR_VALUE(elf_entry)) {
+            /* load_elf_interp() returns relocation
+             * adjustment */
             interp_load_addr = elf_entry;
             elf_entry += interp_elf_ex->e_entry;
         }
+        if (BAD_ADDR(elf_entry)) {
+            retval = IS_ERR_VALUE(elf_entry) ? (int)elf_entry : -EINVAL;
+            goto out_free_dentry;
+        }
         reloc_func_desc = interp_load_addr;
 
-        allow_write_access(interpreter);
+        exe_file_allow_write_access(interpreter);
+        fput(interpreter);
+
+        kfree(interp_elf_ex);
+        kfree(interp_elf_phdata);
     } else {
         elf_entry = e_entry;
+        if (BAD_ADDR(elf_entry)) {
+            retval = -EINVAL;
+            goto out_free_dentry;
+        }
     }
 
     kfree(elf_phdata);
 
-    set_binfmt(&elf_format) {
-        mm->binfmt = new;
-    }
+    set_binfmt(&elf_format);
 
-    retval = create_elf_tables(bprm, elf_ex, interp_load_addr, e_entry, phdr_addr) {
-        items = (argc + 1) + (envc + 1) + 1;
-        bprm->p = STACK_ROUND(sp, items);
-        sp = (elf_addr_t __user *)bprm->p;
+/* 7: Build the process environment  */
 
-        /* Populate aux vector */
-        NEW_AUX_ENT(AT_SYSINFO_EHDR, (elf_addr_t)current->mm->context.vdso);
-        NEW_AUX_ENT(AT_CLKTCK, CLOCKS_PER_SEC);
-        NEW_AUX_ENT(AT_PHDR, phdr_addr);
-        NEW_AUX_ENT(AT_PHENT, sizeof(struct elf_phdr));
-        NEW_AUX_ENT(AT_PHNUM, exec->e_phnum);
+#ifdef ARCH_HAS_SETUP_ADDITIONAL_PAGES
+    retval = ARCH_SETUP_ADDITIONAL_PAGES(bprm, elf_ex, !!interpreter);
+    if (retval < 0)
+        goto out;
+#endif /* ARCH_HAS_SETUP_ADDITIONAL_PAGES */
 
-        /* Now, let's put argc (and argv, envp if appropriate) on the stack */
-        if (put_user(argc, sp++))
-            return -EFAULT;
-
-        /* Populate list of argv pointers back to argv strings. */
-        p = mm->arg_end = mm->arg_start;
-        while (argc-- > 0) {
-            size_t len;
-            if (put_user((elf_addr_t)p, sp++))
-                return -EFAULT;
-            len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
-            if (!len || len > MAX_ARG_STRLEN)
-                return -EINVAL;
-            p += len;
-        }
-        if (put_user(0, sp++))
-            return -EFAULT;
-        mm->arg_end = p;
-
-        /* Populate list of envp pointers back to envp strings. */
-        mm->env_end = mm->env_start = p;
-        while (envc-- > 0) {
-            size_t len;
-            if (put_user((elf_addr_t)p, sp++))
-                return -EFAULT;
-            len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
-            if (!len || len > MAX_ARG_STRLEN)
-                return -EINVAL;
-            p += len;
-        }
-        if (put_user(0, sp++))
-            return -EFAULT;
-        mm->env_end = p;
-
-        /* Put the elf_info on the stack in the right place.  */
-        if (copy_to_user(sp, mm->saved_auxv, ei_index * sizeof(elf_addr_t)))
-            return -EFAULT;
-        return 0;
-    }
+    retval = create_elf_tables(bprm, elf_ex, interp_load_addr,
+                   e_entry, phdr_addr);
     if (retval < 0)
         goto out;
 
@@ -20880,29 +21450,662 @@ out_free_interp:
     mm->end_data = end_data;
     mm->start_stack = bprm->p;
 
-    if (current->personality & MMAP_PAGE_ZERO) {
-        error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC, MAP_FIXED | MAP_PRIVATE, 0);
+    elf_coredump_set_mm_eflags(mm, elf_ex->e_flags);
+
+    /**
+     * DOC: "brk" handling
+     *
+     * For architectures with ELF randomization, when executing a
+     * loader directly (i.e. static PIE: ET_DYN without PT_INTERP),
+     * move the brk area out of the mmap region and into the unused
+     * ELF_ET_DYN_BASE region. Since "brk" grows up it may collide
+     * early with the stack growing down or other regions being put
+     * into the mmap region by the kernel (e.g. vdso).
+     *
+     * In the CONFIG_COMPAT_BRK case, though, everything is turned
+     * off because we're not allowed to move the brk at all. */
+    if (!IS_ENABLED(CONFIG_COMPAT_BRK) &&
+        IS_ENABLED(CONFIG_ARCH_HAS_ELF_RANDOMIZE) &&
+        elf_ex->e_type == ET_DYN && !interpreter) {
+        elf_brk = ELF_ET_DYN_BASE;
+        /* This counts as moving the brk, so let brk(2) know. */
+        brk_moved = true;
+    }
+    mm->start_brk = mm->brk = ELF_PAGEALIGN(elf_brk);
+
+    if ((current->flags & PF_RANDOMIZE) && snapshot_randomize_va_space > 1) {
+        /* If we didn't move the brk to ELF_ET_DYN_BASE (above),
+         * leave a gap between .bss and brk. */
+        if (!brk_moved)
+            mm->brk = mm->start_brk = mm->brk + PAGE_SIZE;
+
+        mm->brk = mm->start_brk = arch_randomize_brk(mm);
+        brk_moved = true;
     }
 
-    regs = current_pt_regs() {
-        return ((struct pt_regs *)(THREAD_SIZE + task_stack_page(p)) - 1)
+#ifdef compat_brk_randomized
+    if (brk_moved)
+        current->brk_randomized = 1;
+#endif
+
+    if (current->personality & MMAP_PAGE_ZERO) {
+        /* Why this, you ask???  Well SVr4 maps page 0 as read-only,
+           and some applications "depend" upon this behavior.
+           Since we do not have the power to recompile these, we
+           emulate the SVr4 behavior. Sigh. */
+        error = vm_mmap(NULL, 0, PAGE_SIZE, PROT_READ | PROT_EXEC,
+                MAP_FIXED | MAP_PRIVATE, 0);
+        if (!error)
+            mseal_mmap_page_zero();
     }
+
+    regs = current_pt_regs();
+#ifdef ELF_PLAT_INIT
+    /* The ABI may specify that certain registers be set up in special
+     * ways (on i386 %edx is the address of a DT_FINI function, for
+     * example.  In addition, it may also specify (eg, PowerPC64 ELF)
+     * that the e_entry field is the address of the function descriptor
+     * for the startup routine, rather than the address of the startup
+     * routine itself.  This macro performs whatever initialization to
+     * the regs structure is required as well as any relocations to the
+     * function descriptor entries when executing dynamically links apps. */
+    ELF_PLAT_INIT(regs, reloc_func_desc);
+#endif
 
     finalize_exec(bprm) {
+        /* Store any stack rlimit changes before starting thread. */
+        task_lock(current->group_leader);
         current->signal->rlim[RLIMIT_STACK] = bprm->rlim_stack;
+        task_unlock(current->group_leader);
     }
+    START_THREAD(elf_ex, regs, elf_entry, bprm->p);
+    retval = 0;
+out:
+    return retval;
 
-    START_THREAD(elf_ex, regs, elf_entry, bprm->p) {
-        start_thread(regs, elf_entry, start_stack) {
-            regs->syscallno = previous_syscall;
-            regs->pc = pc;
-            regs->sp = sp;
-        }
-    }
+    /* error cleanup */
+out_free_dentry:
+    kfree(interp_elf_ex);
+    kfree(interp_elf_phdata);
+out_free_file:
+    exe_file_allow_write_access(interpreter);
+    if (interpreter)
+        fput(interpreter);
+out_free_ph:
+    kfree(elf_phdata);
+    goto out;
+}
+
+#define START_THREAD(elf_ex, regs, elf_entry, start_stack)    \
+    start_thread(regs, elf_entry, start_stack)
+
+static inline void start_thread(struct pt_regs *regs, unsigned long pc,
+                unsigned long sp)
+{
+    start_thread_common(regs, pc, PSR_MODE_EL0t);
+    spectre_v4_enable_task_mitigation(current);
+    regs->sp = sp;
+}
+
+void start_thread_common(struct pt_regs *regs, unsigned long pc,
+                       unsigned long pstate)
+{
+    /* Ensure all GPRs are zeroed, and initialize PC + PSTATE.
+     * The SP (or compat SP) will be initialized later. */
+    regs->user_regs = (struct user_pt_regs) {
+        .pc = pc,
+        .pstate = pstate,
+    };
+
+    /* To allow the syscalls:sys_exit_execve tracepoint we need to preserve
+     * syscallno, but do not need orig_x0 or the original GPRs. */
+    regs->orig_x0 = 0;
+
+    /* An exec from a kernel thread won't have an existing PMR value. */
+    if (system_uses_irq_prio_masking())
+        regs->pmr = GIC_PRIO_IRQON;
+
+    /* The pt_regs::stackframe field must remain valid throughout this
+     * function as a stacktrace can be taken at any time. Any user or
+     * kernel task should have a valid final frame. */
+    WARN_ON_ONCE(regs->stackframe.record.fp != 0);
+    WARN_ON_ONCE(regs->stackframe.record.lr != 0);
+    WARN_ON_ONCE(regs->stackframe.type != FRAME_META_TYPE_FINAL);
 }
 ```
 
-## exec_mmap
+### elf_load
+
+```c
+unsigned long elf_load(struct file *filep, unsigned long addr,
+        const struct elf_phdr *eppnt, int prot, int type,
+        unsigned long total_size)
+{
+    unsigned long zero_start, zero_end;
+    unsigned long map_addr;
+
+    if (eppnt->p_filesz) {
+        map_addr = elf_map(filep, addr, eppnt, prot, type, total_size);
+        if (BAD_ADDR(map_addr))
+            return map_addr;
+        if (eppnt->p_memsz > eppnt->p_filesz) {
+            zero_start = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_filesz;
+            zero_end = map_addr + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
+
+            /* Zero the end of the last mapped page but ignore
+             * any errors if the segment isn't writable. */
+            if (padzero(zero_start) && (prot & PROT_WRITE))
+                return -EFAULT;
+        }
+    } else {
+        map_addr = zero_start = ELF_PAGESTART(addr);
+        zero_end = zero_start + ELF_PAGEOFFSET(eppnt->p_vaddr) + eppnt->p_memsz;
+    }
+    if (eppnt->p_memsz > eppnt->p_filesz) {
+        /* Map the last of the segment.
+         * If the header is requesting these pages to be
+         * executable, honour that (ppc32 needs this). */
+        int error;
+
+        zero_start = ELF_PAGEALIGN(zero_start);
+        zero_end = ELF_PAGEALIGN(zero_end);
+
+        error = vm_brk_flags(zero_start, zero_end - zero_start, prot & PROT_EXEC);
+        if (error)
+            map_addr = error;
+    }
+    return map_addr;
+}
+
+unsigned long elf_map(struct file *filep, unsigned long addr,
+        const struct elf_phdr *eppnt, int prot, int type,
+        unsigned long total_size)
+{
+    unsigned long map_addr;
+    unsigned long size = eppnt->p_filesz + ELF_PAGEOFFSET(eppnt->p_vaddr);
+    unsigned long off = eppnt->p_offset - ELF_PAGEOFFSET(eppnt->p_vaddr);
+    addr = ELF_PAGESTART(addr);
+    size = ELF_PAGEALIGN(size);
+
+    /* mmap() will return -EINVAL if given a zero size, but a
+     * segment with zero filesize is perfectly valid */
+    if (!size)
+        return addr;
+
+    /* total_size is the size of the ELF (interpreter) image.
+    * The _first_ mmap needs to know the full size, otherwise
+    * randomization might put this image into an overlapping
+    * position with the ELF binary image. (since size < total_size)
+    * So we first map the 'big' image - and unmap the remainder at
+    * the end. (which unmap is needed for ELF images with holes.) */
+    if (total_size) {
+        total_size = ELF_PAGEALIGN(total_size);
+        map_addr = vm_mmap(filep, addr, total_size, prot, type, off);
+        if (!BAD_ADDR(map_addr))
+            vm_munmap(map_addr+size, total_size-size);
+    } else {
+        map_addr = vm_mmap(filep, addr, size, prot, type, off) {
+            if (unlikely(offset + PAGE_ALIGN(len) < offset))
+                return -EINVAL;
+            if (unlikely(offset_in_page(offset)))
+                return -EINVAL;
+
+            return vm_mmap_pgoff(file, addr, len, prot, flag, offset >> PAGE_SHIFT);
+        }
+    }
+
+    if ((type & MAP_FIXED_NOREPLACE) &&
+        PTR_ERR((void *)map_addr) == -EEXIST)
+        pr_info("%d (%s): Uhuuh, elf segment at %px requested but the memory is mapped already\n",
+            task_pid_nr(current), current->comm, (void *)addr);
+
+    return(map_addr);
+}
+
+int vm_brk_flags(unsigned long addr, unsigned long request, bool is_exec)
+{
+    const vma_flags_t vma_flags = is_exec ?
+        mk_vma_flags(VMA_EXEC_BIT) : EMPTY_VMA_FLAGS;
+    struct mm_struct *mm = current->mm;
+    struct vm_area_struct *vma = NULL;
+    unsigned long len;
+    int ret;
+    bool populate;
+    LIST_HEAD(uf);
+    VMA_ITERATOR(vmi, mm, addr);
+
+    len = PAGE_ALIGN(request);
+    if (len < request)
+        return -ENOMEM;
+    if (!len)
+        return 0;
+
+    if (mmap_write_lock_killable(mm))
+        return -EINTR;
+
+    ret = check_brk_limits(addr, len);
+    if (ret)
+        goto limits_failed;
+
+    ret = do_vmi_munmap(&vmi, mm, addr, len, &uf, 0);
+    if (ret)
+        goto munmap_failed;
+
+    vma = vma_prev(&vmi);
+    ret = do_brk_flags(&vmi, vma, addr, len, vma_flags);
+    populate = vma_flags_test(&mm->def_vma_flags, VMA_LOCKED_BIT);
+    mmap_write_unlock(mm);
+    userfaultfd_unmap_complete(mm, &uf);
+    if (populate && !ret)
+        mm_populate(addr, len);
+    return ret;
+
+munmap_failed:
+limits_failed:
+    mmap_write_unlock(mm);
+    return ret;
+}
+```
+
+## begin_new_exec
+
+```c
+int begin_new_exec(struct linux_binprm * bprm)
+{
+    struct task_struct *me = current;
+    int retval;
+
+    /* A pending PT_INTERP substitution this format cannot consume. */
+    if (bprm->loader)
+        return -ENOEXEC;
+
+    /* Once we are committed compute the creds */
+    retval = bprm_creds_from_file(bprm);
+    if (retval)
+        return retval;
+
+    /* This tracepoint marks the point before flushing the old exec where
+     * the current task is still unchanged, but errors are fatal (point of
+     * no return). The later "sched_process_exec" tracepoint is called after
+     * the current task has successfully switched to the new exec. */
+    trace_sched_prepare_exec(current, bprm);
+
+    /* Ensure all future errors are fatal. */
+    bprm->point_of_no_return = true;
+
+    /* Make this the only thread in the thread group */
+    retval = de_thread(me);
+    if (retval)
+        goto out;
+
+    /* This must be done here to ensure that POSIX CPU timers which were
+     * armed on the current task are dequeued from me::posix_cputimers.
+     * Otherwise in case of a TID switch the deletion of the related POSIX
+     * timer would not remove an enqueued timer because the TID lookup
+     * of the old TID fails. */
+    posixtimer_exec(me);
+
+    /* see the comment in check_unsafe_exec() */
+    current->fs->in_exec = 0;
+    /* Cancel any io_uring activity across execve */
+    io_uring_task_cancel();
+
+    /* Ensure the files table is not shared. */
+    retval = unshare_files();
+    if (retval)
+        goto out;
+
+    /* We have to apply CLOEXEC before we change whether the process is
+     * dumpable (in setup_new_exec) to avoid a race with a process in userspace
+     * trying to access the should-be-closed file descriptors of a process
+     * undergoing exec(2).
+     *
+     * This can block on filesystem ->flush() handlers, including waiting
+     * for FUSE daemons, so do it before exec_mmap takes the
+     * exec_update_lock.
+     * This must happen after the point of no return, and after unsharing
+     * the FD table. */
+    do_close_on_exec(me->files);
+
+    /* Must be called _before_ exec_mmap() as bprm->mm is
+     * not visible until then. Doing it here also ensures
+     * we don't race against replace_mm_exe_file(). */
+    retval = set_mm_exe_file(bprm->mm, bprm_identity_file(bprm));
+    if (retval)
+        goto out;
+
+    /* If the binary is not readable then enforce mm->dumpable=0 */
+    would_dump(bprm, bprm->file);
+    if (bprm->have_execfd)
+        would_dump(bprm, bprm->executable);
+
+    /* Release all of the old mmap stuff */
+    acct_arg_size(bprm, 0);
+    retval = exec_mmap(bprm);
+    if (retval)
+        goto out;
+
+    bprm->mm = NULL;
+
+    retval = exec_task_namespaces();
+    if (retval)
+        goto out_unlock;
+
+    /* Make the signal table private. */
+    retval = unshare_sighand(me);
+    if (retval)
+        goto out_unlock;
+
+    me->flags &= ~(PF_RANDOMIZE | PF_FORKNOEXEC |
+                    PF_NOFREEZE | PF_NO_SETAFFINITY);
+    flush_thread();
+    me->personality &= ~bprm->per_clear;
+
+    clear_syscall_work_syscall_user_dispatch(me);
+
+    if (bprm->secureexec) {
+        /* Make sure parent cannot signal privileged process. */
+        me->pdeath_signal = 0;
+
+        /* For secureexec, reset the stack limit to sane default to
+         * avoid bad behavior from the prior rlimits. This has to
+         * happen before arch_pick_mmap_layout(), which examines
+         * RLIMIT_STACK, but after the point of no return to avoid
+         * needing to clean up the change on failure. */
+        if (bprm->rlim_stack.rlim_cur > _STK_LIM)
+            bprm->rlim_stack.rlim_cur = _STK_LIM;
+    }
+
+    me->sas_ss_sp = me->sas_ss_size = 0;
+
+    /* Figure out dumpability. Note that this checking only of current
+     * is wrong, but userspace depends on it. This should be testing
+     * bprm->secureexec instead. */
+    if (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP ||
+        !(uid_eq(current_euid(), current_uid()) &&
+          gid_eq(current_egid(), current_gid())))
+        task_exec_state_set_dumpable(suid_dumpable);
+    else
+        task_exec_state_set_dumpable(TASK_DUMPABLE_OWNER);
+
+    perf_event_exec();
+
+    /* If the original filename was empty, alloc_bprm() made up a path
+     * that will probably not be useful to admins running ps or similar.
+     * Let's fix it up to be something reasonable. */
+    if (bprm->comm_from_dentry) {
+        struct file *comm_file = bprm_identity_file(bprm);
+
+        /* Hold RCU lock to keep the name from being freed behind our back.
+         * Use acquire semantics to make sure the terminating NUL from
+         * __d_alloc() is seen.
+         *
+         * Note, we're deliberately sloppy here. We don't need to care about
+         * detecting a concurrent rename and just want a terminated name. */
+        rcu_read_lock();
+        __set_task_comm(me, smp_load_acquire(&comm_file->f_path.dentry->d_name.name), true);
+        rcu_read_unlock();
+    } else {
+        __set_task_comm(me, kbasename(bprm->filename), true);
+    }
+
+    /* An exec changes our domain. We are no longer part of the thread
+       group */
+    WRITE_ONCE(me->self_exec_id, me->self_exec_id + 1);
+    flush_signal_handlers(me, 0);
+
+    retval = set_cred_ucounts(bprm->cred);
+    if (retval < 0)
+        goto out_unlock;
+
+    /* install the new credentials for this executable */
+    security_bprm_committing_creds(bprm);
+
+    commit_creds(bprm->cred);
+    bprm->cred = NULL;
+
+    /* Disable monitoring for regular users
+     * when executing setuid binaries. Must
+     * wait until new credentials are committed
+     * by commit_creds() above */
+    if (task_exec_state_get_dumpable(me) != TASK_DUMPABLE_OWNER)
+        perf_event_exit_task(me);
+    /* cred_guard_mutex must be held at least to this point to prevent
+     * ptrace_attach() from altering our determination of the task's
+     * credentials; any time after this it may be unlocked. */
+    security_bprm_committed_creds(bprm);
+
+    /* Pass the opened binary to the interpreter. */
+    if (bprm->have_execfd) {
+        struct file *executable = bprm->executable;
+
+        /* mm->exe_file carries its own write denial now so drop it. */
+        exe_file_allow_write_access(executable);
+        bprm->executable = NULL;
+        retval = FD_ADD(0, executable);
+        if (retval < 0) {
+            /* The reference was not consumed. */
+            fput(executable);
+            goto out_unlock;
+        }
+        bprm->execfd = retval;
+    }
+    return 0;
+
+out_unlock:
+    up_write(&me->signal->exec_update_lock);
+    if (!bprm->cred)
+        mutex_unlock(&me->signal->cred_guard_mutex);
+
+out:
+    return retval;
+}
+```
+
+### de_thread
+
+```c
+int de_thread(struct task_struct *tsk)
+{
+    struct signal_struct *sig = tsk->signal;
+    struct sighand_struct *oldsighand = tsk->sighand;
+    spinlock_t *lock = &oldsighand->siglock;
+
+    if (thread_group_empty(tsk))
+        goto no_thread_group;
+
+    /* Kill all other threads in the thread group. */
+    spin_lock_irq(lock);
+    if ((sig->flags & SIGNAL_GROUP_EXIT) || sig->group_exec_task) {
+        /* Another group action in progress, just
+         * return so that the signal is processed. */
+        spin_unlock_irq(lock);
+        return -EAGAIN;
+    }
+
+    sig->group_exec_task = tsk;
+    sig->notify_count = zap_other_threads(tsk);
+    if (!thread_group_leader(tsk))
+        sig->notify_count--;
+
+    while (sig->notify_count) {
+        __set_current_state(TASK_KILLABLE);
+        spin_unlock_irq(lock);
+        schedule();
+        if (__fatal_signal_pending(tsk))
+            goto killed;
+        spin_lock_irq(lock);
+    }
+    spin_unlock_irq(lock);
+
+    /* At this point all other threads have exited, all we have to
+     * do is to wait for the thread group leader to become inactive,
+     * and to assume its PID: */
+    if (!thread_group_leader(tsk)) {
+        struct task_struct *leader = tsk->group_leader;
+
+        for (;;) {
+            cgroup_threadgroup_change_begin(tsk);
+            write_lock_irq(&tasklist_lock);
+            /* exit_notify() notifies group_exec_task if notify_count < 0 */
+            sig->notify_count = -1;
+            if (likely(leader->exit_state))
+                break;
+            __set_current_state(TASK_KILLABLE);
+            write_unlock_irq(&tasklist_lock);
+            cgroup_threadgroup_change_end(tsk);
+            schedule();
+            if (__fatal_signal_pending(tsk))
+                goto killed;
+        }
+
+        /* The only record we have of the real-time age of a
+         * process, regardless of execs it's done, is start_time.
+         * All the past CPU time is accumulated in signal_struct
+         * from sister threads now dead.  But in this non-leader
+         * exec, nothing survives from the original leader thread,
+         * whose birth marks the true age of this process now.
+         * When we take on its identity by switching to its PID, we
+         * also take its birthdate (always earlier than our own). */
+        tsk->start_time = leader->start_time;
+        tsk->start_boottime = leader->start_boottime;
+
+        BUG_ON(!same_thread_group(leader, tsk));
+        /* An exec() starts a new thread group with the
+         * TGID of the previous thread group. Rehash the
+         * two threads with a switched PID, and release
+         * the former thread group leader: */
+
+        /* Become a process group leader with the old leader's pid.
+         * The old leader becomes a thread of the this thread group. */
+        exchange_tids(tsk, leader);
+        transfer_pid(leader, tsk, PIDTYPE_TGID);
+        transfer_pid(leader, tsk, PIDTYPE_PGID);
+        transfer_pid(leader, tsk, PIDTYPE_SID);
+
+        /* tsk replaces the leader in the global task list. */
+        list_replace_rcu(&leader->tasks, &tsk->tasks);
+        /* tsk replaces the leader in the parent's child list. */
+        list_replace_init(&leader->sibling, &tsk->sibling);
+
+        tsk->group_leader = tsk;
+        leader->group_leader = tsk;
+
+        tsk->exit_signal = SIGCHLD;
+        leader->exit_signal = -1;
+
+        BUG_ON(leader->exit_state != EXIT_ZOMBIE);
+        leader->exit_state = EXIT_DEAD;
+        /* We are going to release_task()->ptrace_unlink() silently,
+         * the tracer can sleep in do_wait(). EXIT_DEAD guarantees
+         * the tracer won't block again waiting for this thread. */
+        if (unlikely(leader->ptrace))
+            __wake_up_parent(leader, leader->parent);
+        write_unlock_irq(&tasklist_lock);
+        cgroup_threadgroup_change_end(tsk);
+
+        release_task(leader);
+    }
+
+    sig->group_exec_task = NULL;
+    sig->notify_count = 0;
+
+no_thread_group:
+    /* we have changed execution domain */
+    tsk->exit_signal = SIGCHLD;
+
+    BUG_ON(!thread_group_leader(tsk));
+    return 0;
+
+killed:
+    /* protects against exit_notify() and __exit_signal() */
+    read_lock(&tasklist_lock);
+    sig->group_exec_task = NULL;
+    sig->notify_count = 0;
+    read_unlock(&tasklist_lock);
+    return -EAGAIN;
+}
+```
+
+### io_uring_task_cancel
+
+### unshare_files
+
+```c
+int unshare_files(void)
+{
+    struct task_struct *task = current;
+    struct files_struct *old, *copy = NULL;
+    int error;
+
+    error = unshare_fd(CLONE_FILES, &copy);
+    if (error || !copy)
+        return error;
+
+    old = task->files;
+    task_lock(task);
+    task->files = copy;
+    task_unlock(task);
+    put_files_struct(old);
+    return 0;
+}
+
+static int unshare_fd(unsigned long unshare_flags, struct files_struct **new_fdp)
+{
+    struct files_struct *fd = current->files;
+
+    if ((unshare_flags & CLONE_FILES) && (fd && atomic_read(&fd->count) > 1)) {
+        fd = dup_fd(fd, NULL);
+        if (IS_ERR(fd))
+            return PTR_ERR(fd);
+        *new_fdp = fd;
+    }
+
+    return 0;
+}
+```
+
+### do_close_on_exec
+
+```c
+void do_close_on_exec(struct files_struct *files)
+{
+    unsigned i;
+    struct fdtable *fdt;
+
+    /* exec unshares first */
+    spin_lock(&files->file_lock);
+    for (i = 0; ; i++) {
+        unsigned long set;
+        unsigned fd = i * BITS_PER_LONG;
+        fdt = files_fdtable(files);
+        if (fd >= fdt->max_fds)
+            break;
+        set = fdt->close_on_exec[i];
+        if (!set)
+            continue;
+        fdt->close_on_exec[i] = 0;
+        for ( ; set ; fd++, set >>= 1) {
+            struct file *file;
+            if (!(set & 1))
+                continue;
+            file = fdt->fd[fd];
+            if (!file)
+                continue;
+            rcu_assign_pointer(fdt->fd[fd], NULL);
+            __put_unused_fd(files, fd);
+            spin_unlock(&files->file_lock);
+            filp_close(file, files);
+            cond_resched();
+            spin_lock(&files->file_lock);
+        }
+
+    }
+    spin_unlock(&files->file_lock);
+}
+```
+
+### exec_mmap
 
 ```c
 static int exec_mmap(struct linux_binprm *bprm)
@@ -20921,7 +22124,10 @@ static int exec_mmap(struct linux_binprm *bprm)
     tsk = current;
     old_mm = current->mm;
     /* Clean up futexes and release the mm */
-    mm_exit_exec_release(tsk, old_mm);
+    mm_exit_exec_release(tsk, old_mm) {
+        futex_exit_exec_release(tsk);
+        mm_release(tsk, mm);
+    }
 
     ret = down_write_killable(&tsk->signal->exec_update_lock);
     if (ret)
@@ -20962,7 +22168,11 @@ static int exec_mmap(struct linux_binprm *bprm)
      * activate_mm yet. */
     if (!IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
         local_irq_enable();
-    activate_mm(active_mm, mm);
+
+    activate_mm(active_mm, mm) {
+        switch_mm(prev_mm, next_mm, current);
+    }
+
     if (IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
         local_irq_enable();
     lru_gen_add_mm(mm);
@@ -20977,6 +22187,552 @@ static int exec_mmap(struct linux_binprm *bprm)
         mmdrop_lazy_tlb(active_mm);
     }
     futex_exec_done(tsk);
+    return 0;
+}
+```
+
+### exec_task_namespaces
+
+### unshare_sighand
+
+```c
+int unshare_sighand(struct task_struct *me)
+{
+    struct sighand_struct *oldsighand = me->sighand;
+
+    if (refcount_read(&oldsighand->count) != 1) {
+        struct sighand_struct *newsighand;
+        /* This ->sighand is shared with the CLONE_SIGHAND
+         * but not CLONE_THREAD task, switch to the new one. */
+        newsighand = kmem_cache_alloc(sighand_cachep, GFP_KERNEL);
+        if (!newsighand)
+            return -ENOMEM;
+
+        refcount_set(&newsighand->count, 1);
+
+        write_lock_irq(&tasklist_lock);
+        spin_lock(&oldsighand->siglock);
+        memcpy(newsighand->action, oldsighand->action, sizeof(newsighand->action));
+        rcu_assign_pointer(me->sighand, newsighand);
+        spin_unlock(&oldsighand->siglock);
+        write_unlock_irq(&tasklist_lock);
+
+        __cleanup_sighand(oldsighand) {
+            if (refcount_dec_and_test(&sighand->count)) {
+                signalfd_cleanup(sighand);
+                /* sighand_cachep is SLAB_TYPESAFE_BY_RCU so we can free it
+                * without an RCU grace period, see __lock_task_sighand(). */
+                kmem_cache_free(sighand_cachep, sighand);
+            }
+        }
+    }
+    return 0;
+}
+```
+
+### flush_thread
+
+```c
+void flush_thread(void)
+{
+    fpsimd_flush_thread();
+    tls_thread_flush();
+    flush_ptrace_hw_breakpoint(current);
+    flush_tagged_addr_state();
+    flush_poe();
+    flush_gcs();
+}
+```
+
+## setup_new_exec
+
+```c
+void setup_new_exec(struct linux_binprm * bprm)
+{
+    /* Setup things that can depend upon the personality */
+    struct task_struct *me = current;
+
+    arch_pick_mmap_layout(me->mm, &bprm->rlim_stack);
+
+    arch_setup_new_exec();
+
+    /* Set the new mm task size. We have to do that late because it may
+     * depend on TIF_32BIT which is only updated in flush_thread() on
+     * some architectures like powerpc */
+    me->mm->task_size = TASK_SIZE;
+    up_write(&me->signal->exec_update_lock);
+    mutex_unlock(&me->signal->cred_guard_mutex);
+
+    /* The exec locks are dropped: release the old address space now. */
+    if (bprm->old_mm) {
+        exec_mm_put_old(bprm->old_mm);
+        bprm->old_mm = NULL;
+    }
+}
+
+void arch_pick_mmap_layout(struct mm_struct *mm, const struct rlimit *rlim_stack)
+{
+    unsigned long random_factor = 0UL;
+
+    if (current->flags & PF_RANDOMIZE)
+        random_factor = arch_mmap_rnd();
+
+    if (mmap_is_legacy(rlim_stack)) {
+        mm->mmap_base = TASK_UNMAPPED_BASE + random_factor;
+        mm_flags_clear(MMF_TOPDOWN, mm);
+    } else {
+        mm->mmap_base = mmap_base(random_factor, rlim_stack);
+        mm_flags_set(MMF_TOPDOWN, mm);
+    }
+}
+
+unsigned long mmap_base(const unsigned long rnd, const struct rlimit *rlim_stack)
+{
+#ifdef CONFIG_STACK_GROWSUP
+    /* For an upwards growing stack the calculation is much simpler.
+     * Memory for the maximum stack size is reserved at the top of the
+     * task. mmap_base starts directly below the stack and grows
+     * downwards. */
+    return PAGE_ALIGN_DOWN(mmap_upper_limit(rlim_stack) - rnd);
+#else
+    unsigned long gap = rlim_stack->rlim_cur;
+    unsigned long pad = stack_guard_gap;
+
+    /* Account for stack randomization if necessary */
+    if (current->flags & PF_RANDOMIZE)
+        pad += (STACK_RND_MASK << PAGE_SHIFT);
+
+    /* Values close to RLIM_INFINITY can overflow. */
+    if (gap + pad > gap)
+        gap += pad;
+
+    if (gap < MIN_GAP && MIN_GAP < MAX_GAP)
+        gap = MIN_GAP;
+    else if (gap > MAX_GAP)
+        gap = MAX_GAP;
+
+    return PAGE_ALIGN(STACK_TOP - gap - rnd);
+#endif
+}
+
+void arch_setup_new_exec(void)
+{
+    unsigned long mmflags = 0;
+
+    if (is_compat_task()) {
+        mmflags = MMCF_AARCH32;
+
+        /* Restrict the CPU affinity mask for a 32-bit task so that
+         * it contains only 32-bit-capable CPUs.
+         *
+         * From the perspective of the task, this looks similar to
+         * what would happen if the 64-bit-only CPUs were hot-unplugged
+         * at the point of execve(), although we try a bit harder to
+         * honour the cpuset hierarchy. */
+        if (static_branch_unlikely(&arm64_mismatched_32bit_el0))
+            force_compatible_cpus_allowed_ptr(current);
+    } else if (static_branch_unlikely(&arm64_mismatched_32bit_el0)) {
+        relax_compatible_cpus_allowed_ptr(current);
+    }
+
+    current->mm->context.flags = mmflags;
+    ptrauth_thread_init_user();
+    mte_thread_init_user();
+    do_set_tsc_mode(PR_TSC_ENABLE);
+
+    if (task_spec_ssb_noexec(current)) {
+        arch_prctl_spec_ctrl_set(current, PR_SPEC_STORE_BYPASS,
+                     PR_SPEC_ENABLE);
+    }
+}
+```
+
+## setup_arg_pages
+
+```txt
+STACK_TOP  (256 TB, or 0xffff0000 if 32-bit)
+    ~~~ randomize_stack_top: 0..1GB (64-bit) / 0..8MB (32-bit) ~~~
+    vma->vm_end          high edge of the stack VMA
+    [ extra 128 KB     ]
+    [ arg/env strings  ]  <-- bprm->p / mm->arg_start
+    vma->vm_start        grows further down on fault
+
+    ~~~ mmap_base gap (rlimit + guard + STACK_RND_MASK) ~~~
+    mmap_base
+```
+
+```c
+int setup_arg_pages(struct linux_binprm *bprm,
+            unsigned long stack_top,
+            int executable_stack)
+{
+    int ret;
+    unsigned long stack_shift;
+    struct mm_struct *mm = current->mm;
+    struct vm_area_struct *vma = bprm->vma;
+    struct vm_area_struct *prev = NULL;
+    vm_flags_t vm_flags;
+    unsigned long stack_base;
+    unsigned long stack_size;
+    unsigned long stack_expand;
+    unsigned long rlim_stack;
+    struct mmu_gather tlb;
+    struct vma_iterator vmi;
+
+#ifdef CONFIG_STACK_GROWSUP
+    /* Limit stack size */
+    stack_base = bprm->rlim_stack.rlim_max;
+
+    stack_base = calc_max_stack_size(stack_base);
+
+    /* Add space for stack randomization. */
+    if (current->flags & PF_RANDOMIZE)
+        stack_base += (STACK_RND_MASK << PAGE_SHIFT);
+
+    /* Make sure we didn't let the argument array grow too large. */
+    if (vma->vm_end - vma->vm_start > stack_base)
+        return -ENOMEM;
+
+    stack_base = PAGE_ALIGN(stack_top - stack_base);
+
+    stack_shift = vma->vm_start - stack_base;
+    mm->arg_start = bprm->p - stack_shift;
+    bprm->p = vma->vm_end - stack_shift;
+#else
+    stack_top = arch_align_stack(stack_top);
+    stack_top = PAGE_ALIGN(stack_top);
+
+    if (unlikely(stack_top < mmap_min_addr) ||
+        unlikely(vma->vm_end - vma->vm_start >= stack_top - mmap_min_addr))
+        return -ENOMEM;
+
+    stack_shift = vma->vm_end - stack_top;
+
+    bprm->p -= stack_shift;
+    mm->arg_start = bprm->p;
+#endif
+
+    bprm->exec -= stack_shift;
+
+    if (mmap_write_lock_killable(mm))
+        return -EINTR;
+
+    vm_flags = VM_STACK_FLAGS;
+
+    /* Adjust stack execute permissions; explicitly enable for
+     * EXSTACK_ENABLE_X, disable for EXSTACK_DISABLE_X and leave alone
+     * (arch default) otherwise. */
+    if (unlikely(executable_stack == EXSTACK_ENABLE_X))
+        vm_flags |= VM_EXEC;
+    else if (executable_stack == EXSTACK_DISABLE_X)
+        vm_flags &= ~VM_EXEC;
+    vm_flags |= mm->def_flags;
+    vm_flags |= VM_STACK_INCOMPLETE_SETUP;
+
+    vma_iter_init(&vmi, mm, vma->vm_start);
+
+    tlb_gather_mmu(&tlb, mm);
+    ret = mprotect_fixup(&vmi, &tlb, vma, &prev, vma->vm_start, vma->vm_end,
+            vm_flags);
+    tlb_finish_mmu(&tlb);
+
+    if (ret)
+        goto out_unlock;
+    BUG_ON(prev != vma);
+
+    if (unlikely(vm_flags & VM_EXEC)) {
+        pr_warn_once("process '%pD4' started with executable stack\n",
+                 bprm->file);
+    }
+
+    /* Move stack pages down in memory. */
+    if (stack_shift) {
+        /* During bprm_mm_init(), we create a temporary stack at STACK_TOP_MAX.  Once
+         * the binfmt code determines where the new stack should reside, we shift it to
+         * its final location. */
+        ret = relocate_vma_down(vma, stack_shift);
+        if (ret)
+            goto out_unlock;
+    }
+
+    /* mprotect_fixup is overkill to remove the temporary stack flags */
+    vm_flags_clear(vma, VM_STACK_INCOMPLETE_SETUP);
+
+    stack_expand = 131072UL; /* randomly 32*4k (or 2*64k) pages, 128 KB */
+    stack_size = vma->vm_end - vma->vm_start;
+    /* Align this down to a page boundary as expand_stack
+     * will align it up. */
+    rlim_stack = bprm->rlim_stack.rlim_cur & PAGE_MASK;
+
+    stack_expand = min(rlim_stack, stack_size + stack_expand);
+
+#ifdef CONFIG_STACK_GROWSUP
+    stack_base = vma->vm_start + stack_expand;
+#else
+    stack_base = vma->vm_end - stack_expand;
+#endif
+    current->mm->start_stack = bprm->p;
+    ret = expand_stack_locked(vma, stack_base);
+    if (ret)
+        ret = -EFAULT;
+
+out_unlock:
+    mmap_write_unlock(mm);
+    return ret;
+}
+
+int relocate_vma_down(struct vm_area_struct *vma, unsigned long shift)
+{
+    /* The process proceeds as follows:
+     *
+     * 1) Use shift to calculate the new vma endpoints.
+     * 2) Extend vma to cover both the old and new ranges.  This ensures the
+     *    arguments passed to subsequent functions are consistent.
+     * 3) Move vma's page tables to the new range.
+     * 4) Free up any cleared pgd range.
+     * 5) Shrink the vma to cover only the new range. */
+
+    struct mm_struct *mm = vma->vm_mm;
+    unsigned long old_start = vma->vm_start;
+    unsigned long old_end = vma->vm_end;
+    unsigned long length = old_end - old_start;
+    unsigned long new_start = old_start - shift;
+    unsigned long new_end = old_end - shift;
+    VMA_ITERATOR(vmi, mm, new_start);
+    VMG_STATE(vmg, mm, &vmi, new_start, old_end, EMPTY_VMA_FLAGS,
+          vma_start_pgoff(vma), vma_start_anon_pgoff(vma));
+    struct vm_area_struct *next;
+    struct mmu_gather tlb;
+    PAGETABLE_MOVE(pmc, vma, vma, old_start, new_start, length);
+
+    BUG_ON(new_start > new_end);
+
+    /* ensure there are no vmas between where we want to go
+     * and where we are */
+    if (vma != vma_next(&vmi))
+        return -EFAULT;
+
+    vma_iter_prev_range(&vmi);
+    /* cover the whole range: [new_start, old_end) */
+    vmg.target = vma;
+    if (vma_expand(&vmg))
+        return -ENOMEM;
+
+    /* move the page tables downwards, on failure we rely on
+     * process cleanup to remove whatever mess we made. */
+    pmc.for_stack = true;
+    if (length != move_page_tables(&pmc))
+        return -ENOMEM;
+
+    tlb_gather_mmu(&tlb, mm);
+    next = vma_next(&vmi);
+    if (new_end > old_start) {
+        /* when the old and new regions overlap clear from new_end. */
+        free_pgd_range(&tlb, new_end, old_end, new_end,
+            next ? next->vm_start : USER_PGTABLES_CEILING);
+    } else {
+        /* otherwise, clean from old_start; this is done to not touch
+         * the address space in [new_end, old_start) some architectures
+         * have constraints on va-space that make this illegal (IA64) -
+         * for the others its just a little faster. */
+        free_pgd_range(&tlb, old_start, old_end, new_end,
+            next ? next->vm_start : USER_PGTABLES_CEILING);
+    }
+    tlb_finish_mmu(&tlb);
+
+    vma_prev(&vmi);
+    /* Shrink the vma to just the new range */
+    return vma_shrink(&vmi, vma, new_end);
+}
+```
+
+## create_elf_tables
+
+```c
+static int
+create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
+        unsigned long interp_load_addr,
+        unsigned long e_entry, unsigned long phdr_addr)
+{
+    struct mm_struct *mm = current->mm;
+    unsigned long p = bprm->p;
+    int argc = bprm->argc;
+    int envc = bprm->envc;
+    elf_addr_t __user *sp;
+    elf_addr_t __user *u_platform;
+    elf_addr_t __user *u_base_platform;
+    elf_addr_t __user *u_rand_bytes;
+    const char *k_platform = ELF_PLATFORM;
+    const char *k_base_platform = ELF_BASE_PLATFORM;
+    unsigned char k_rand_bytes[16];
+    int items;
+    elf_addr_t *elf_info;
+    int ei_index;
+    const struct cred *cred = current_cred();
+    struct vm_area_struct *vma;
+
+    /* In some cases (e.g. Hyper-Threading), we want to avoid L1
+     * evictions by the processes running on the same package. One
+     * thing we can do is to shuffle the initial stack for them. */
+
+    p = arch_align_stack(p);
+
+    /* If this architecture has a platform capability string, copy it
+     * to userspace.  In some cases (Sparc), this info is impossible
+     * for userspace to get any other way, in others (i386) it is
+     * merely difficult. */
+    u_platform = NULL;
+    if (k_platform) {
+        size_t len = strlen(k_platform) + 1;
+
+        u_platform = (elf_addr_t __user *)STACK_ALLOC(p, len);
+        if (copy_to_user(u_platform, k_platform, len))
+            return -EFAULT;
+    }
+
+    /* If this architecture has a "base" platform capability
+     * string, copy it to userspace. */
+    u_base_platform = NULL;
+    if (k_base_platform) {
+        size_t len = strlen(k_base_platform) + 1;
+
+        u_base_platform = (elf_addr_t __user *)STACK_ALLOC(p, len);
+        if (copy_to_user(u_base_platform, k_base_platform, len))
+            return -EFAULT;
+    }
+
+    /* Generate 16 random bytes for userspace PRNG seeding. */
+    get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
+    u_rand_bytes = (elf_addr_t __user *)
+               STACK_ALLOC(p, sizeof(k_rand_bytes));
+    if (copy_to_user(u_rand_bytes, k_rand_bytes, sizeof(k_rand_bytes)))
+        return -EFAULT;
+
+    /* Create the ELF interpreter info */
+    elf_info = (elf_addr_t *)mm->saved_auxv;
+    /* update AT_VECTOR_SIZE_BASE if the number of NEW_AUX_ENT() changes */
+#define NEW_AUX_ENT(id, val) \
+    do { \
+        *elf_info++ = id; \
+        *elf_info++ = val; \
+    } while (0)
+
+#ifdef ARCH_DLINFO
+    /* ARCH_DLINFO must come first so PPC can do its special alignment of
+     * AUXV.
+     * update AT_VECTOR_SIZE_ARCH if the number of NEW_AUX_ENT() in
+     * ARCH_DLINFO changes */
+    ARCH_DLINFO;
+#endif
+    NEW_AUX_ENT(AT_HWCAP, ELF_HWCAP);
+    NEW_AUX_ENT(AT_PAGESZ, ELF_EXEC_PAGESIZE);
+    NEW_AUX_ENT(AT_CLKTCK, CLOCKS_PER_SEC);
+    NEW_AUX_ENT(AT_PHDR, phdr_addr);
+    NEW_AUX_ENT(AT_PHENT, sizeof(struct elf_phdr));
+    NEW_AUX_ENT(AT_PHNUM, exec->e_phnum);
+    NEW_AUX_ENT(AT_BASE, interp_load_addr);
+    NEW_AUX_ENT(AT_FLAGS, bprm_at_flags(bprm));
+    NEW_AUX_ENT(AT_ENTRY, e_entry);
+    NEW_AUX_ENT(AT_UID, from_kuid_munged(cred->user_ns, cred->uid));
+    NEW_AUX_ENT(AT_EUID, from_kuid_munged(cred->user_ns, cred->euid));
+    NEW_AUX_ENT(AT_GID, from_kgid_munged(cred->user_ns, cred->gid));
+    NEW_AUX_ENT(AT_EGID, from_kgid_munged(cred->user_ns, cred->egid));
+    NEW_AUX_ENT(AT_SECURE, bprm->secureexec);
+    NEW_AUX_ENT(AT_RANDOM, (elf_addr_t)(unsigned long)u_rand_bytes);
+#ifdef ELF_HWCAP2
+    NEW_AUX_ENT(AT_HWCAP2, ELF_HWCAP2);
+#endif
+#ifdef ELF_HWCAP3
+    NEW_AUX_ENT(AT_HWCAP3, ELF_HWCAP3);
+#endif
+#ifdef ELF_HWCAP4
+    NEW_AUX_ENT(AT_HWCAP4, ELF_HWCAP4);
+#endif
+    NEW_AUX_ENT(AT_EXECFN, bprm->exec);
+    if (k_platform) {
+        NEW_AUX_ENT(AT_PLATFORM,
+                (elf_addr_t)(unsigned long)u_platform);
+    }
+    if (k_base_platform) {
+        NEW_AUX_ENT(AT_BASE_PLATFORM,
+                (elf_addr_t)(unsigned long)u_base_platform);
+    }
+    if (bprm->have_execfd) {
+        NEW_AUX_ENT(AT_EXECFD, bprm->execfd);
+    }
+#ifdef CONFIG_RSEQ
+    NEW_AUX_ENT(AT_RSEQ_FEATURE_SIZE, offsetof(struct rseq, end));
+    NEW_AUX_ENT(AT_RSEQ_ALIGN, rseq_alloc_align());
+#endif
+#undef NEW_AUX_ENT
+    /* AT_NULL is zero; clear the rest too */
+    memset(elf_info, 0, (char *)mm->saved_auxv +
+            sizeof(mm->saved_auxv) - (char *)elf_info);
+
+    /* And advance past the AT_NULL entry.  */
+    elf_info += 2;
+
+    ei_index = elf_info - (elf_addr_t *)mm->saved_auxv;
+    sp = STACK_ADD(p, ei_index);
+
+    items = (argc + 1) + (envc + 1) + 1;
+    bprm->p = STACK_ROUND(sp, items);
+
+    /* Point sp at the lowest address on the stack */
+#ifdef CONFIG_STACK_GROWSUP
+    sp = (elf_addr_t __user *)bprm->p - items - ei_index;
+    bprm->exec = (unsigned long)sp; /* XXX: PARISC HACK */
+#else
+    sp = (elf_addr_t __user *)bprm->p;
+#endif
+
+
+    /* Grow the stack manually; some architectures have a limit on how
+     * far ahead a user-space access may be in order to grow the stack. */
+    if (mmap_write_lock_killable(mm))
+        return -EINTR;
+    vma = find_extend_vma_locked(mm, bprm->p);
+    mmap_write_unlock(mm);
+    if (!vma)
+        return -EFAULT;
+
+    /* Now, let's put argc (and argv, envp if appropriate) on the stack */
+    if (put_user(argc, sp++))
+        return -EFAULT;
+
+    /* Populate list of argv pointers back to argv strings. */
+    p = mm->arg_end = mm->arg_start;
+    while (argc-- > 0) {
+        size_t len;
+        if (put_user((elf_addr_t)p, sp++))
+            return -EFAULT;
+        len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
+        if (!len || len > MAX_ARG_STRLEN)
+            return -EINVAL;
+        p += len;
+    }
+    if (put_user(0, sp++))
+        return -EFAULT;
+    mm->arg_end = p;
+
+    /* Populate list of envp pointers back to envp strings. */
+    mm->env_end = mm->env_start = p;
+    while (envc-- > 0) {
+        size_t len;
+        if (put_user((elf_addr_t)p, sp++))
+            return -EFAULT;
+        len = strnlen_user((void __user *)p, MAX_ARG_STRLEN);
+        if (!len || len > MAX_ARG_STRLEN)
+            return -EINVAL;
+        p += len;
+    }
+    if (put_user(0, sp++))
+        return -EFAULT;
+    mm->env_end = p;
+
+    /* Put the elf_info on the stack in the right place.  */
+    if (copy_to_user(sp, mm->saved_auxv, ei_index * sizeof(elf_addr_t)))
+        return -EFAULT;
     return 0;
 }
 ```
@@ -21808,6 +23564,13 @@ out:
 }
 ```
 
+## exit_mm
+
+## exit_sem
+## exit_shm
+## exit_files
+## exit_fs
+
 ## exit_notify
 
 ```c
@@ -22062,6 +23825,73 @@ void exit_notify(struct task_struct *tsk, int group_dead)
                 goto repeat;
         }
     }
+}
+```
+
+### __exit_signal
+
+```c
+void __exit_signal(struct release_task_post *post, struct task_struct *tsk)
+{
+    struct signal_struct *sig = tsk->signal;
+    bool group_dead = thread_group_leader(tsk);
+    struct sighand_struct *sighand;
+    struct tty_struct *tty;
+    u64 utime, stime;
+
+    sighand = rcu_dereference_check(tsk->sighand,
+                    lockdep_tasklist_lock_is_held());
+    spin_lock(&sighand->siglock);
+
+#ifdef CONFIG_POSIX_TIMERS
+    posix_cpu_timers_exit(tsk);
+    if (group_dead)
+        posix_cpu_timers_exit_group(tsk);
+#endif
+
+    if (group_dead) {
+        tty = sig->tty;
+        sig->tty = NULL;
+    } else {
+        /* If there is any task waiting for the group exit
+         * then notify it: */
+        if (sig->notify_count > 0 && !--sig->notify_count)
+            wake_up_process(sig->group_exec_task);
+
+        if (tsk == sig->curr_target)
+            sig->curr_target = next_thread(tsk);
+    }
+
+    /* Accumulate here the counters for all threads as they die. We could
+     * skip the group leader because it is the last user of signal_struct,
+     * but we want to avoid the race with thread_group_cputime() which can
+     * see the empty ->thread_head list. */
+    task_cputime(tsk, &utime, &stime);
+    write_seqlock(&sig->stats_lock);
+    sig->utime += utime;
+    sig->stime += stime;
+    sig->gtime += task_gtime(tsk);
+    sig->min_flt += tsk->min_flt;
+    sig->maj_flt += tsk->maj_flt;
+    sig->nvcsw += tsk->nvcsw;
+    sig->nivcsw += tsk->nivcsw;
+    sig->inblock += task_io_get_inblock(tsk);
+    sig->oublock += task_io_get_oublock(tsk);
+    task_io_accounting_add(&sig->ioac, &tsk->ioac);
+    sig->sum_sched_runtime += tsk->se.sum_exec_runtime;
+    sig->nr_threads--;
+    __unhash_process(post, tsk, group_dead);
+    write_sequnlock(&sig->stats_lock);
+
+    /* Ensure that all preceeding state is visible. Pairs with
+     * the smp_acquire__after_ctrl_dep() in the sighand == NULL
+     * path of lock_task_sighand(). */
+    smp_store_release(&tsk->sighand, NULL);
+    spin_unlock(&sighand->siglock);
+
+    __cleanup_sighand(sighand);
+    if (group_dead)
+        tty_kref_put(tty);
 }
 ```
 
