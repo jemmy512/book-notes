@@ -3717,6 +3717,168 @@ struct dentry *__dentry_kill(struct dentry *dentry)
 }
 ```
 
+## close
+
+```c
+SYSCALL_DEFINE1(close, unsigned int, fd)
+{
+    int retval;
+    struct file *file;
+
+    file = file_close_fd(fd);
+    if (!file)
+        return -EBADF;
+
+    retval = filp_flush(file, current->files);
+
+    /* We're returning to user space. Don't bother
+     * with any delayed fput() cases. */
+    fput_close_sync(file);
+
+    if (likely(retval == 0))
+        return 0;
+
+    /* can't restart close syscall because file table entry was cleared */
+    if (retval == -ERESTARTSYS ||
+        retval == -ERESTARTNOINTR ||
+        retval == -ERESTARTNOHAND ||
+        retval == -ERESTART_RESTARTBLOCK)
+        retval = -EINTR;
+
+    return retval;
+}
+
+static int filp_flush(struct file *filp, fl_owner_t id)
+{
+    int retval = 0;
+
+    if (CHECK_DATA_CORRUPTION(file_count(filp) == 0, filp,
+            "VFS: Close: file count is 0 (f_op=%ps)",
+            filp->f_op)) {
+        return 0;
+    }
+
+    if (filp->f_op->flush)
+        retval = filp->f_op->flush(filp, id);
+
+    if (likely(!(filp->f_mode & FMODE_PATH))) {
+        dnotify_flush(filp, id);
+        locks_remove_posix(filp, id);
+    }
+    return retval;
+}
+```
+
+### filep_close_sync
+
+```c
+void fput_close_sync(struct file *file)
+{
+    if (likely(file_ref_put_close(&file->f_ref)))
+        __fput(file);
+}
+
+void __fput(struct file *file)
+{
+    struct dentry *dentry = file->f_path.dentry;
+    struct vfsmount *mnt = file->f_path.mnt;
+    struct inode *inode = file->f_inode;
+    fmode_t mode = file->f_mode;
+
+    if (unlikely(!(file->f_mode & FMODE_OPENED)))
+        goto out;
+
+    might_sleep();
+
+    fsnotify_close(file);
+    /* The function eventpoll_release() should be the first called
+     * in the file cleanup chain. */
+    eventpoll_release(file);
+    locks_remove_file(file);
+
+    security_file_release(file);
+    if (unlikely(file->f_flags & FASYNC)) {
+        if (file->f_op->fasync)
+            file->f_op->fasync(-1, file, 0);
+    }
+    if (file->f_op->release)
+        file->f_op->release(inode, file);
+    if (unlikely(S_ISCHR(inode->i_mode) && inode->i_cdev != NULL &&
+             !(mode & FMODE_PATH))) {
+        cdev_put(inode->i_cdev);
+    }
+    fops_put(file->f_op);
+    file_f_owner_release(file);
+    put_file_access(file);
+    dput(dentry);
+    if (unlikely(mode & FMODE_NEED_UNMOUNT))
+        dissolve_on_fput(mnt);
+    mntput(mnt);
+out:
+    file_free(file);
+}
+```
+
+### eventpoll_release
+
+```c
+void eventpoll_release(struct file *file)
+{
+
+    /* Fast check to skip the slow path in the common case where the
+     * file was never attached to an epoll. Safe without file->f_lock
+     * because every f_ep writer excludes a concurrent __fput() on
+     * @file:
+     *   - ep_insert() requires the file alive (refcount > 0);
+     *   - ep_remove() holds @file pinned via epi_fget() across the
+     *     write;
+     *   - eventpoll_release_file() runs from __fput() itself.
+     * We are in __fput() here, so none of those can race us: a NULL
+     * observation truly means no epoll path has work left on @file. */
+    if (likely(!READ_ONCE(file->f_ep)))
+        return;
+
+    /* The file is being closed while it is still linked to an epoll
+     * descriptor. We need to handle this by correctly unlinking it
+     * from its containers. */
+    eventpoll_release_file(file);
+}
+
+void eventpoll_release_file(struct file *file)
+{
+    struct eventpoll *ep;
+    struct epitem *epi;
+
+    /* A concurrent ep_remove() cannot outrace us: it pins @file via
+     * epi_fget(), which fails once __fput() has dropped the refcount
+     * to zero -- the path we're on. So any racing ep_remove() bails
+     * and leaves the epi for us to clean up here. */
+again:
+    spin_lock(&file->f_lock);
+    if (file->f_ep && file->f_ep->first) {
+        epi = hlist_entry(file->f_ep->first, struct epitem, fllink);
+        spin_unlock(&file->f_lock);
+
+        /* ep access is safe as we still own a reference to the ep
+         * struct */
+        ep = epi->ep;
+        mutex_lock(&ep->mtx);
+
+        ep_unregister_pollwait(ep, epi);
+
+        ep_remove_file(ep, epi, file);
+        ep_remove_epi(ep, epi);
+
+        mutex_unlock(&ep->mtx);
+
+        if (ep_put(ep))
+            ep_free(ep);
+        goto again;
+    }
+    spin_unlock(&file->f_lock);
+}
+```
+
 ## read-write
 
 ![](../images/kernel/file-read-write.svg)
@@ -12279,7 +12441,7 @@ static long wb_do_writeback(struct bdi_writeback *wb)
     }
 
     wrote += wb_check_start_all(wb);
-    wrote += wb_check_start_all(wb);
+    wrote += wb_check_start_dontcache(wb);
     wrote += wb_check_old_data_flush(wb);
     wrote += wb_check_background_flush(wb);
     clear_bit(WB_writeback_running, &wb->state);
